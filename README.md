@@ -1,12 +1,24 @@
 # Gen1 Modern UI
 
-Standalone high-resolution UI overhaul mod for released gen1recomp builds.
+Standalone high-resolution UI overhaul mod for released
+[gen1recomp](https://github.com/bryanthaboi/gen1recomp) builds.
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Install the release asset by extracting `manifest.json` and `main.lua` into
-`%APPDATA%\pokemon-love2d\mods\gen1_modern_ui`, or use the included sync script
-from a checkout of this repository.
+
+## Install the latest release
+
+1. Download the newest `gen1_modern_ui-<version>.zip` from the
+   [Releases page](https://github.com/ArmstrongThomas/gen1-modern-ui/releases).
+2. Extract the archive into
+   `%APPDATA%\pokemon-love2d\mods\gen1_modern_ui` so that `manifest.json` and
+   `main.lua` are directly inside that folder.
+3. Restart gen1recomp, then enable **Gen1 Modern UI** under the in-game
+   **Mods → UI** section if it is not already enabled.
+
+The archive is already in the client-ready mod format. Do not add an extra
+nested `gen1_modern_ui` folder inside the destination. Windows users can also
+use `sync_gen1_modern_ui.cmd` when working from a source checkout.
 
 ## Highlights
 
@@ -18,8 +30,26 @@ from a checkout of this repository.
   art support.
 - Battle presentation remains explicitly WIP and disabled by default.
 
+## Compatibility with other mods
+
+The presenter reads live public menu rows rather than replacing other mods'
+state or callbacks. It currently supports UI surfaces from mods such as
+[Useful Dex](https://github.com/bryanthaboi/gen1recomp/wiki), **Gen 3 Box**, and
+the built-in mod manager, while preserving custom entries added by other
+authors. Sprite replacement packs such as **Gold_Silver_Sprites** are used when
+they are enabled. Unknown or unsupported screens remain vanilla instead of
+being forced through an incorrect layout.
+
 See [the handoff document](docs/GEN1_MODERN_UI_HANDOFF.md) for the compatibility
 contract, layout rules, testing notes, and release checklist.
+
+## Requests and bug reports
+
+Please [open an issue](https://github.com/ArmstrongThomas/gen1-modern-ui/issues)
+for bug reports, compatibility requests, new screen types, themes, or layout
+ideas. Include the gen1recomp version, mod versions, screen name, device or
+window resolution/orientation, and a screenshot or reproduction path when
+possible.
 
 ## Development
 
