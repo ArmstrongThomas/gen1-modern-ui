@@ -160,7 +160,7 @@ jobs:
           - Includes responsive title/Start, Trainer Card, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC views.
           - Shows Pokémon stats/moves, Trainer ID, and BASE/SELL item values including TMs.
           - Adds a presentation-only MINIMAL UI mode for closer-to-original layouts.
-          - Uses desktop-only floating cards while retaining mobile-focused layouts.
+          - Uses world-visible floating cards on desktop and mobile while retaining responsive layouts.
           - Hides supported classic UI canvases while preserving the independently rendered world.
           - **HIDE ORIGINAL UI** can restore the classic layer as a compatibility fallback.
           - Includes classic and modern themes in opaque and glass variants.

@@ -74,6 +74,14 @@ save whose adaptive setting is still paired with `desktopFloating=false`
 keeps its previous full treatment until that legacy toggle is enabled. This
 changes only HUD drawing, never the engine viewport or input coordinates.
 
+Opaque released menu states normally prevent the overworld from being drawn at
+all, so clearing `ctx.uiCanvas` alone cannot reveal it. While a supported
+presenter is active in a world-visible style, the mod temporarily sets that
+state's `isOpaque` flag to `false` during `input.step`, records the original
+value, and restores it for Full Screen or any classic/unsupported fallback.
+This is a draw-stack presentation adjustment only; the state still owns its
+update, input, callbacks, and lifecycle.
+
 The suppression guard is deliberately conservative. If **HIDE ORIGINAL UI**
 is off, any visible drawing state lacks a supported/enabled presenter, a custom
 capture prompt is active, or the graphics/context/UI canvas is unavailable,

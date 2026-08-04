@@ -434,6 +434,23 @@ function love.load()
   end
   bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
   bag.footer = "¥1234"
+  local opaqueBag = setmetatable({ screenId = "BagMenu", items = {}, index = 1,
+    isOpaque = true }, { __index = listClass })
+  game.stack.states = { overworld, opaqueBag }
+  values.layoutStyle = "floating"
+  hooks["input.step"](function() end, game, 0)
+  check(opaqueBag.isOpaque == false,
+    "FLOATING makes an eligible opaque screen world-visible before draw")
+  fill()
+  compose(false)
+  check(alpha() == 0,
+    "world-visible opaque screen can be suppressed with its overworld layer")
+  values.layoutStyle = "full"
+  hooks["input.step"](function() end, game, 0)
+  check(opaqueBag.isOpaque == true,
+    "FULL SCREEN restores an eligible screen's original opacity")
+  values.layoutStyle = "auto"
+  game.stack.states = { overworld, bag }
   local desktopBag = renderHud({ bag }, "bag")
   check(pixelAlpha(desktopBag, 0, 0) == 0,
     "desktop floating presenter leaves the world area transparent")

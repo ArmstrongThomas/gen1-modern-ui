@@ -720,6 +720,14 @@ return function(mod)
     return layoutStyle(viewport) ~= "full"
   end
 
+  -- Filled screens (Party, Pokédex, Trainer Card, PC, and several third-
+  -- party presenters) are opaque engine states. Clearing `uiCanvas` cannot
+  -- reveal a world that StateStack never drew, so the input-step sync below
+  -- temporarily makes eligible, modernized states transparent to the draw
+  -- stack. The original value is restored as soon as FULL SCREEN, classic
+  -- fallback, or an unsupported/custom draw becomes active.
+  local syncWorldVisibility
+
   local function drawPresenterBackdrop(theme, viewport)
     -- Every rich presenter (Party, PC, Trainer Card, Pokédex, Bag, and
     -- third-party adapters) comes through this helper.  Keeping the decision
@@ -882,6 +890,7 @@ return function(mod)
     if not game then
       return result
     end
+    if syncWorldVisibility then syncWorldVisibility(game) end
     local input = game.input
     updateOptionHelp(game, input)
     if option("startMenuFastJump", true) == false then return result end
@@ -1082,6 +1091,32 @@ return function(mod)
     local expectedDraw = resolvedDraw(expected)
     local actualDraw = resolvedDraw(class)
     return expectedDraw ~= nil and actualDraw ~= nil and actualDraw ~= expectedDraw
+  end
+
+  syncWorldVisibility = function(game)
+    local stack = game and game.stack
+    local states = stack and stack.states
+    if type(states) ~= "table" then return end
+    local revealWorld = worldVisibleLayout(nil)
+      and option("hideOriginalUi", true) ~= false
+    for _, state in ipairs(states) do
+      if state and state ~= game.overworld then
+        local kind = kindFor(state)
+        local eligible = revealWorld and kind and presenterEnabled(kind)
+          and not state.capture and not hasUnknownDrawOverride(state, kind)
+        if eligible then
+          if state._gen1ModernOpaqueManaged == nil then
+            state._gen1ModernOpaqueManaged = true
+            state._gen1ModernOriginalOpaque = state.isOpaque == true
+          end
+          state.isOpaque = false
+        elseif state._gen1ModernOpaqueManaged then
+          state.isOpaque = state._gen1ModernOriginalOpaque == true
+          state._gen1ModernOpaqueManaged = nil
+          state._gen1ModernOriginalOpaque = nil
+        end
+      end
+    end
   end
 
   -- Build the complete visible UI stack bottom-up. `ctx.uiCanvas` contains

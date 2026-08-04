@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.6.1 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.6.2 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -59,7 +59,7 @@ custom engine checkout or a patched binary.
 
 ### Dialogue and modal stacks
 
-Version 0.6.1 presents ordinary `TextBox` dialogue and attached `Menu`,
+Version 0.6.2 presents ordinary `TextBox` dialogue and attached `Menu`,
 `ChoiceBox`, and `QuantityBox` layers as one composition. The text presenter
 reconstructs only the glyphs already revealed by the live typewriter state;
 the original state still owns reveal speed, waiting, advancement, sounds, and
