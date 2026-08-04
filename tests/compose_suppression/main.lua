@@ -91,6 +91,8 @@ function love.load()
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
+  check(type(themeRow.description) == "string" and themeRow.description ~= "",
+    "mod settings expose option descriptions")
   local expectedThemes = {
     "default",
     "gen1_modern_ui:modern_glass",
@@ -153,6 +155,37 @@ function love.load()
   end
   check(#shortcutItems == 3 and shortcutFound,
     "Start menu exposes the direct UI settings shortcut")
+  check(type(hooks["input.step"]) == "function", "Start fast-jump hook registered")
+  local jumpMenu = setmetatable({ screenId = "StartMenu", startCloses = true, index = 1,
+    items = { {}, {}, {}, {}, {}, {}, {}, {} },
+    clampScroll = function(self) self.clamped = true end }, { __index = menuClass })
+  local jumpGame = { input = { pressQueue = { "right" }, }, save = {}, stack = {
+    top = function(self) return jumpMenu end,
+  } }
+  hooks["input.step"](function() end, jumpGame, 0)
+  check(jumpMenu.index == 6 and jumpMenu.clamped
+      and jumpGame.save.startMenuIndex == 6,
+    "Start fast-jump advances five rows")
+  jumpGame.input.pressQueue = { "left" }
+  hooks["input.step"](function() end, jumpGame, 0)
+  check(jumpMenu.index == 1, "Start fast-jump wraps back by five rows")
+  local optionState = {
+    screenId = "ManagerState", screen = "options", cursor = 1,
+    optionRows = { { id = "theme", label = "UI THEME" } },
+  }
+  local optionGame = { input = { pressQueue = { "select" } }, stack = {
+    top = function(self) return optionState end,
+  } }
+  hooks["input.step"](function() end, optionGame, 0)
+  check(optionState._gen1OptionDescription
+      and optionState._gen1OptionDescription.title == "UI THEME"
+      and #optionGame.input.pressQueue == 0,
+    "SELECT opens the focused option description")
+  optionGame.input.pressQueue = { "b" }
+  hooks["input.step"](function() end, optionGame, 0)
+  check(optionState._gen1OptionDescription == nil
+      and #optionGame.input.pressQueue == 0,
+    "A/B/SELECT closes the option description")
   local zones = {}
   local returnedZones = hooks["render.zones"](
     function(_, value) return value end, game, zones)

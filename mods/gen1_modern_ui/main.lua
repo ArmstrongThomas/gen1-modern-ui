@@ -384,7 +384,9 @@ local function panelWidthFor(viewport, availableW, maxWidth)
   local panelW = math.min(availableW, maxWidth)
   local _, _, w, h = presenterRect(viewport)
   if viewport and viewport.fullSafe and w > h * 1.2 then
-    panelW = math.min(panelW, w * 0.60)
+    -- Keep rich/static presenters readable on narrow landscape windows too;
+    -- content-specific callers still provide their own upper bound.
+    panelW = math.min(panelW, w * 0.72)
   end
   return math.max(1, panelW)
 end
@@ -649,34 +651,52 @@ return function(mod)
     themes = themes,
   }
 
-  mod.options:define({
+  local optionSchema = {
     { key = "theme", label = "UI THEME", type = "choice",
+      description = "Choose the color, contrast, and panel style used by the modern interface.",
       choices = themeChoices, default = "default" },
     { key = "density", label = "UI DENSITY", type = "choice",
+      description = "Adjust the spacing and row height used by modern panels.",
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
-    { key = "hideOriginalUi", label = "HIDE ORIGINAL UI", type = "toggle", default = true },
+    { key = "hideOriginalUi", label = "HIDE ORIGINAL UI", type = "toggle", default = true,
+      description = "Hide the classic UI canvas when this mod safely presents the complete screen.", },
     -- The battle presenter remains available for testing, but is opt-in until
     -- its responsive layout is finished.  Keeping the option visible makes
     -- the WIP status explicit without disrupting the game's native battle UI.
-    { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false },
+    { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false,
+      description = "Show the experimental battle presenter. It is unfinished and off by default.", },
     { key = "layoutStyle", label = "LAYOUT STYLE", type = "choice",
+      description = "Choose adaptive floating panels or a full-screen themed presentation.",
       choices = { { "ADAPTIVE", "auto" }, { "FLOATING", "floating" },
                   { "FULL SCREEN", "full" } }, default = "auto" },
     { key = "panelOpacity", label = "PANEL OPACITY", type = "number",
+      description = "Set the opacity of panel backgrounds independently from text and borders.",
       min = 0, max = 100, step = 5, default = 100 },
     { key = "foregroundOpacity", label = "TEXT / LINE OPACITY", type = "number",
+      description = "Set the opacity of labels, borders, dividers, and accent lines.",
       min = 0, max = 100, step = 5, default = 100 },
     -- Retained as a migration field for saves created by v0.5.0.
-    { key = "desktopFloating", label = "DESKTOP FLOATING UI", type = "toggle", default = true },
-    { key = "startMenuShortcut", label = "START UI SETTINGS", type = "toggle", default = true },
-    { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false },
-    { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true },
-    { key = "menuUi", label = "MENU UI", type = "toggle", default = true },
-    { key = "pokemonUi", label = "POKEMON SCREENS", type = "toggle", default = true },
-    { key = "managerUi", label = "MOD MANAGER UI", type = "toggle", default = true },
-    { key = "spriteAnimation", label = "SPRITE ANIMATION", type = "toggle", default = true },
-  })
+    { key = "desktopFloating", label = "DESKTOP FLOATING UI", type = "toggle", default = true,
+      description = "Legacy compatibility setting. Use LAYOUT STYLE for new installs.", },
+    { key = "startMenuShortcut", label = "START UI SETTINGS", type = "toggle", default = true,
+      description = "Add a direct UI SETTINGS entry to the in-game Start menu.", },
+    { key = "startMenuFastJump", label = "START MENU FAST JUMP", type = "toggle", default = true,
+      description = "Let left/right directional presses jump five rows in the Start menu.", },
+    { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
+      description = "Use a compact presentation with fewer previews and less extra detail.", },
+    { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true,
+      description = "Use modern text boxes, choices, quantities, and confirmation prompts.", },
+    { key = "menuUi", label = "MENU UI", type = "toggle", default = true,
+      description = "Use modern generic menus such as Start, Bag actions, and shops.", },
+    { key = "pokemonUi", label = "POKEMON SCREENS", type = "toggle", default = true,
+      description = "Use modern Party, PC, Pokédex, Trainer, Summary, and box screens.", },
+    { key = "managerUi", label = "MOD MANAGER UI", type = "toggle", default = true,
+      description = "Use the modern presentation for the game's mod manager screens.", },
+    { key = "spriteAnimation", label = "SPRITE ANIMATION", type = "toggle", default = true,
+      description = "Animate supported two-frame artwork while preserving ratio and nearest filtering.", },
+  }
+  mod.options:define(optionSchema)
 
   local function layoutStyle(viewport)
     local selected = option("layoutStyle", nil)
@@ -767,6 +787,109 @@ return function(mod)
     table.insert(out, 1, shortcut)
     return out
   end, 90)
+
+  -- TouchControls intentionally exposes the same directional button queue as
+  -- a keyboard/controller, rather than a mod-specific pointer API.  The
+  -- released StartMenu ignores left/right, so consuming a pending horizontal
+  -- press here is both touch-friendly and safe for other menu implementations:
+  -- only Menu-like states that explicitly close on START are eligible.  A
+  -- single press advances five rows and the ordinary up/down/A/B behavior is
+  -- left entirely to the engine's state.
+  local function pendingPress(input, button)
+    for _, queued in ipairs(input and input.pressQueue or {}) do
+      if queued == button then return true end
+    end
+    return false
+  end
+
+  local function consumePending(input, buttons)
+    local queue = input and input.pressQueue
+    if type(queue) ~= "table" then return false end
+    local consumed = false
+    for index = #queue, 1, -1 do
+      if buttons[queue[index]] then
+        table.remove(queue, index)
+        consumed = true
+      end
+    end
+    return consumed
+  end
+
+  local function optionDescription(id)
+    if id == "__reset" then
+      return "Restore every Gen1 Modern UI setting to its default value."
+    end
+    for _, row in ipairs(optionSchema) do
+      if row.key == id then return row.description end
+    end
+    return nil
+  end
+
+  local function optionState(game)
+    local top = game and game.stack and game.stack.top and game.stack:top()
+    if not (top and top.screenId == "ManagerState" and top.screen == "options"
+        and type(top.optionRows) == "table" and type(top.cursor) == "number") then
+      return nil
+    end
+    return top
+  end
+
+  local function updateOptionHelp(game, input)
+    if option("managerUi", true) == false then return end
+    local state = optionState(game)
+    if not state then return end
+    local active = state._gen1OptionDescription
+    if active then
+      -- A/B/SELECT dismiss the help card without changing the focused option
+      -- or leaving the manager. Directional input closes it and remains in the
+      -- queue so the manager can move/adjust normally on the same step.
+      if consumePending(input, { a = true, b = true, select = true }) then
+        state._gen1OptionDescription = nil
+        return
+      end
+      if pendingPress(input, "up") or pendingPress(input, "down")
+          or pendingPress(input, "left") or pendingPress(input, "right")
+          or pendingPress(input, "start") then
+        state._gen1OptionDescription = nil
+      end
+      return
+    end
+    if not pendingPress(input, "select") then return end
+    local row = state.optionRows[state.cursor]
+    local description = row and optionDescription(row.id)
+    if not description or description == "" then return end
+    state._gen1OptionDescription = {
+      title = row.label or row.id,
+      text = description,
+    }
+    consumePending(input, { select = true })
+  end
+
+  mod.hooks:wrap("input.step", function(next, game, dt)
+    local result = next(game, dt)
+    if not game then
+      return result
+    end
+    local input = game.input
+    updateOptionHelp(game, input)
+    if option("startMenuFastJump", true) == false then return result end
+    local top = game.stack and game.stack.top and game.stack:top()
+    if not (input and top and top.screenId == "StartMenu"
+        and type(top.items) == "table"
+        and top.startCloses == true and type(top.index) == "number"
+        and #top.items > 0) then
+      return result
+    end
+    local left = pendingPress(input, "left")
+    local right = pendingPress(input, "right")
+    if left == right then return result end
+    local count = #top.items
+    local delta = right and 5 or -5
+    top.index = ((top.index - 1 + delta) % count) + 1
+    if type(top.clampScroll) == "function" then top:clampScroll() end
+    if game.save then game.save.startMenuIndex = top.index end
+    return result
+  end, 80)
 
   local isBoxRoot
   local function boxPokemonList(state)
@@ -1241,7 +1364,9 @@ return function(mod)
     local rowHeight = (theme.density.rowHeight or 54) * scale
     local panelMax = theme.density.panelMax or 780
     if landscape then
-      panelMax = math.min(panelMax, w * 0.60)
+      -- Keep content-sized panels compact, but leave enough room for long
+      -- localized labels and option values before truncating them.
+      panelMax = math.min(panelMax, w * 0.72)
     end
     if landscape and rowCount > 0 then
       local fitHeight = (h - gutter * 2 - header - footer) / rowCount
@@ -1267,7 +1392,8 @@ return function(mod)
       -- The ordinary in-game menu is navigational chrome, not a modal data
       -- screen. On wide windows keep it narrow and dock it to the edge so the
       -- world remains visible instead of dimming behind a centered card.
-      panelW = math.min(panelW, clamp(w * 0.30, 220, 360))
+      local preferredSideW = clamp(w * 0.30, 220, 460)
+      panelW = math.min(w - gutter * 2, math.max(panelW, preferredSideW))
       gutter = spacing.lg or 18
       header = safeText(title) ~= "" and ((theme.typography.title or 24)
         + (spacing.md or 13)) or (spacing.md or 13)
@@ -1356,13 +1482,25 @@ return function(mod)
           setColor(row.enabled == false and colors.textMuted or colors.text)
         end
       end
+      local label = safeText(row.label)
       local value = safeText(row.value)
+      local textAvail = math.max(1, layout.x + layout.w - theme.spacing.lg - textX)
+      local gap = theme.spacing.md
+      local labelWidth = love.graphics.getFont():getWidth(label)
       local valueWidth = value ~= "" and love.graphics.getFont():getWidth(value) or 0
-      local maxValueWidth = layout.w * 0.36
-      valueWidth = math.min(valueWidth, maxValueWidth)
-      local leftWidth = layout.w - (textX - layout.x) - theme.spacing.lg - valueWidth - 16
+      -- Preserve the complete value whenever the measured panel can hold it.
+      -- Only fall back to a bounded right column when label + value cannot
+      -- coexist; this prevents short panels from clipping values such as
+      -- "Classic Mono" while still guaranteeing that the two columns never
+      -- overlap on narrow phones.
+      if valueWidth > 0 and labelWidth + gap + valueWidth > textAvail then
+        local maxValueColumn = math.max(1,
+          textAvail - math.max(48, textAvail * 0.48))
+        valueWidth = math.min(valueWidth, maxValueColumn)
+      end
+      local leftWidth = textAvail - (valueWidth > 0 and valueWidth + gap or 0)
       if not row.header then
-        love.graphics.print(truncate(row.label, math.max(20, leftWidth)),
+        love.graphics.print(truncate(label, math.max(20, leftWidth)),
           textX, ry + (layout.rowHeight -
             love.graphics.getFont():getHeight()) / 2)
         if value ~= "" then
@@ -1641,6 +1779,58 @@ return function(mod)
     end
   end
 
+  local function drawManagerOptionHelp(theme, layout, state, viewport)
+    local help = state._gen1OptionDescription
+    if not help then return end
+    drawPresenterBackdrop(theme, viewport)
+    local spacing = theme.spacing
+    local body = font(fontCache, theme.typography.body)
+    local titleFont = font(fontCache, theme.typography.title * 0.82)
+    love.graphics.setFont(body)
+    local maxTextW = math.max(120, layout.w - spacing.lg * 4)
+    local lines = wrappedLines(help.text, maxTextW)
+    local maxLines = 6
+    if #lines > maxLines then
+      while #lines > maxLines do table.remove(lines) end
+      local last = lines[#lines] or ""
+      lines[#lines] = truncate(last, maxTextW)
+    end
+    local title = safeText(help.title or "SETTING")
+    local titleW = titleFont:getWidth(title)
+    local widest = math.max(titleW, maxTextW)
+    local modalW = math.min(layout.w - spacing.md * 2,
+      math.max(240, widest + spacing.lg * 2))
+    local lineHeight = body:getHeight() + spacing.xs
+    local footerH = body:getHeight() + spacing.sm
+    local modalH = spacing.lg * 2 + titleFont:getHeight() + spacing.sm
+      + #lines * lineHeight + footerH
+    modalH = math.min(layout.h - spacing.md * 2, modalH)
+    local mx = layout.x + (layout.w - modalW) / 2
+    local my = layout.y + (layout.h - modalH) / 2
+    setColor(theme.colors.surfaceRaised or theme.colors.surface)
+    love.graphics.rectangle("fill", mx, my, modalW, modalH,
+      theme.radii.lg or 20)
+    setColor(theme.colors.accent)
+    love.graphics.rectangle("fill", mx, my, modalW, 4,
+      theme.radii.lg or 20, theme.radii.lg or 20, 0, 0)
+    love.graphics.setFont(titleFont)
+    setColor(theme.colors.text)
+    love.graphics.print(truncate(title, modalW - spacing.lg * 2),
+      mx + spacing.lg, my + spacing.md)
+    love.graphics.setFont(body)
+    local textY = my + spacing.md + titleFont:getHeight() + spacing.sm
+    for index, line in ipairs(lines) do
+      setColor(theme.colors.text)
+      love.graphics.print(line, mx + spacing.lg, textY + (index - 1) * lineHeight)
+    end
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", mx + spacing.lg,
+      my + modalH - footerH, modalW - spacing.lg * 2, 1)
+    setColor(theme.colors.textMuted)
+    love.graphics.print("SELECT / A / B  CLOSE", mx + spacing.lg,
+      my + modalH - footerH + spacing.xs)
+  end
+
   local function drawManager(game, state, viewport, theme)
     local rows, selected, scroll, title = managerRowsFor(game, state)
     local layout = layoutFor(viewport, theme, "mod_manager", rows, title,
@@ -1692,7 +1882,7 @@ return function(mod)
     elseif not footer and state.screen == "permissions" then
       footer = "Declared by author; not enforced   B  back"
     elseif not footer and state.screen == "options" then
-      footer = "Arrow keys  adjust   B  done"
+      footer = "Arrow keys  adjust   SELECT  help   B  done"
     elseif not footer then
       footer = "A  choose   B  back"
     end
@@ -1700,6 +1890,7 @@ return function(mod)
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
     drawManagerOverlay(theme, layout, state, viewport)
+    drawManagerOptionHelp(theme, layout, state, viewport)
     love.graphics.pop()
   end
 

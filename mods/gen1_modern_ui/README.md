@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.6.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.6.1 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -37,8 +37,11 @@ custom engine checkout or a patched binary.
 
 - Keyboard and controller navigation remain vanilla because the overlay does
   not replace states or consume input.
-- Touch and click activation are intentionally deferred; the existing game
-  touch controls and pointer behavior remain the source of truth.
+- Touch and click activation remain owned by the engine. The mod adds one
+  compatibility-safe shortcut: left/right on the released touch d-pad (or the
+  equivalent keyboard/controller direction) jumps five rows in the Start menu.
+- In this mod's options screen, press **SELECT** on a focused setting for a
+  brief explanation; **SELECT**, **A**, or **B** closes the help card.
 - The presenter reads the complete visible state stack after the classic
   frame. It does not rebuild hook-provided descriptor tables or call callbacks
   directly.
@@ -56,7 +59,7 @@ custom engine checkout or a patched binary.
 
 ### Dialogue and modal stacks
 
-Version 0.6.0 presents ordinary `TextBox` dialogue and attached `Menu`,
+Version 0.6.1 presents ordinary `TextBox` dialogue and attached `Menu`,
 `ChoiceBox`, and `QuantityBox` layers as one composition. The text presenter
 reconstructs only the glyphs already revealed by the live typewriter state;
 the original state still owns reveal speed, waiting, advancement, sounds, and

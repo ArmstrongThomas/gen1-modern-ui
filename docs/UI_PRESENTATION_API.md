@@ -167,7 +167,7 @@ row or card.
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
 toggle is independent from the `layoutStyle`, `panelOpacity`,
-`foregroundOpacity`, `startMenuShortcut`, `dialogueUi`, generic
+`foregroundOpacity`, `startMenuShortcut`, `startMenuFastJump`, `dialogueUi`, generic
 `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by
 the mod options.
 
@@ -186,6 +186,11 @@ input continues through the original game states and callbacks unchanged.
 The engine currently routes gameplay touch input only to `TouchControls`; it
 does not expose pointer events to `StateStack`, `Menu`, or `ListMenu`, and real
 mouse input is not routed to gameplay in the default configuration.
+
+The one intentional shortcut is `startMenuFastJump`: it observes a queued
+left/right GB-button edge (including the released touch d-pad) while a
+StartMenu is active and moves its cursor by five rows. It does not capture the
+touch event or bypass the StartMenu's normal A/B callbacks.
 
 An experimental mod-only implementation can poll LÖVE pointer state from the
 released `input.step` hook, reuse window-space presenter hitboxes, exclude

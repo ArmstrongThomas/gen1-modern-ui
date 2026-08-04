@@ -7,7 +7,7 @@ screens found in the currently installed mod set. It describes intended visual
 coverage only. Original states continue to own input, callbacks, timing, and
 gameplay behavior.
 
-The v0.6 layout pass adds content-sized floating panels across supported
+The v0.6.1 layout pass adds content-sized floating panels across supported
 screens. Minimal mode removes optional regions before sizing, so a short list
 does not inherit the empty space of a rich preview layout.
 
@@ -36,7 +36,7 @@ stack-aware chain: every visible drawing state must have an enabled presenter,
 known modals render bottom-up above their modern parent, and any unknown layer
 retains the complete classic slice. It also rejects unknown class-level draw
 overrides and admits only the audited Modern Bag, Useful Dex, and Gen 3 Box
-structural adapters. The current v0.6.0 work also audits the released Bill's-PC
+structural adapters. The current v0.6.1 work also audits the released Bill's-PC
 root/child contract and the title Menu: Bill lists require verified full-stack
 ancestry, while the ordinary title Menu is suppressed independently so its
 shared title-art canvas is preserved.

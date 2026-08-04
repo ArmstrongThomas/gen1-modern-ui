@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.0 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.1 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -43,6 +43,11 @@ when the listing is enabled there.
   transparent panels readable without fading borders or labels.
 - **START UI SETTINGS** adds a direct Start-menu shortcut to this mod's
   options, enabled by default.
+- **START MENU FAST JUMP** lets a left/right touch-button press (or the same
+  directional input from a keyboard/controller) jump five rows in the Start
+  menu, with normal up/down navigation unchanged.
+- Press **SELECT** on any Gen1 Modern UI setting to open a short description;
+  press **SELECT**, **A**, or **B** again to close it.
 - Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
   clears the UI canvas when a supported modern presenter safely owns the whole
   visible UI layer; nested or custom prompts retain their classic context.
@@ -60,6 +65,8 @@ when the listing is enabled there.
   including TM move/type/PP/value data; Trainer Card includes the five-digit ID.
 - **MINIMAL UI** keeps the modern shell and live controls while removing
   optional detail/preview panes and recomputing a genuinely compact layout.
+- Content-sized option rows reserve enough width for long values and
+  localized labels before falling back to safe, non-overlapping truncation.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
   styles, plus density controls and a public data-only theme API.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
@@ -136,7 +143,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.0.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.1.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 

@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.6.0 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.6.1 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -38,7 +38,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.6.0. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.6.1. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -79,7 +79,7 @@ that file and appends the generated archive checksum.
 7. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.6.0 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.6.1 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -150,8 +150,12 @@ classic UI is suppressed independently.
 - The battle adapter reads public battler, phase, move, and message fields. Its
   `battleUiWip` toggle is WIP and defaults off; other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
+  `startMenuFastJump`,
   `dialogueUi`, `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
   options. `desktopFloating` remains only as a migration field for old saves.
+- Every option schema row includes a short description. The modern manager
+  presents it as a non-destructive help card when SELECT is pressed on that
+  row; SELECT, A, or B dismisses the card without changing the setting.
 - `minimalUi` is presentation-only. It removes optional Pokédex/Bag/Shop
   previews and large Party/Bill detail panes while retaining live rows,
   selection, essential Pokémon data, prompts, and input ownership.
@@ -169,10 +173,12 @@ classic UI is suppressed independently.
 ## Input scope
 
 Modern keyboard/controller presentation is intentionally visual only: the
-original game continues to receive and process those inputs. Touch and click
-activation are deferred to a later milestone; this release does not capture
-pointer events, hide virtual controls, or add a second navigation path. The
-engine draws `TouchControls` after `render.hud`, above the modern layer.
+original game continues to receive and process those inputs. The released
+touch overlay also remains the input owner. `startMenuFastJump` observes the
+same queued left/right GB-button edges and moves a Start-menu cursor by five;
+it does not capture raw pointer coordinates, hide virtual controls, or add a
+second state/input owner. The engine draws `TouchControls` after `render.hud`,
+above the modern layer.
 
 The upstream audit found no public gameplay pointer event or semantic input
 facade. A first experimental layer can poll pointer state from `input.step`,
