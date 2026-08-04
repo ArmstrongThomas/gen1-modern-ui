@@ -743,12 +743,24 @@ return function(mod)
       rowHeight = math.min(rowHeight, math.max(minLandscapeRow * scale, fitHeight))
     end
     local panelW = math.min(w - gutter * 2, panelMax)
+    local sidePanel = landscape and kind == "menu" and rowCount > 0
     if kind == "menu" or kind == "choice" or kind == "quantity" then
       -- Short action/confirmation menus should read as focused cards in
       -- landscape, not as banners stretched across the whole phone. Longer
       -- list/options screens keep the wider panel calculated from the theme
       -- max.
       panelW = math.min(panelW, (w > h * 1.2) and 720 or 560)
+    end
+    if sidePanel then
+      -- The ordinary in-game menu is navigational chrome, not a modal data
+      -- screen. On wide windows keep it narrow and dock it to the edge so the
+      -- world remains visible instead of dimming behind a centered card.
+      panelW = clamp(w * 0.30, 240, 360)
+      gutter = 0
+      header = (theme.typography.title or 24) + (spacing.md or 13)
+      footer = (spacing.sm or 9) + (theme.typography.caption or 13)
+      rowHeight = math.min(rowHeight, math.max(30 * scale,
+        (h - header - footer) / math.max(1, rowCount)))
     end
     panelW = math.max(1, panelW)
     local visible = math.max(1, math.floor((h - gutter * 2 - header - footer) / rowHeight))
@@ -758,15 +770,16 @@ return function(mod)
     -- secondary values, and the extra move/metadata line used by Dex screens.
     -- This applies to every generic menu rather than special-casing one mod.
     if landscape then contentH = contentH + rowHeight end
-    local panelH = math.min(h - gutter * 2, contentH)
+    local panelH = sidePanel and h or math.min(h - gutter * 2, contentH)
     panelH = math.max(1, panelH)
     return {
-      x = x + (w - panelW) / 2,
-      y = y + (h - panelH) / 2,
+      x = sidePanel and (x + w - panelW) or x + (w - panelW) / 2,
+      y = sidePanel and y or y + (h - panelH) / 2,
       w = panelW, h = panelH, rowHeight = rowHeight,
       header = header, footer = footer, visible = visible,
       safeX = x, safeY = y, safeW = w, safeH = h,
-      radius = theme.radii and theme.radii.md or 16,
+      radius = sidePanel and 0 or (theme.radii and theme.radii.md or 16),
+      sidePanel = sidePanel,
     }
   end
 
@@ -1811,10 +1824,16 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
-    setColor(theme.colors.surface)
+    if not layout.sidePanel then
+      local backX, backY, backW, backH = fullViewportRect(viewport)
+      setBackdrop(theme)
+      love.graphics.rectangle("fill", backX, backY, backW, backH)
+    end
+    local surface = theme.colors.surface
+    if layout.sidePanel then
+      surface = { surface[1], surface[2], surface[3], math.min(surface[4] or 1, 0.96) }
+    end
+    setColor(surface)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h, layout.radius)
     drawHeader(theme, layout, title)
     drawRows(theme, layout, rows, selected, scroll, game)
@@ -1823,7 +1842,8 @@ return function(mod)
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
-    local footer = footerText or (kind == "choice" and "A  choose    B  cancel"
+    local footer = layout.sidePanel and "A  select   B  back" or footerText or
+      (kind == "choice" and "A  choose    B  cancel"
       or kind == "quantity" and "A  confirm    B  cancel"
       or "Arrow keys / A  select    B  back")
     love.graphics.print(Strings(footer), layout.x + theme.spacing.lg,
