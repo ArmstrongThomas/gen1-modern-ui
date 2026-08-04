@@ -33,3 +33,12 @@ python tools/modkit.py lint mods/gen1_modern_ui
 
 To build the launcher-ready archive, double-click `sync_gen1_modern_ui.cmd` or
 run `Compress-Archive` over the contents of `mods/gen1_modern_ui`.
+
+## Automated releases
+
+The workflow in `.github/workflows/release.yml` runs on pushes to `main` and
+manual dispatches. It validates the manifest and Lua syntax, builds the
+launcher-ready zip, and creates a GitHub release only when the manifest version
+does not already have a tag. To publish the next release, update the
+`version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
+`0.1.1`) and push that commit to `main`.

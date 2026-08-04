@@ -29,6 +29,12 @@ by `gen1_modern_ui` 0.1.0. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
+The standalone repository includes a GitHub Actions release workflow. A push
+to `main` validates the manifest and Lua syntax, builds the launcher-ready zip,
+and creates `v<manifest.version>` only when that tag/release does not already
+exist. Bump the manifest version for each distributable release; ordinary code
+or documentation pushes at an existing version are intentionally idempotent.
+
 ## Architecture
 
 1. The mod wraps `render.hud`, calls `next(game, viewport)` exactly once, then

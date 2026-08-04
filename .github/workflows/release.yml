@@ -1,0 +1,102 @@
+name: Build and release mod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gen1-modern-ui-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate manifest and version
+        id: metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          path = Path("mods/gen1_modern_ui/manifest.json")
+          manifest = json.loads(path.read_text(encoding="utf-8"))
+          version = str(manifest.get("version", ""))
+          if not re.fullmatch(r"0|[1-9]\d*\.\d+\.\d+", version):
+              raise SystemExit(f"manifest version is not semver: {version!r}")
+          if manifest.get("id") != "gen1_modern_ui":
+              raise SystemExit("manifest id must remain gen1_modern_ui")
+          print(f"version={version}")
+          Path(".release-version").write_text(version + "\n", encoding="utf-8")
+          PY
+          VERSION="$(cat .release-version)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=gen1_modern_ui-$VERSION.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Lua syntax
+        run: npx --yes luaparse -q mods/gen1_modern_ui/main.lua
+
+      - name: Build launcher-ready archive
+        env:
+          ASSET: ${{ steps.metadata.outputs.asset }}
+        run: |
+          (cd mods/gen1_modern_ui && zip -9 -r "../../$ASSET" .)
+          python - <<'PY'
+          import json
+          import os
+          import zipfile
+
+          asset = os.environ["ASSET"]
+          with zipfile.ZipFile(asset) as archive:
+              names = set(archive.namelist())
+              required = {"manifest.json", "main.lua"}
+              missing = required - names
+              if missing:
+                  raise SystemExit(f"archive is missing: {sorted(missing)}")
+              manifest = json.loads(archive.read("manifest.json"))
+              expected = os.environ["ASSET"][len("gen1_modern_ui-"):-len(".zip")]
+              if manifest.get("version") != expected:
+                  raise SystemExit("archive manifest version does not match its filename")
+          PY
+
+      - name: Create version tag if needed
+        id: tag
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          git fetch --tags --force
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG already exists; keeping the existing tag."
+          else
+            git tag -a "$TAG" -m "Gen1 Modern UI ${TAG#v}"
+            git push origin "$TAG"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; no duplicate release created."
+          else
+            gh release create "$TAG" "$ASSET" \
+              --title "Gen1 Modern UI v$VERSION" \
+              --generate-notes
+          fi
