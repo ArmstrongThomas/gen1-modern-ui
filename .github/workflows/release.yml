@@ -88,6 +88,56 @@ jobs:
             echo "created=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Write release notes
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          PREVIOUS_TAG="$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -v -Fx "$TAG" \
+            | head -n 1 || true)"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CHANGELOG="$(git log --pretty=format:'- %s (%h)' "$PREVIOUS_TAG..HEAD")"
+          else
+            CHANGELOG="$(git log -n 20 --pretty=format:'- %s (%h)')"
+          fi
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- Initial release."
+          fi
+          SHA256="$(sha256sum "$ASSET" | cut -d ' ' -f 1)"
+          cat > release-notes.md <<EOF
+          # Gen1 Modern UI v$VERSION
+
+          High-resolution, themeable menu presentation for released gen1recomp builds.
+
+          ## Changes in this release
+
+          $CHANGELOG
+
+          ## Quick start
+
+          1. Download **$ASSET** from the Assets section below.
+          2. Extract its five files directly into
+             `%APPDATA%\\pokemon-love2d\\mods\\gen1_modern_ui`.
+          3. Restart the game so the mod loader discovers the updated mod.
+          4. Open the in-game Mods menu and enable **Gen1 Modern UI** under **UI**
+             if it is not already enabled.
+
+          The included archive is a launcher-ready mod package; do not place an
+          extra nested `gen1_modern_ui` folder inside the target directory.
+
+          ## Compatibility and notes
+
+          - Targets released gen1recomp 0.x and 1.x builds through the public mod API.
+          - Keeps vanilla input/state ownership and reads live rows from other mods.
+          - Supports active sprite replacement packs and nearest-neighbor artwork.
+          - Battle UI remains WIP and disabled by default.
+
+          **SHA-256:** `$SHA256`
+          EOF
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,5 +150,5 @@ jobs:
           else
             gh release create "$TAG" "$ASSET" \
               --title "Gen1 Modern UI v$VERSION" \
-              --generate-notes
+              --notes-file release-notes.md
           fi

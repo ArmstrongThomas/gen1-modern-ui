@@ -41,4 +41,6 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.1.1`) and push that commit to `main`.
+`0.1.1`) and push that commit to `main`. Each release includes a commit-based
+change log, compatibility notes, quick-start install steps, and the archive's
+SHA-256 checksum.

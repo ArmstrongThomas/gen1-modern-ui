@@ -32,8 +32,10 @@ submitting unrelated engine work.
 The standalone repository includes a GitHub Actions release workflow. A push
 to `main` validates the manifest and Lua syntax, builds the launcher-ready zip,
 and creates `v<manifest.version>` only when that tag/release does not already
-exist. Bump the manifest version for each distributable release; ordinary code
-or documentation pushes at an existing version are intentionally idempotent.
+exist. Release notes include the commits since the previous version, a quick
+start install guide, compatibility notes, and the archive checksum. Bump the
+manifest version for each distributable release; ordinary code or documentation
+pushes at an existing version are intentionally idempotent.
 
 ## Architecture
 
