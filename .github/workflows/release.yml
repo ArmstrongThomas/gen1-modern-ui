@@ -33,7 +33,7 @@ jobs:
           path = Path("mods/gen1_modern_ui/manifest.json")
           manifest = json.loads(path.read_text(encoding="utf-8"))
           version = str(manifest.get("version", ""))
-          if not re.fullmatch(r"0|[1-9]\d*\.\d+\.\d+", version):
+          if not re.fullmatch(r"(?:0|[1-9]\d*)\.\d+\.\d+", version):
               raise SystemExit(f"manifest version is not semver: {version!r}")
           if manifest.get("id") != "gen1_modern_ui":
               raise SystemExit("manifest id must remain gen1_modern_ui")
