@@ -5,6 +5,8 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
+Version 0.4.0 requires gen1recomp v0.1.51 or newer (and remains compatible
+with the released 1.x line).
 
 ## Install the latest release
 
@@ -33,9 +35,13 @@ when the listing is enabled there.
 ## Highlights
 
 - Responsive portrait and landscape menus with full safe-window layouts.
+- Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
+  clears the UI canvas when a supported modern presenter safely owns the whole
+  visible UI layer; nested or custom prompts retain their classic context.
 - Live rows and options, so other mods' menu entries remain visible.
-- Theme tokens, density controls, nearest-neighbor artwork, and sprite-pack
-  compatibility.
+- Seven built-in themes spanning modern/classic, light/dark, opaque/glass
+  styles, plus density controls and a public data-only theme API.
+- Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
 - Useful Dex and Gen 3 Box presenters with square grids and animated authored
   art support.
 - Battle presentation remains explicitly WIP and disabled by default.
@@ -50,8 +56,30 @@ authors. Sprite replacement packs such as **Gold_Silver_Sprites** are used when
 they are enabled. Unknown or unsupported screens remain vanilla instead of
 being forced through an incorrect layout.
 
+The render path stays inside released hooks. `render.zones` caches the live
+Game for the frame, `render.compose` lets downstream compositor hooks run and
+then optionally clears only `ctx.uiCanvas` before the normal engine composite,
+while `render.hud` draws the modern layer.
+The engine's virtual touch controls draw afterward, so they remain visible and
+interactive. If the presenter is unsupported or its surface option is off,
+the classic UI canvas is left untouched. The same fallback applies when a
+transparent modal is stacked over another visible menu or a custom capture
+prompt is active.
+
+One integration caveat: another mod that consumes or rewrites `ctx.uiCanvas`
+inside `render.compose` may observe a transparent UI canvas while **HIDE
+ORIGINAL UI** is enabled on a supported screen. Disable that option to retain
+the classic canvas, or coordinate hook priorities with the other compositor
+mod. The world canvas and the engine's normal scaling, effects, and composition
+path are not replaced.
+
 See [the handoff document](docs/GEN1_MODERN_UI_HANDOFF.md) for the compatibility
 contract, layout rules, testing notes, and release checklist.
+The [screen roadmap](docs/SCREEN_ROADMAP.md) tracks every audited built-in and
+installed-mod UI surface, its detection contract, priority, and fallback plan.
+The [input and interoperability audit](docs/INPUT_AND_INTEROP_AUDIT.md)
+documents the current engine pointer seams, safe direct-navigation rules, and
+the adapter plan for category bags and other replacement UIs.
 
 ## Requests and bug reports
 
@@ -71,6 +99,13 @@ npx --yes luaparse -q mods/gen1_modern_ui/main.lua
 python tools/modkit.py lint mods/gen1_modern_ui
 ```
 
+With LÖVE 11.5 installed, run the compositor regression from this repository:
+
+```powershell
+$env:GEN1_UI_MAIN = (Resolve-Path 'mods/gen1_modern_ui/main.lua').Path
+& 'C:\Program Files\LOVE\lovec.exe' tests/compose_suppression
+```
+
 To build the launcher-ready archive, double-click `sync_gen1_modern_ui.cmd` or
 run `Compress-Archive` over the contents of `mods/gen1_modern_ui`.
 
@@ -81,6 +116,6 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.1.1`) and push that commit to `main`. Each release includes a commit-based
+`0.4.1`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum.

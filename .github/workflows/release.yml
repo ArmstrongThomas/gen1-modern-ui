@@ -128,8 +128,11 @@ jobs:
 
           ## Compatibility and notes
 
-          - Targets released gen1recomp 0.x and 1.x builds through the public mod API.
+          - Requires gen1recomp v0.1.51 or newer (and remains compatible with 1.x).
           - Keeps vanilla input/state ownership and reads live rows from other mods.
+          - Hides supported classic UI canvases while preserving the independently rendered world.
+          - **HIDE ORIGINAL UI** can restore the classic layer as a compatibility fallback.
+          - Includes classic and modern themes in opaque and glass variants.
           - Supports active sprite replacement packs and nearest-neighbor artwork.
           - Battle UI remains WIP and disabled by default.
 

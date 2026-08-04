@@ -4,12 +4,19 @@ Last updated: 2026-08-03
 
 ## Current status
 
-`mods/gen1_modern_ui` is a standalone, visual-only overhaul for released
-gen1recomp builds. It uses the existing `render.hud` hook to draw a modern
-high-resolution overlay after the classic frame. It does not replace engine
-states, patch the executable, or require a custom engine checkout at runtime.
+`mods/gen1_modern_ui` 0.4.0 is a standalone, visual-only overhaul for released
+gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
+`render.hud` hooks to suppress the classic UI only when a modern presenter is
+ready, preserve normal engine composition, and draw a high-resolution overlay.
+It does not replace engine states, patch the executable, or require a custom
+engine checkout at runtime.
 Its manifest category is `UI`, so the released mod manager places it under the
 UI section alongside other presentation-focused mods.
+
+The comprehensive presenter inventory and delivery sequence live in
+[`SCREEN_ROADMAP.md`](SCREEN_ROADMAP.md). Keep this handoff focused on shipped
+behavior and release procedure; update the roadmap whenever a new screen ID,
+adapter, or installed-mod compatibility contract is discovered.
 
 The current slice presents `Menu`, `ListMenu`, `ChoiceBox`, `QuantityBox`,
 `OptionsMenu`, `PartyMenu`, `SummaryMenu`, `ManagerState`, Useful Dex's
@@ -19,13 +26,14 @@ panels, and messages, but it is WIP and disabled by default. Generic PC/Box and 
 while rich third-party drawing pipelines and content-specific metadata are not
 inferred. Dialogue and other data-heavy presenters remain future work.
 
-The manifest range, `>=0.0.0-0 <2.0.0`, covers released 0.x and 1.x builds.
-Keep that range aligned with the released mod API when publishing a new
-version; a source checkout is optional for development and testing only.
+The manifest range, `>=0.1.51 <2.0.0`, requires gen1recomp v0.1.51 or newer
+and covers later 0.x plus released 1.x builds. Keep that range aligned with the
+released render-hook API when publishing a new version; a source checkout is
+optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.2.0. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.4.0. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -39,24 +47,53 @@ pushes at an existing version are intentionally idempotent.
 
 ## Architecture
 
-1. The mod wraps `render.hud`, calls `next(game, viewport)` exactly once, then
-   inspects the live top state from `game.stack`.
-2. Supported states are recognized by their released UI classes or screen IDs.
+1. `render.zones` caches the live `Game` reference immediately before
+   composition, because `render.compose` does not receive it directly.
+2. `render.compose` checks the current top state and presenter option. It calls
+   lower-priority compose hooks first. If none takes over, **HIDE ORIGINAL UI**
+   (enabled by default) clears only `ctx.uiCanvas` when a supported presenter
+   owns the whole visible UI layer. Nested transparent modals and custom
+   capture prompts keep their classic context. The false result then falls
+   through to the normal engine compositor, so scaling, fades, zones, and
+   effects remain active.
+3. `render.hud` calls `next(game, viewport)` exactly once, then draws the modern
+   layer. The engine's `TouchControls` draw afterward and remain visible.
+4. Supported states are recognized by their released UI classes or screen IDs.
    Rows are read afresh from the state each frame, so third-party additions,
    labels, ordering, and values remain visible without rebuilding callbacks.
-3. The presenter draws directly in window coordinates using the safe viewport
+5. The presenter draws directly in window coordinates using the safe viewport
    when the runtime provides one (falling back to the full window); the
-   original 160x144 composite remains intact underneath.
-4. Theme tokens are merged with the built-in defaults. The presenter owns only
+   world and normal whole-window composition remain intact underneath.
+6. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
+
+Version 0.4.0 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
+backdrop is explicitly opaque; glass theme alpha is honored now that supported
+classic UI is suppressed independently.
 
 ## Compatibility contract
 
 - The hook chain is additive: `next` is called once before any overlay work.
+- **HIDE ORIGINAL UI** defaults on, but clears only `ctx.uiCanvas`, only for a
+  supported state whose presenter toggle is enabled. The world canvas is never
+  cleared by the mod.
+- If the option is off or any state/presenter/context prerequisite is missing,
+  the UI canvas is untouched. This is the safe fallback for unknown,
+  unfinished, disabled, nested-modal, custom-capture, and headless paths.
+- `render.compose` continues through the normal engine compositor and leaves
+  the chain unclaimed (`false`); `render.hud` supplies the replacement UI later.
+- Other mods that consume the same `ctx.uiCanvas` may observe it after it has
+  been cleared, depending on hook priority. Disable **HIDE ORIGINAL UI** or
+  coordinate priorities when combining incompatible compositor mods.
 - No state objects are wrapped or replaced, and no menu callback is invoked by
   the mod. Keyboard and controller behavior therefore remains vanilla.
 - Unknown custom screens and unsupported states are left unchanged; explicit
   adapters are limited to stable public screen contracts.
+- An unknown instance-level `draw` replacement keeps the classic canvas even
+  when its state still inherits a recognized menu class. The audited Modern
+  Bag wrapper is explicitly allowed because its current pocket title and live
+  rows remain represented by the generic list model.
 - Dynamic rows supplied by other mods are read from the current state on every
   HUD pass. The presenter does not mutate those arrays.
 - Optional row artwork uses `image`, `icon`, `thumbnail`, `sprite`, or `asset`
@@ -88,7 +125,17 @@ pushes at an existing version are intentionally idempotent.
 Modern keyboard/controller presentation is intentionally visual only: the
 original game continues to receive and process those inputs. Touch and click
 activation are deferred to a later milestone; this release does not capture
-pointer events, hide virtual controls, or add a second navigation path.
+pointer events, hide virtual controls, or add a second navigation path. The
+engine draws `TouchControls` after `render.hud`, above the modern layer.
+
+The upstream audit found no public gameplay pointer event or semantic input
+facade. A first experimental layer can poll pointer state from `input.step`,
+reuse presenter hitboxes, exclude virtual-control hits, and translate taps
+through the real state selection plus normal Game Boy actions. Reliable
+release support should request `input.pointer` and source-safe `mod.input`
+press/tap hooks. See
+[`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md) for source findings,
+flow-by-flow rules, and the installed Modern Bag/category compatibility audit.
 
 ## Theme API
 
@@ -111,9 +158,11 @@ return function(mod)
 end
 ```
 
-Themes may override semantic colors, typography sizes, spacing, radii, density,
-and motion tokens. The built-in presenter executes no theme drawing callbacks
-and ships no ROM-derived art.
+Themes may override semantic colors, typography sizes, spacing, radii, and
+density. The built-in presenter executes no theme drawing callbacks and ships
+no ROM-derived art. Built-in and third-party themes share one live options
+list; re-registering a namespaced ID refreshes its name and tokens without
+adding a duplicate choice.
 
 ## Responsive behavior
 
@@ -148,7 +197,11 @@ the mod to players.
 4. Run `python tools/modkit.py lint mods/gen1_modern_ui`. Strict validation
    additionally needs LuaJIT: `python tools/modkit.py validate
    gen1_modern_ui --strict`.
-5. Package for release with `python tools/modkit.py pack
+5. From the standalone repository, run the compositor regression with
+   `$env:GEN1_UI_MAIN = (Resolve-Path
+   'mods/gen1_modern_ui/main.lua').Path; &
+   'C:\Program Files\LOVE\lovec.exe' tests/compose_suppression`.
+6. Package for release with `python tools/modkit.py pack
    mods/gen1_modern_ui`. The archive root must contain `manifest.json` and
    `main.lua` directly.
 
@@ -160,14 +213,19 @@ must run on a developer machine or CI host with those tools installed.
 
 When extending the standalone mod:
 
-1. Use only released mod APIs (`render.hud`, `mod.ui`, `mod.options`, and
-   `mod.find`) unless the compatibility range is intentionally changed.
-2. Call the wrapped hook exactly once and keep all work in the draw pass;
-   never replace a state or invoke a third-party callback.
-3. Read dynamic state data defensively and leave unsupported screens vanilla.
-4. Exercise portrait and landscape windows, dynamic rows, theme registration,
+1. Use only released mod APIs (`render.zones`, `render.compose`, `render.hud`,
+   `mod.ui`, `mod.options`, and `mod.find`) unless the compatibility range is
+   intentionally changed.
+2. Call each wrapped hook exactly once, preserve normal composition, and never
+   replace a state or invoke a third-party callback.
+3. Clear only `ctx.uiCanvas`, guarded by the same supported/enabled check used
+   by the HUD presenter. Always retain the classic-UI fallback.
+4. Read dynamic state data defensively and leave unsupported screens vanilla.
+5. Exercise portrait and landscape windows, dynamic rows, theme registration,
    keyboard/controller navigation, and the unchanged virtual touch controls.
-5. Run syntax/lint/manifest checks and a LÖVE 11.5 smoke test before sharing.
+6. Test both **HIDE ORIGINAL UI** settings and coexistence with any other
+   `render.compose` consumer in scope.
+7. Run syntax/lint/manifest checks and a LÖVE 11.5 smoke test before sharing.
 
 ## Mobile QA notes
 

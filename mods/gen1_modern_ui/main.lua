@@ -2,9 +2,11 @@
 --
 -- A visual-only overhaul for the released gen1recomp mod API.  The game keeps
 -- ownership of input, state transitions, and menu callbacks; this mod reads
--- the live top menu state from the render.hud hook and paints a high-resolution
--- presentation over the classic 160x144 composite.  That keeps menu rows
--- supplied by other mods visible without replacing their state objects.
+-- the live top menu state and paints a high-resolution presentation through
+-- render.hud.  When enabled, render.compose clears the finished classic UI
+-- canvas before the engine composites it, leaving the independent world pass
+-- intact.  That keeps menu rows supplied by other mods visible without
+-- replacing their state objects or reimplementing the renderer.
 
 local MOD_ID = "gen1_modern_ui"
 local API_VERSION = 1
@@ -14,10 +16,10 @@ local DEFAULT_THEME = {
   name = "Gen1 Modern",
   version = 1,
   colors = {
-    backdrop = { 0.025, 0.045, 0.085, 0.82 },
+    backdrop = { 0.025, 0.045, 0.085, 0.98 },
     surface = { 0.075, 0.105, 0.17, 0.98 },
     surfaceRaised = { 0.12, 0.17, 0.27, 1 },
-    selected = { 0.20, 0.48, 0.78, 1 },
+    selected = { 0.18, 0.43, 0.72, 1 },
     accent = { 0.48, 0.86, 1.00, 1 },
     text = { 0.96, 0.98, 1.00, 1 },
     textMuted = { 0.62, 0.70, 0.82, 1 },
@@ -28,6 +30,102 @@ local DEFAULT_THEME = {
   spacing = { xs = 5, sm = 9, md = 13, lg = 18, xl = 26 },
   radii = { sm = 8, md = 16, lg = 22 },
   density = { rowHeight = 54, panelMax = 780 },
+}
+
+-- Built-in themes are intentionally data-only. They are merged once during
+-- installation, so switching palettes adds no render branches, canvases,
+-- shaders, fonts, or assets. The `default` ID remains stable for existing
+-- saves; every additional built-in uses the same namespace required of theme
+-- packs supplied by other mods.
+local BUILTIN_THEMES = {
+  {
+    id = "gen1_modern_ui:modern_glass",
+    name = "Modern Glass",
+    colors = {
+      backdrop = { 0.025, 0.045, 0.085, 0.38 },
+      surface = { 0.075, 0.105, 0.17, 0.84 },
+      surfaceRaised = { 0.12, 0.17, 0.27, 0.88 },
+      selected = { 0.18, 0.43, 0.72, 0.94 },
+      divider = { 0.25, 0.34, 0.50, 0.62 },
+    },
+  },
+  {
+    id = "gen1_modern_ui:classic_mono",
+    name = "Classic Mono",
+    colors = {
+      backdrop = { 0.035, 0.035, 0.030, 0.76 },
+      surface = { 0.96, 0.95, 0.89, 1 },
+      surfaceRaised = { 0.86, 0.85, 0.78, 1 },
+      selected = { 0.75, 0.77, 0.68, 1 },
+      accent = { 0.08, 0.09, 0.07, 1 },
+      text = { 0.055, 0.060, 0.050, 1 },
+      textMuted = { 0.30, 0.31, 0.27, 1 },
+      onAccent = { 0.98, 0.98, 0.93, 1 },
+      divider = { 0.48, 0.49, 0.43, 0.82 },
+    },
+    radii = { sm = 2, md = 4, lg = 6 },
+  },
+  {
+    id = "gen1_modern_ui:pocket_green",
+    name = "Pocket Green",
+    colors = {
+      backdrop = { 0.035, 0.075, 0.040, 0.78 },
+      surface = { 0.80, 0.84, 0.63, 1 },
+      surfaceRaised = { 0.68, 0.75, 0.50, 1 },
+      selected = { 0.70, 0.78, 0.49, 1 },
+      accent = { 0.10, 0.22, 0.12, 1 },
+      text = { 0.08, 0.13, 0.09, 1 },
+      textMuted = { 0.20, 0.28, 0.17, 1 },
+      onAccent = { 0.90, 0.95, 0.72, 1 },
+      divider = { 0.34, 0.44, 0.29, 0.90 },
+    },
+    radii = { sm = 2, md = 5, lg = 8 },
+  },
+  {
+    id = "gen1_modern_ui:midnight",
+    name = "Midnight",
+    colors = {
+      backdrop = { 0.018, 0.022, 0.040, 0.96 },
+      surface = { 0.035, 0.045, 0.075, 1 },
+      surfaceRaised = { 0.075, 0.090, 0.150, 1 },
+      selected = { 0.19, 0.12, 0.38, 1 },
+      accent = { 0.64, 0.47, 1.00, 1 },
+      text = { 0.96, 0.95, 1.00, 1 },
+      textMuted = { 0.69, 0.67, 0.80, 1 },
+      onAccent = { 0.05, 0.03, 0.10, 1 },
+      divider = { 0.22, 0.22, 0.34, 0.95 },
+    },
+  },
+  {
+    id = "gen1_modern_ui:midnight_glass",
+    name = "Midnight Glass",
+    colors = {
+      backdrop = { 0.018, 0.022, 0.040, 0.42 },
+      surface = { 0.035, 0.045, 0.075, 0.84 },
+      surfaceRaised = { 0.075, 0.090, 0.150, 0.88 },
+      selected = { 0.19, 0.12, 0.38, 0.94 },
+      accent = { 0.64, 0.47, 1.00, 1 },
+      text = { 0.96, 0.95, 1.00, 1 },
+      textMuted = { 0.69, 0.67, 0.80, 1 },
+      onAccent = { 0.05, 0.03, 0.10, 1 },
+      divider = { 0.22, 0.22, 0.34, 0.65 },
+    },
+  },
+  {
+    id = "gen1_modern_ui:frost",
+    name = "Frost",
+    colors = {
+      backdrop = { 0.055, 0.090, 0.140, 0.45 },
+      surface = { 0.96, 0.98, 1.00, 1 },
+      surfaceRaised = { 0.88, 0.93, 0.98, 1 },
+      selected = { 0.70, 0.84, 1.00, 1 },
+      accent = { 0.04, 0.38, 0.66, 1 },
+      text = { 0.055, 0.095, 0.160, 1 },
+      textMuted = { 0.28, 0.35, 0.45, 1 },
+      onAccent = { 0.98, 1.00, 1.00, 1 },
+      divider = { 0.58, 0.68, 0.80, 0.82 },
+    },
+  },
 }
 
 local function copy(value)
@@ -54,12 +152,11 @@ local function setColor(c)
   love.graphics.setColor(c[1], c[2], c[3], c[4] or 1)
 end
 
--- Classic screens remain underneath the visual overlay. Keep the modern
--- backdrop almost opaque so their text and borders do not ghost through the
--- presenter, while retaining a small amount of world ambience.
+-- Supported classic UI is removed independently by render.compose, so theme
+-- alpha is safe to honor here. Opaque palettes hide the world; glass palettes
+-- intentionally retain it without exposing the classic menu underneath.
 local function setBackdrop(theme)
-  local c = theme.colors.backdrop
-  love.graphics.setColor(c[1], c[2], c[3], math.max(c[4] or 1, 0.98))
+  setColor(theme.colors.backdrop)
 end
 
 local function clamp(value, lo, hi)
@@ -328,6 +425,9 @@ return function(mod)
   local filteredImages = setmetatable({}, { __mode = "k" })
   local animatedImages = setmetatable({}, { __mode = "k" })
   local spriteAnimationOn = true
+  -- render.compose does not receive the Game object.  render.zones caches the
+  -- live singleton immediately before it so both hooks inspect one frame.
+  local currentGame
 
   local function prepareImage(image)
     if not image or filteredImages[image] then return image end
@@ -471,11 +571,16 @@ return function(mod)
     theme.id = spec.id
     themes[spec.id] = theme
     for _, choice in ipairs(themeChoices) do
-      if choice[2] == spec.id then return spec.id end
+      if choice[2] == spec.id then
+        choice[1] = theme.name or spec.id
+        return spec.id
+      end
     end
     themeChoices[#themeChoices + 1] = { theme.name or spec.id, spec.id }
     return spec.id
   end
+
+  for _, theme in ipairs(BUILTIN_THEMES) do registerTheme(theme) end
 
   mod.exports = {
     version = API_VERSION,
@@ -489,6 +594,7 @@ return function(mod)
     { key = "density", label = "UI DENSITY", type = "choice",
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
+    { key = "hideOriginalUi", label = "HIDE ORIGINAL UI", type = "toggle", default = true },
     -- The battle presenter remains available for testing, but is opt-in until
     -- its responsive layout is finished.  Keeping the option visible makes
     -- the WIP status explicit without disrupting the game's native battle UI.
@@ -535,6 +641,64 @@ return function(mod)
     local kind = kindFor(top)
     if kind then return top, kind end
     return nil, nil
+  end
+
+  -- Keep availability checks in one place so render.compose only removes the
+  -- classic UI on frames that render.hud will actually replace.  In
+  -- particular, the unfinished battle presenter remains opt-in and never
+  -- blanks the stable native battle UI by default.
+  local function presenterEnabled(kind)
+    if kind == "battle" then return option("battleUiWip", false) == true end
+    if kind == "mod_manager" then return option("managerUi", true) ~= false end
+    if kind == "gen3_box" or kind == "dex_entry" or kind == "summary"
+        or kind == "party" then
+      return option("pokemonUi", true) ~= false
+    end
+    return option("menuUi", true) ~= false
+  end
+
+  -- Some mods keep a standard Menu/ListMenu state but replace `draw` on the
+  -- instance. That custom pipeline may contain tabs, badges, previews, or
+  -- prompts which cannot be recovered from ordinary rows, so suppressing it
+  -- would silently lose UI. Modern Bag is an explicit installed integration:
+  -- it delegates to ListMenu, exposes its current pocket through the title,
+  -- and rebuilds ordinary live rows that this presenter already consumes.
+  local function customDrawModeled(state, kind)
+    return kind == "list" and state.screenId == "BagMenu"
+      and type(state.modernBag) == "table"
+  end
+
+  local function hasUnknownDrawOverride(state, kind)
+    local ownDraw = rawget(state, "draw")
+    if type(ownDraw) ~= "function" then return false end
+    local class = classOf(state)
+    if type(class) == "table" and ownDraw == rawget(class, "draw") then
+      return false
+    end
+    return not customDrawModeled(state, kind)
+  end
+
+  -- Clearing ctx.uiCanvas removes every visible classic state, not just the
+  -- top one.  Only do that when the top presenter owns the whole visible UI
+  -- layer.  Transparent choice/quantity/submenu states stacked over another
+  -- menu keep their classic context until a stack-aware modern presenter can
+  -- draw both layers.  Custom input-capture modes likewise retain vanilla UI.
+  local function suppressionSafe(game, state, kind)
+    if not (game and state and kind and presenterEnabled(kind)) then return false end
+    if state.capture then return false end
+    if hasUnknownDrawOverride(state, kind) then return false end
+    local stack = game.stack
+    local states = stack and stack.states
+    if type(states) ~= "table" or type(stack.visibleBase) ~= "function" then
+      return false
+    end
+    local ok, base = pcall(stack.visibleBase, stack)
+    if not ok or type(base) ~= "number" then return false end
+    for index = base, #states do
+      local visible = states[index]
+      if visible ~= state and visible ~= game.overworld then return false end
+    end
+    return true
   end
 
   local function optionValue(game, row)
@@ -617,7 +781,10 @@ return function(mod)
       for _, item in ipairs(state.items or {}) do
         rows[#rows + 1] = {
           label = item.label or item.name or "",
-          value = item.right ~= nil and item.right or item.value,
+          -- `value` is commonly an opaque callback payload, item ID, or table.
+          -- Only render fields that a row explicitly declares as presentation
+          -- metadata; this keeps third-party list rows from leaking internals.
+          value = item.right ~= nil and item.right or item.displayValue,
           enabled = item.enabled,
           marker = item.ball,
           image = imageCandidate(item),
@@ -1788,16 +1955,11 @@ return function(mod)
 
   local function drawModern(game, state, kind, viewport)
     local theme = responsiveTheme(currentTheme(), viewport)
+    if not presenterEnabled(kind) then return end
     if kind == "battle" then
-      if option("battleUiWip", false) == true then drawBattle(game, state, viewport, theme) end
+      drawBattle(game, state, viewport, theme)
       return
     end
-    if kind == "mod_manager" and option("managerUi", true) == false then return end
-    if (kind == "gen3_box" or kind == "dex_entry" or kind == "summary" or kind == "party")
-        and option("pokemonUi", true) == false then return end
-    if kind ~= "mod_manager" and kind ~= "gen3_box" and kind ~= "dex_entry"
-        and kind ~= "summary" and kind ~= "party"
-        and option("menuUi", true) == false then return end
     if kind == "mod_manager" then
       drawManager(game, state, viewport, theme)
       return
@@ -1851,10 +2013,41 @@ return function(mod)
     love.graphics.pop()
   end
 
-  -- render.hud is part of the released API: it runs after the classic
-  -- composite, so the overlay can use the entire window while the original
-  -- state continues to own all keyboard/controller behavior and callbacks.
+  -- render.zones is the last state-aware render hook before endFrame.  Cache
+  -- its Game reference so render.compose can inspect this exact frame's top
+  -- state without requiring engine internals or relying on a previous frame.
+  mod.hooks:wrap("render.zones", function(next, game, zones)
+    currentGame = game
+    return next(game, zones)
+  end, 100)
+
+  -- render.compose receives the already-drawn world and UI canvases before
+  -- the engine performs its normal whole-window composite.  Clearing only the
+  -- UI canvas hides the classic interface while still letting the engine do
+  -- its own world scaling, palette zones, fades, post-processing, and display
+  -- effects.  Downstream compose hooks see the untouched canvas first; only
+  -- the normal fall-through path is cleared, so another mod that takes over
+  -- the whole window can still use the original UI if it needs it.
+  mod.hooks:wrap("render.compose", function(next, renderer, ctx)
+    local handled = next(renderer, ctx)
+    local game = currentGame
+    local state, kind = topSupported(game)
+    local hide = option("hideOriginalUi", true) ~= false
+    if handled ~= true and hide and suppressionSafe(game, state, kind)
+        and love and love.graphics and ctx and ctx.uiCanvas then
+      love.graphics.push("all")
+      love.graphics.setCanvas(ctx.uiCanvas)
+      love.graphics.clear(0, 0, 0, 0)
+      love.graphics.pop()
+    end
+    return handled
+  end, 100)
+
+  -- render.hud runs after the normal composite and before touch controls, so
+  -- the modern layer can use the entire window while the original state keeps
+  -- ownership of keyboard/controller behavior and callbacks.
   mod.hooks:wrap("render.hud", function(next, game, viewport)
+    currentGame = game
     next(game, viewport)
     if not (love and love.graphics) then return end
     spriteAnimationOn = option("spriteAnimation", true) ~= false

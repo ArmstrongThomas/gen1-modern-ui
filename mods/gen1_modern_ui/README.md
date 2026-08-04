@@ -29,8 +29,9 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-The manifest targets `>=0.0.0-0 <2.0.0`, covering released 0.x and 1.x builds.
-The packaged mod does not require a custom engine checkout or a patched binary.
+Version 0.4.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+releases plus the released 1.x line. The packaged mod does not require a
+custom engine checkout or a patched binary.
 
 ## Input and compatibility
 
@@ -51,7 +52,33 @@ The packaged mod does not require a custom engine checkout or a patched binary.
   use a generic `Menu`/`ListMenu` shell receive the generic list overlay;
   content-specific metadata such as money, shop totals, or a third-party
   custom drawing pipeline is not inferred. Battle states receive a separate
-  responsive status/action presenter; dialogue remains vanilla for now.
+  responsive status/action presenter. Stack-aware dialogue and attached
+  choice/quantity modals are the next presentation-layer prerequisite.
+
+### Original UI suppression
+
+**HIDE ORIGINAL UI** defaults on. Each frame, `render.zones` caches the live
+Game, then `render.compose` checks whether the top state has a supported,
+enabled presenter that owns the whole visible UI layer. It lets downstream
+compositor hooks inspect the untouched canvases first; only when none takes
+over does it clear `ctx.uiCanvas`. Transparent modals over another visible
+menu and custom input-capture prompts retain their classic context. The mod
+never clears the world canvas. The hook leaves the normal engine scaling,
+palette zones, fades, post-processing, and display effects in place.
+`render.hud` then draws the modern presentation.
+
+If the state is unsupported, its surface toggle is off, graphics/context data
+is unavailable, or **HIDE ORIGINAL UI** is disabled, the UI canvas is left
+unchanged. This is the safe fallback and prevents an unfinished or disabled
+presenter from blanking the classic interface. The engine draws
+`TouchControls` after `render.hud`, so mobile controls remain above the modern
+layer and continue to own touch input.
+
+Mods that also inspect, clear, or replace `ctx.uiCanvas` inside
+`render.compose` need extra care: on supported frames they may receive or leave
+a transparent classic UI canvas while suppression is enabled. Disable **HIDE
+ORIGINAL UI** when combining with an incompatible compositor, or coordinate
+hook priorities so both mods see the canvas state they expect.
 
 ### Images
 
@@ -116,9 +143,26 @@ normal play while its responsive layout is stabilized. The mod options expose
 independent toggles for the battle overlay, generic
 menus, PokÃ©mon screens, the mod manager, and sprite animation. Turning a
 surface off leaves the original game presentation visible; turning sprite
-animation off freezes animated sheets on their first frame.
+animation off freezes animated sheets on their first frame. **HIDE ORIGINAL
+UI** is independent of those surface toggles and defaults on; it suppresses the
+classic UI only when the corresponding modern presenter is enabled.
 
 ## Theme packs
+
+The UI theme option ships with seven lightweight built-ins:
+
+- **Gen1 Modern** — the stable, opaque default.
+- **Modern Glass** — the default palette with the world visible beneath it.
+- **Classic Mono** — a crisp paper-and-ink take on the original UI.
+- **Pocket Green** — a classic handheld-inspired green palette.
+- **Midnight** and **Midnight Glass** — modern violet dark variants.
+- **Frost** — a bright modern theme with a translucent cool backdrop.
+
+Opaque themes prioritize maximum contrast. Glass themes intentionally show
+the independently rendered world through their backdrop and panels; they work
+best with **HIDE ORIGINAL UI** enabled so the classic menu is removed first.
+All themes are token tables merged once at startup and add no assets, shaders,
+canvases, or per-theme rendering branches.
 
 Theme mods should depend on `gen1_modern_ui`, then register a data-only token
 pack from their entry chunk:
@@ -138,9 +182,8 @@ return function(mod)
 end
 ```
 
-Themes may override semantic colors, typography sizes, spacing, radii,
-density, and motion tokens. Drawing callbacks are intentionally not part of
-the theme contract.
+Themes may override semantic colors, typography sizes, spacing, radii, and
+density. Drawing callbacks are intentionally not part of the theme contract.
 
 The built-in options expose the selected theme and row density in the mod
 options menu. Theme IDs other than `default` must be namespaced with the
