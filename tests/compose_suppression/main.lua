@@ -43,6 +43,7 @@ function love.load()
   local summaryClass = { draw = function() end }
   local dexEntryClass = { draw = function() end }
   local managerClass = { draw = function() end }
+  local linkClass = { draw = function() end, isOpaque = true }
   local overworldClass = { draw = function() end, drawUI = function() end }
   local titleClass = { draw = function() end, isOpaque = true }
   local statsLibrary = {
@@ -63,6 +64,7 @@ function love.load()
   package.loaded["src.ui.SummaryMenu"] = summaryClass
   package.loaded["src.ui.DexEntryMenu"] = dexEntryClass
   package.loaded["src.mods.ManagerState"] = managerClass
+  package.loaded["src.link.LinkState"] = linkClass
   package.loaded["src.world.OverworldController"] = overworldClass
   package.loaded["src.ui.TitleState"] = titleClass
   package.loaded["src.pokemon.Stats"] = statsLibrary
@@ -165,6 +167,20 @@ function love.load()
     "ui.state.decorate hook registered")
   check(type(eventListeners["screen.pushed"]) == "function",
     "screen lifecycle visibility listener registered")
+  check(type(eventListeners["screen.popped"]) == "function",
+    "screen lifecycle palette restore listener registered")
+
+  local titleGame = { stack = { states = {} } }
+  local titleState = setmetatable({}, { __index = titleClass })
+  local titleMenu = setmetatable({ game = titleGame,
+    titleUiBox = { 0, 0, 12, 3 } }, { __index = menuClass })
+  titleGame.stack.states = { titleState, titleMenu }
+  eventListeners["screen.pushed"]({ state = titleMenu })
+  check(titleMenu.titleUiBox[3] == 20 and titleMenu.titleUiBox[4] == 18,
+    "title menu expands its palette zone while modern menu is active")
+  eventListeners["screen.popped"]({ state = titleMenu })
+  check(titleMenu.titleUiBox[3] == 12 and titleMenu.titleUiBox[4] == 3,
+    "title menu restores its original palette zone on close")
 
   local state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
     { __index = optionsClass })
@@ -409,7 +425,9 @@ function love.load()
   -- Title art shares the UI canvas with its private main Menu. The decorator
   -- suppresses only that ordinary Menu draw; compose must preserve the whole
   -- canvas so the title background and artwork cannot become a black block.
-  local title = setmetatable({ screenId = "TitleState" }, { __index = titleClass })
+  -- Some v0.1.68 title instances omit screenId; class identity is the
+  -- stable fallback used by the mod's title suppression path.
+  local title = setmetatable({}, { __index = titleClass })
   game.stack.states = { title }
   local titleMenu = setmetatable({ items = { { label = "NEW GAME" } }, index = 1,
     titleUiBox = { 0, 0, 0, 0 } }, { __index = menuClass })
@@ -428,6 +446,13 @@ function love.load()
   titleMenu:draw()
   check(menuDraws == 1,
     "title Menu restores its classic draw when an unknown overlay blocks presentation")
+
+  local link = setmetatable({ stage = "menu", index = 1 },
+    { __index = linkClass })
+  game.stack.states = { overworld, link }
+  fill()
+  compose(false)
+  check(alpha() == 0, "released LinkState is modernized by the menu presenter")
 
   local bag = setmetatable({ screenId = "BagMenu", items = {}, index = 1 },
     { __index = listClass })

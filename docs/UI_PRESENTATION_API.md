@@ -6,13 +6,15 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.5.0 uses four released hooks:
+Version 0.6.8 uses four released hooks plus a narrowly scoped class wrapper:
 
-1. `ui.state.decorate` identifies only the ordinary Menu opened directly over
-   released `TitleState`. While its complete stack is supported, the decorator
-   skips that Menu's classic draw so the shared title-art canvas can remain
-   intact. It never replaces update/input/callback behavior, and restores the
-   original draw whenever an unknown overlay is visible.
+1. The ordinary title `Menu:draw` method is wrapped using its published
+   `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
+   is also applied to the decorated instance. While the complete title stack
+   is supported, the wrapper skips only the native title rows so the shared
+   title-art canvas remains intact. It never replaces update/input/callback
+   behavior, and restores the original draw whenever an unknown overlay is
+   visible.
 
 2. `render.zones` caches the live `Game` reference for the current frame. This
    is needed because `render.compose` receives a renderer/context, not `Game`.
@@ -73,6 +75,13 @@ that predate `layoutStyle`; explicit FLOATING always wins, while an older
 save whose adaptive setting is still paired with `desktopFloating=false`
 keeps its previous full treatment until that legacy toggle is enabled. This
 changes only HUD drawing, never the engine viewport or input coordinates.
+
+The title menu is a special shared-canvas case. While the modern title menu is
+active, its `titleUiBox` palette marker is temporarily expanded to the full
+20x18 title canvas. This keeps the logo, version ribbon, and title PokÃ©mon on a
+single deliberate grayscale treatment instead of leaving the native menu's
+partial true-color zone behind. The marker is restored when the menu closes or
+when either classic-UI suppression toggle is disabled.
 
 Opaque released menu states normally prevent the overworld from being drawn at
 all, so clearing `ctx.uiCanvas` alone cannot reveal it. While a supported
@@ -147,10 +156,17 @@ The current presenter recognizes these released classes or screen IDs:
   `enemy`, move, and message fields for a responsive status/action overlay.
 - `SummaryMenu`: reads the selected Pokémon and summary page.
 
+`src.link.LinkState` stages (LAN, online, tournament, connection, trade, and
+battle handshakes) use a draw-only modern adapter while LinkState retains all
+networking and input ownership.
+
 The `minimalUi` option does not change these models. It selects a lower-detail
 presentation that keeps the same live rows, selection, prompts, and callbacks
 while omitting optional preview/detail panes, then measures the remaining
 content again so hidden regions do not leave empty columns or oversized cards.
+
+Dialogue panels reserve up to five wrapped lines plus their prompt strip, with
+the same typewriter reveal and callback ownership as the released TextBox.
 
 `panelOpacity` controls backdrop and filled-surface alpha independently from
 `foregroundOpacity`, which controls text, borders, dividers, and accents. Both
@@ -177,6 +193,16 @@ complete single-frame pictures and are not split. Generic image descriptors
 can opt into sheet animation with `frames = 2` or an `animation` table; all
 image paths use nearest filtering and preserve aspect ratio when fitted into a
 row or card.
+
+PokePCFollowers registers six-frame `follower_###.png` sheets as one-frame
+icon descriptors. The presenter recognizes that path family and crops a 16px
+frame for modern icons and previews; the follower mod remains governed by the
+normal mod manager enable state.
+
+Gen1 Modern UI settings are presented in expandable Appearance, Navigation,
+Presenters, and Advanced categories. This is a presentation layer over the
+unchanged flat option schema, so option keys, stored values, and callbacks
+remain compatible with existing saves and tools.
 
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
@@ -250,6 +276,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.5.0 targets released game
+- Do not assume a custom engine build: version 0.6.8 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

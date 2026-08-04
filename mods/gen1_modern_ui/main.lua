@@ -236,6 +236,7 @@ local function titleFor(Strings, state, kind)
     RunModeOptions = "RUN MODE",
     ShinyPokemonOptions = "SHINY POKEMON",
     QualityOfLife = "QUALITY OF LIFE",
+    LinkState = "LINK",
   }
   local title = state and state.title or names[state and state.screenId]
   if state and state._gen1ModMenus and not state.title then
@@ -244,7 +245,7 @@ local function titleFor(Strings, state, kind)
   if not title then
     title = ({ menu = "MENU", list = "LIST", choice = "CHOOSE",
                quantity = "QUANTITY", options = "OPTIONS",
-               mod_options = "OPTIONS",
+               mod_options = "OPTIONS", link = "LINK",
                party = "POKéMON", summary = "SUMMARY" })[kind]
   end
   if kind == "choice" or (kind == "menu" and not (state and state.title)
@@ -596,6 +597,34 @@ return function(mod)
     return nil
   end
 
+  -- PokePCFollowers registers its 6-frame overworld sheets as `frames = 1`
+  -- because the engine's icon registry expects one image descriptor.  The
+  -- resulting 16x96 sheet must still be cropped to one 16px frame or it
+  -- appears as a paper-thin sliver in modern party/box rows. Keep this
+  -- compatibility rule path-scoped so unrelated authored tall artwork is
+  -- never silently reinterpreted.
+  local function knownSheetOptions(value, image, staticFrame)
+    local raw = value
+    if type(raw) == "table" then
+      raw = raw.image or raw.texture or raw.path or raw.asset
+    end
+    if type(raw) ~= "string" then return nil end
+    local path = raw:lower()
+    if not path:find("follower_") then return nil end
+    local okW, width = pcall(function() return image:getWidth() end)
+    local okH, height = pcall(function() return image:getHeight() end)
+    if not okW or not okH or not width or not height then return nil end
+    local frames, axis
+    if width == 16 and height >= 32 and height % 16 == 0 then
+      frames, axis = height / 16, "vertical"
+    elseif height == 16 and width >= 32 and width % 16 == 0 then
+      frames, axis = width / 16, "horizontal"
+    end
+    if not frames or frames < 2 then return nil end
+    return { animated = true, frames = frames, axis = axis,
+      staticFrame = staticFrame }
+  end
+
   local function option(key, default)
     local value = mod.options:get(key)
     return value == nil and default or value
@@ -767,6 +796,11 @@ return function(mod)
   local dexEntryClass = optionalClass("src.ui.DexEntryMenu")
   local managerClass = optionalClass("src.mods.ManagerState")
   local titleClass = optionalClass("src.ui.TitleState")
+  -- LinkState is a released custom state rather than a Menu/ListMenu.  Keep
+  -- it optional so older clients simply fall back to their native link UI.
+  local linkClass = optionalClass("src.link.LinkState")
+  local linkCodeEntryClass = optionalClass("src.link.CodeEntry")
+  local linkNetClass = optionalClass("src.link.Net")
   local statsLibrary = optionalClass("src.pokemon.Stats")
   -- The released overworld is a singleton class table rather than a normal
   -- instance. Its drawUI method is therefore a legitimate raw field. Capture
@@ -777,6 +811,49 @@ return function(mod)
   -- over the overworld.
   local overworldClass = optionalClass("src.world.OverworldController")
   local overworldDraw = overworldClass and rawget(overworldClass, "draw")
+
+  local function isTitleState(state)
+    if not (state and titleClass) then return false end
+    -- v0.1.68 can omit the screenId stamp on the title instance while still
+    -- exposing the released TitleState class. Accept either identity signal.
+    return state.screenId == "TitleState"
+      or inherits(classOf(state), titleClass)
+  end
+
+  local function isLinkState(state)
+    return linkClass and state and inherits(classOf(state), linkClass) or false
+  end
+
+  -- TitleState's palette pass honors the Menu `titleUiBox` as a true-color
+  -- zone. The native box covers only its left-side tile rectangle, which is
+  -- useful for the classic menu but leaves a modern floating menu over a
+  -- partly monochrome title. When our title menu is active, expand that zone
+  -- to the complete 20x18 title canvas so the artwork behind the panel has a
+  -- deliberate, uniform grayscale treatment. The original box is restored as
+  -- soon as the menu is popped or either presentation toggle is disabled.
+  local function syncTitleMenuPalette(game, state)
+    if not (game and state and menuClass
+        and inherits(classOf(state), menuClass)
+        and type(state.titleUiBox) == "table") then
+      return
+    end
+    local stack = game.stack and game.stack.states
+    local titleOnStack = false
+    for _, visible in ipairs(type(stack) == "table" and stack or {}) do
+      if isTitleState(visible) then titleOnStack = true break end
+    end
+    local modern = titleOnStack and option("hideOriginalUi", true) ~= false
+      and option("menuUi", true) ~= false
+    if modern then
+      if not state._gen1OriginalTitleUiBox then
+        state._gen1OriginalTitleUiBox = copy(state.titleUiBox)
+      end
+      state.titleUiBox = { 0, 0, 20, 18 }
+    elseif state._gen1OriginalTitleUiBox then
+      state.titleUiBox = state._gen1OriginalTitleUiBox
+      state._gen1OriginalTitleUiBox = nil
+    end
+  end
 
   local function openModernOptions(game)
     if not (game and mod.ui and type(mod.ui.push) == "function") then return end
@@ -995,6 +1072,89 @@ return function(mod)
     return nil
   end
 
+  -- The UI settings schema is intentionally kept flat for the engine's
+  -- compatibility API.  The modern presenter adds a light category layer on
+  -- top: category rows expand/collapse in place, while the original option
+  -- descriptors (and their callbacks) remain untouched underneath.
+  local OPTION_CATEGORY_ORDER = {
+    { id = "appearance", label = "APPEARANCE",
+      description = "Theme, layout, density, transparency, and presentation detail." },
+    { id = "navigation", label = "NAVIGATION",
+      description = "Shortcuts and Start-menu organization." },
+    { id = "presenters", label = "PRESENTERS",
+      description = "Choose which modern screen families replace the classic UI." },
+    { id = "advanced", label = "ADVANCED",
+      description = "Compatibility and reset controls." },
+  }
+  local OPTION_CATEGORY_BY_KEY = {
+    theme = "appearance", density = "appearance", layoutStyle = "appearance",
+    panelOpacity = "appearance", foregroundOpacity = "appearance",
+    minimalUi = "appearance", hideOriginalUi = "appearance",
+    startMenuShortcut = "navigation", startMenuModMenus = "navigation",
+    startMenuFastJump = "navigation",
+    dialogueUi = "presenters", menuUi = "presenters", pokemonUi = "presenters",
+    managerUi = "presenters", spriteAnimation = "presenters", battleUiWip = "presenters",
+    desktopFloating = "advanced", __reset = "advanced",
+  }
+
+  local function ensureOptionCategories(state)
+    if not (state and state.screen == "options" and state.currentMod
+        and state.currentMod.id == MOD_ID and type(state.optionRows) == "table") then
+      return
+    end
+    if state._gen1OptionRowsActive == state.optionRows then return end
+    local source = state.optionRows
+    local groups = {}
+    for _, category in ipairs(OPTION_CATEGORY_ORDER) do
+      groups[category.id] = { spec = category, rows = {} }
+    end
+    for _, row in ipairs(source) do
+      local id = row and row.id
+      -- desktopFloating is a v0.5 migration field. It remains persisted and
+      -- resettable, but hiding it from the normal list removes one redundant
+      -- row from every install.
+      if id ~= "desktopFloating" then
+        local category = OPTION_CATEGORY_BY_KEY[id] or "advanced"
+        groups[category].rows[#groups[category].rows + 1] = row
+      end
+    end
+    state._gen1OptionRowsSource = source
+    state._gen1OptionGroups = groups
+    state._gen1OptionExpanded = state._gen1OptionExpanded or {
+      appearance = true, navigation = false, presenters = false, advanced = false,
+    }
+    local function rebuild(preferred)
+      local flattened = {}
+      for _, category in ipairs(OPTION_CATEGORY_ORDER) do
+        local group = groups[category.id]
+        if #group.rows > 0 then
+          flattened[#flattened + 1] = {
+            id = "__category:" .. category.id, category = true,
+            label = category.label,
+            value = function()
+              return state._gen1OptionExpanded[category.id] and "OPEN" or "CLOSED"
+            end,
+            activate = function()
+              state._gen1OptionExpanded[category.id] =
+                not state._gen1OptionExpanded[category.id]
+              rebuild(state.cursor)
+            end,
+            description = category.description,
+          }
+          if state._gen1OptionExpanded[category.id] then
+            for _, row in ipairs(group.rows) do flattened[#flattened + 1] = row end
+          end
+        end
+      end
+      state.optionRows = flattened
+      state._gen1OptionRowsActive = flattened
+      state.cursor = clamp(preferred or state.cursor or 1, 1, math.max(1, #flattened))
+      state.scroll = 0
+    end
+    state._gen1RebuildOptionRows = rebuild
+    rebuild()
+  end
+
   local function optionState(game)
     local top = game and game.stack and game.stack.top and game.stack:top()
     if not (top and top.screenId == "ManagerState" and top.screen == "options"
@@ -1039,7 +1199,7 @@ return function(mod)
     end
     if not pendingPress(input, "select") then return end
     local row = state.optionRows[state.cursor]
-    local description = row and optionDescription(row.id)
+    local description = row and (row.description or optionDescription(row.id))
     if not description or description == "" then return end
     state._gen1OptionDescription = {
       title = row.label or row.id,
@@ -1054,6 +1214,8 @@ return function(mod)
       return result
     end
     if syncWorldVisibility then syncWorldVisibility(game) end
+    local topAfter = game.stack and game.stack.top and game.stack:top()
+    ensureOptionCategories(topAfter)
     local input = game.input
     updateModMenuPin(game, input)
     updateOptionHelp(game, input)
@@ -1164,6 +1326,7 @@ return function(mod)
     if not state then return nil end
     local id = state.screenId
     local class = classOf(state)
+    if isLinkState(state) then return "link" end
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
          state.kind == "link" or state.enemy or state.player) then
@@ -1208,6 +1371,7 @@ return function(mod)
   -- blanks the stable native battle UI by default.
   local function presenterEnabled(kind)
     if kind == "battle" then return option("battleUiWip", false) == true end
+    if kind == "link" then return option("menuUi", true) ~= false end
     if kind == "text" or kind == "choice" or kind == "quantity" then
       return option("dialogueUi", true) ~= false
     end
@@ -1229,6 +1393,7 @@ return function(mod)
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   local function customDrawModeled(state, kind)
+    if kind == "link" and isLinkState(state) then return true end
     if kind == "mod_options" and isOptionRowsScreen(state) then return true end
     if kind == "bag" and state.screenId == "BagMenu"
         and type(state.modernBag) == "table" then return true end
@@ -1241,6 +1406,7 @@ return function(mod)
   end
 
   local function expectedClass(kind)
+    if kind == "link" then return linkClass end
     if kind == "menu" then return menuClass end
     if kind == "box_root" then return menuClass end
     if kind == "list" or kind == "pokedex" or kind == "bag"
@@ -1380,7 +1546,15 @@ return function(mod)
     mod.events:on("screen.pushed", function(payload)
       local state = payload and payload.state
       local game = state and state.game or currentGame
+      syncTitleMenuPalette(game, state)
       syncStateVisibility(game, state)
+    end, 90)
+    mod.events:on("screen.popped", function(payload)
+      local state = payload and payload.state
+      if state and state._gen1OriginalTitleUiBox then
+        state.titleUiBox = state._gen1OriginalTitleUiBox
+        state._gen1OriginalTitleUiBox = nil
+      end
     end, 90)
   end
 
@@ -1421,8 +1595,7 @@ return function(mod)
         elseif type(rawget(visible, "drawUI")) == "function" then
           return {}, false
         end
-      elseif titleClass and visible.screenId == "TitleState"
-          and inherits(classOf(visible), titleClass) then
+      elseif isTitleState(visible) then
         -- The title art and its Menu share uiCanvas. The title-menu draw is
         -- suppressed independently by ui.state.decorate below, so preserve
         -- the canvas here rather than erasing the logo and title Pokémon.
@@ -1445,6 +1618,39 @@ return function(mod)
       end
     end
     return layers, #layers > 0, not preserveUiCanvas
+  end
+
+  -- Current released clients do not expose a state-decoration hook; the
+  -- title menu is drawn directly through Menu:draw. Wrap that class method
+  -- once and use the same stack proof as render.compose. This is restricted
+  -- to TitleState's published titleUiBox marker, so ordinary menus and
+  -- third-party Menu subclasses retain their native renderer.
+  if menuClass and type(rawget(menuClass, "draw")) == "function"
+      and not rawget(menuClass, "_gen1ModernTitleClassDraw") then
+    local nativeMenuDraw = rawget(menuClass, "draw")
+    menuClass._gen1ModernTitleClassDraw = true
+    menuClass.draw = function(self, ...)
+      local game = self.game or currentGame
+      syncTitleMenuPalette(game, self)
+      if type(self.titleUiBox) == "table"
+          and option("hideOriginalUi", true) ~= false
+          and option("menuUi", true) ~= false then
+        local stack = game and game.stack and game.stack.states
+        local titleOnStack = false
+        for _, visible in ipairs(type(stack) == "table" and stack or {}) do
+          if isTitleState(visible) then titleOnStack = true break end
+        end
+        if titleOnStack then
+          local layers, complete = presentationStack(game)
+          if complete then
+            for _, layer in ipairs(layers) do
+              if layer.state == self then return end
+            end
+          end
+        end
+      end
+      return nativeMenuDraw(self, ...)
+    end
   end
 
   -- TitleState draws its artwork and its native Menu into the same 160x144
@@ -1586,6 +1792,7 @@ return function(mod)
     local rawRows = {}
     local screen = state.screen or "list"
     if screen == "options" then
+      ensureOptionCategories(state)
       rawRows = state.optionRows or {}
     elseif type(state.rowsForScreen) == "function" then
       local ok, result = pcall(state.rowsForScreen, state)
@@ -1608,6 +1815,7 @@ return function(mod)
     for _, raw in ipairs(rawRows) do
       local row = { label = raw.label or "", source = raw,
                     enabled = raw.enabled, header = raw.header,
+                    category = raw.category, id = raw.id,
                     mod = raw.mod, profile = raw.profile,
                     image = imageCandidate(raw) or imageCandidate(raw.mod) }
       if raw.mod then
@@ -1643,8 +1851,9 @@ return function(mod)
     if screen == "detail" and state.currentMod then
       title = safeText(state.currentMod.name or state.currentMod.id)
     elseif screen == "options" and state.currentMod then
-      title = Strings("OPTIONS") .. "  " ..
-        safeText(state.currentMod.name or state.currentMod.id)
+      title = state.currentMod.id == MOD_ID and Strings("UI SETTINGS")
+        or (Strings("OPTIONS") .. "  " ..
+          safeText(state.currentMod.name or state.currentMod.id))
     elseif screen == "permissions" then
       title = Strings("PERMISSIONS")
     elseif screen == "errors" then
@@ -1770,7 +1979,24 @@ return function(mod)
       local row = rows[index]
       if not row then break end
       local ry = layout.y + layout.header + (slot - 1) * layout.rowHeight
-      if row.header then
+      if row.category then
+        setColor(index == selected and colors.selected or colors.surfaceRaised)
+        love.graphics.rectangle("fill", layout.x + theme.spacing.sm, ry,
+          layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
+          theme.radii.sm or 8)
+        setColor(index == selected and colors.text or colors.accent)
+        love.graphics.setFont(font(fontCache, theme.typography.body))
+        love.graphics.print(safeText(row.label), layout.x + theme.spacing.lg,
+          ry + (layout.rowHeight - love.graphics.getFont():getHeight()) / 2)
+        local value = optionValue(game, row)
+        if value ~= "" then
+          local valueFont = font(fontCache, theme.typography.caption)
+          love.graphics.setFont(valueFont)
+          setColor(index == selected and colors.text or colors.textMuted)
+          love.graphics.print(value, layout.x + layout.w - theme.spacing.lg
+            - valueFont:getWidth(value), ry + (layout.rowHeight - valueFont:getHeight()) / 2)
+        end
+      elseif row.header then
         setColor(colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.caption))
         love.graphics.print(safeText(row.label):upper(),
@@ -1783,7 +2009,10 @@ return function(mod)
           layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
           theme.radii.sm or 8)
       end
-      if row.header then
+      if row.category then
+        -- Category rows are actionable (A expands/collapses), so their value
+        -- is rendered above and they do not receive icon/value columns.
+      elseif row.header then
         -- Category headings in the mod list are deliberately inert; the
         -- vanilla cursor skips them and the presenter only changes their
         -- typography, not their position in the live row array.
@@ -1793,7 +2022,7 @@ return function(mod)
       else
         setColor(row.enabled == false and colors.textMuted or colors.text)
       end
-      local icon = not row.header and imageFor(row.image) or nil
+      local icon = not row.header and not row.category and imageFor(row.image) or nil
       if not icon and not row.header and game and row.source and
           row.source.species and iconFor then
         local ok, resolved = pcall(iconFor, game, row.source)
@@ -1830,7 +2059,7 @@ return function(mod)
         valueWidth = math.min(valueWidth, maxValueColumn)
       end
       local leftWidth = textAvail - (valueWidth > 0 and valueWidth + gap or 0)
-      if not row.header then
+      if not row.header and not row.category then
         love.graphics.print(truncate(label, math.max(20, leftWidth)),
           textX, ry + (layout.rowHeight -
             love.graphics.getFont():getHeight()) / 2)
@@ -1922,8 +2151,15 @@ return function(mod)
     local maxWidth = landscape and math.min(760, w * 0.70) or math.min(620, w - gutter * 2)
     local minWidth = math.min(landscape and 280 or 260, maxWidth)
     local width = clamp(widest + gutter * 2, minWidth, maxWidth)
-    local height = math.max(104,
-      body:getHeight() * 2 + theme.spacing.lg * 2 + theme.typography.caption + 12)
+    -- The original presenter reserved two lines, which made wrapped dialog
+    -- text truncate on high-resolution screens. Reserve a comfortable five
+    -- lines (or all available portrait/landscape height) while keeping the
+    -- panel content-sized rather than stretching it to the whole viewport.
+    local lineGap = body:getHeight() + theme.spacing.xs
+    local desiredLines = landscape and 5 or 5
+    local height = math.max(160,
+      lineGap * desiredLines + theme.spacing.lg * 2
+        + theme.typography.caption + theme.spacing.md)
     height = math.min(height, h - gutter * 2)
     return x + (w - width) / 2, y + h - height - gutter, width, height
   end
@@ -1946,10 +2182,10 @@ return function(mod)
         lines[#lines + 1] = line
       end
     end
-    -- The released TextBox owns two visible lines. Preserve that contract
-    -- after high-resolution wrapping so the affordance strip cannot overlap.
-    while #lines > 2 do table.remove(lines, 1) end
     local lineGap = body:getHeight() + spacing.xs
+    local footerH = theme.typography.caption + spacing.md
+    local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2 - footerH) / lineGap))
+    while #lines > maxLines do table.remove(lines, 1) end
     local textY = py + spacing.lg
     setColor(colors.text)
     for index, line in ipairs(lines) do
@@ -2371,6 +2607,7 @@ return function(mod)
       local ok, resolver = pcall(require, "src.pokemon.Sprites")
       spriteResolver = ok and resolver or false
     end
+    local originalEntry = entry
     local replaced = false
     if spriteResolver and type(spriteResolver.iconPath) == "function" then
       local original = entry
@@ -2387,6 +2624,8 @@ return function(mod)
     -- own animation contract.
     local image = imageFor(entry)
     if not image then return nil end
+    local followerSheet = knownSheetOptions(originalEntry or entry, image, 0)
+    if followerSheet then image = markAnimated(image, followerSheet) end
     if hasDescriptor then
       return image
     end
@@ -2435,26 +2674,40 @@ return function(mod)
   end
 
   spriteFor = function(game, mon, fallback, kind)
-    local image = imageFor(mon and imageCandidate(mon))
-    if image then return image end
+    local candidate = mon and imageCandidate(mon)
+    local image = imageFor(candidate)
+    if image then
+      local sheet = knownSheetOptions(candidate, image, nil)
+      if sheet then image = markAnimated(image, sheet) end
+      return image
+    end
     local fallbackPath = type(fallback) == "string" and fallback or nil
     local path = resolvedSpritePath(game, mon, "front", kind, fallbackPath)
     -- Battle sprite replacement assets are complete single-frame pictures by
     -- default (including Gold/Silver packs). Only an explicit image
     -- descriptor with `frames` opts into sheet animation.
     image = imageFor(path)
+    local sheet = image and knownSheetOptions(path, image, nil)
+    if sheet then image = markAnimated(image, sheet) end
     if image then return image end
     return imageFor(fallback)
   end
 
   local function spriteForSide(game, mon, side, fallback, kind)
-    local image = imageFor(mon and imageCandidate(mon))
-    if image then return image end
+    local candidate = mon and imageCandidate(mon)
+    local image = imageFor(candidate)
+    if image then
+      local sheet = knownSheetOptions(candidate, image, nil)
+      if sheet then image = markAnimated(image, sheet) end
+      return image
+    end
     local fallbackPath = type(fallback) == "string" and fallback or nil
     local path = resolvedSpritePath(game, mon, side, kind, fallbackPath)
     -- `pokemon.sprite` paths are authored battle pictures, not animation
     -- sheets. Explicit descriptors can still request frame cropping.
     image = imageFor(path)
+    local sheet = image and knownSheetOptions(path, image, nil)
+    if sheet then image = markAnimated(image, sheet) end
     if image then return image end
     return imageFor(fallback)
   end
@@ -3896,6 +4149,169 @@ return function(mod)
     love.graphics.pop()
   end
 
+  -- LinkState owns networking and input, but its released renderer is a
+  -- small native 160x144 canvas. Present its public stages as ordinary modern
+  -- rows while leaving every transition/callback in LinkState untouched.
+  local function drawLink(game, state, viewport, theme)
+    local stage = state.stage or "menu"
+    local title = ({
+      menu = "LINK",
+      lanMenu = "LINK CABLE (LAN)",
+      onlineMenu = "ONLINE MATCH",
+      onlineHosting = "HOSTING ONLINE",
+      codeEntry = "ENTER CODE",
+      onlineJoining = "CONNECTING",
+      hosting = "HOSTING",
+      addrEntry = "ENTER HOST ADDRESS",
+      joining = "JOINING",
+      modeSelect = "CONNECTED",
+      battleOptions = "BATTLE OPTIONS",
+      waitMode = "CONNECTED",
+      waitHello = "CONNECTED",
+      notice = state.verdict == "engine_skew" and "UPDATE YOUR GAME"
+        or "CHECK YOUR MODS",
+      trade = "TRADE",
+      battleWait = "LINK BATTLE",
+      battleRunning = "LINK BATTLE",
+    })[stage] or "LINK"
+    local rows = {}
+    local selected = tonumber(state.index) or 1
+    local footer = "A  select   B  back"
+    local function listText(values, charset)
+      local out = {}
+      for _, value in ipairs(values or {}) do
+        if charset and type(value) == "number" then
+          value = charset:sub(value, value)
+        end
+        out[#out + 1] = safeText(value)
+      end
+      return table.concat(out)
+    end
+    local defaultPort = "7777"
+    if linkNetClass and type(linkNetClass.defaultPort) == "function" then
+      local ok, value = pcall(linkNetClass.defaultPort)
+      if ok and value then defaultPort = safeText(value) end
+    end
+    local function row(label, value)
+      rows[#rows + 1] = { label = safeText(label), value = value }
+    end
+    if stage == "menu" then
+      row("LINK CABLE (LAN)")
+      row("ONLINE MATCH")
+      row("TOURNAMENT")
+    elseif stage == "lanMenu" then
+      row("HOST A GAME")
+      row("JOIN A GAME")
+      footer = "A  choose   B  back"
+    elseif stage == "onlineMenu" then
+      row("HOST ONLINE")
+      row("JOIN ONLINE")
+    elseif stage == "modeSelect" then
+      row("TRADE")
+      row("BATTLE")
+    elseif stage == "battleOptions" then
+      row("LEVEL", state.levelChoice == nil and "ANY"
+        or safeText(state.levelChoice))
+      footer = "UP/DOWN  adjust   A  continue   B  back"
+    elseif stage == "codeEntry" then
+      local entry = state.codeEntry
+      local code = "------"
+      if entry and linkCodeEntryClass and type(linkCodeEntryClass.text) == "function" then
+        local ok, value = pcall(linkCodeEntryClass.text, entry)
+        if ok and value then code = safeText(value) end
+      elseif entry and entry.chars then
+        local charset = linkCodeEntryClass and linkCodeEntryClass.CHARSET
+        code = listText(entry.chars, charset)
+      end
+      if entry and entry.pos then
+        local chars = {}
+        for index = 1, #code do
+          local char = code:sub(index, index)
+          chars[#chars + 1] = index == entry.pos and ("[" .. char .. "]") or char
+        end
+        code = table.concat(chars)
+      end
+      row("CODE", code)
+      row("POSITION", entry and entry.pos and
+        (safeText(entry.pos) .. " / 6") or "1 / 6")
+      selected = 1
+      footer = "ARROWS  edit   A  connect   B  back"
+    elseif stage == "addrEntry" then
+      local digits = "------------"
+      if state.addr then
+        local address = {}
+        for index, value in ipairs(state.addr) do
+          local digit = safeText(value)
+          address[#address + 1] = index == state.addrPos
+            and ("[" .. digit .. "]") or digit
+          if index % 3 == 0 and index < #state.addr then
+            address[#address + 1] = "."
+          end
+        end
+        digits = table.concat(address)
+      end
+      row("HOST", digits)
+      row("POSITION", state.addrPos and
+        (safeText(state.addrPos) .. " / " .. safeText(#(state.addr or {})))
+        or "1 / 12")
+      row("PORT", defaultPort)
+      selected = 1
+      footer = "UP/DOWN  digit   LEFT/RIGHT  slot   A  connect   B  back"
+    elseif stage == "onlineHosting" then
+      row("CODE", state.net and state.net.code or "??????")
+      row("STATUS", "WAITING FOR JOIN")
+      footer = "B  cancel"
+    elseif stage == "hosting" then
+      row("ADDRESS", state.net and state.net.address or "?")
+      row("STATUS", "WAITING FOR JOIN")
+      footer = "B  cancel"
+    elseif stage == "onlineJoining" or stage == "joining" then
+      row("STATUS", "CALLING...")
+      row("TARGET", state.net and state.net.target or "")
+      footer = "B  cancel"
+    elseif stage == "waitMode" or stage == "waitHello" then
+      row("STATUS", stage == "waitHello" and "CHECKING OTHER GAME"
+        or "WAITING FOR HOST")
+      footer = "B  cancel"
+    elseif stage == "notice" then
+      for _, line in ipairs(state.noticeLines or {}) do row(line) end
+      footer = state.noticeExits and "A  back" or "A  trade anyway"
+    elseif stage == "trade" then
+      local party = game and game.save and game.save.party or {}
+      for _, mon in ipairs(party) do
+        local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+        row(mon.nickname or (def and def.name) or mon.species or "POKEMON")
+      end
+      footer = "A  choose   B  back"
+    elseif stage == "battleWait" or stage == "battleRunning" then
+      row("STATUS", "EXCHANGING DATA...")
+      footer = "B  cancel"
+    else
+      row("STATUS", safeText(state.status or "WAITING..."))
+    end
+    if #rows == 0 then row("WAITING...") end
+
+    local layout = layoutFor(viewport, theme, "link", rows, Strings(title), footer)
+    selected = clamp(selected, 1, #rows)
+    local scroll = 0
+    love.graphics.push("all")
+    love.graphics.origin()
+    if not layout.sidePanel then drawPresenterBackdrop(theme, viewport) end
+    setColor(theme.colors.surface)
+    love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h,
+      layout.radius)
+    drawHeader(theme, layout, Strings(title))
+    drawRows(theme, layout, rows, selected, scroll, game)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
+    setColor(theme.colors.textMuted)
+    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer + 8,
+      layout.w - theme.spacing.lg * 2)
+    love.graphics.pop()
+  end
+
   local function drawModern(game, state, kind, viewport, theme, asModal, underKind)
     if not presenterEnabled(kind) then return end
     if kind == "text" then
@@ -3908,6 +4324,10 @@ return function(mod)
     end
     if kind == "battle" then
       drawBattle(game, state, viewport, theme)
+      return
+    end
+    if kind == "link" then
+      drawLink(game, state, viewport, theme)
       return
     end
     if kind == "mod_manager" then
@@ -4015,21 +4435,28 @@ return function(mod)
   mod.hooks:wrap("ui.state.decorate", function(next, game, state, model)
     local decorated = next(game, state, model)
     if type(decorated) ~= "table" then decorated = state end
-    local under = game and game.stack and game.stack.top and game.stack:top()
-    local isTitleUnder = titleClass and under and under.screenId == "TitleState"
-      and inherits(classOf(under), titleClass)
-    if isTitleUnder and inherits(classOf(decorated), menuClass)
+    -- The title menu is identified by its published titleUiBox contract, not
+    -- by the stack top at decoration time.  v0.1.68 decorates the menu before
+    -- it is pushed, so the old under-state check left the native rows visible.
+    if inherits(classOf(decorated), menuClass)
         and type(decorated.titleUiBox) == "table"
-        and rawget(decorated, "draw") == nil then
+        and not decorated._gen1ModernTitleMenu then
       local originalDraw = decorated.draw
       decorated._gen1ModernTitleMenu = true
       local function drawTitleMenu(self)
         if option("hideOriginalUi", true) ~= false
             and option("menuUi", true) ~= false then
-          local layers, complete = presentationStack(game)
-          if complete then
-            for _, layer in ipairs(layers) do
-              if layer.state == self then return end
+          local stack = game and game.stack and game.stack.states
+          local titleOnStack = false
+          for _, visible in ipairs(type(stack) == "table" and stack or {}) do
+            if isTitleState(visible) then titleOnStack = true break end
+          end
+          if titleOnStack then
+            local layers, complete = presentationStack(game)
+            if complete then
+              for _, layer in ipairs(layers) do
+                if layer.state == self then return end
+              end
             end
           end
         end

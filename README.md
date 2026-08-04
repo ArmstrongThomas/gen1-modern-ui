@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.7 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.8 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -69,7 +69,9 @@ when the listing is enabled there.
   game's typewriter timing and callback/input ownership.
 - The in-game Start menu and title-screen main menu use the same floating
   desktop presentation; title art is preserved independently and the native
-  title menu is suppressed without clearing the shared artwork canvas.
+  title menu is suppressed without clearing the shared artwork canvas. While
+  the modern title menu is open, the title artwork uses one uniform grayscale
+  treatment instead of inheriting the native menu's partial palette zone.
 - Responsive Trainer Card, Pokédex list, Bag, Shop, Player PC, Party, and
   Bill's PC presenters built from live state rather than replacement menus.
 - Party and Bill's PC Pokémon lists include active sprite-pack artwork, HP and
@@ -86,6 +88,17 @@ when the listing is enabled there.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
   styles, plus density controls and a public data-only theme API.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
+- Link Cable, Online Match, and Tournament screens use the modern presenter
+  while LinkState keeps ownership of networking and input. Host/code entry
+  shows the active digit slot and keeps the fixed UDP port separate. The title
+  menu is suppressed through the released `titleUiBox` contract without
+  clearing its artwork.
+- PokePCFollowers compatibility crops its six-frame `follower_###.png`
+  sheets to the correct nearest-neighbor frame for party/box icons and larger
+  previews.
+- Dialogue panels now show up to five wrapped lines plus a readable prompt.
+  UI SETTINGS is organized into expandable Appearance, Navigation, Presenters,
+  and Advanced categories instead of one long list.
 - Useful Dex and Gen 3 Box presenters with square grids and animated authored
   art support.
 - Battle presentation remains explicitly WIP and disabled by default.
@@ -170,7 +183,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.7.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.8.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -186,7 +199,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.6.7`) and push that commit to `main`. Each release includes a commit-based
+`0.6.8`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

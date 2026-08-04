@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.6.7 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.6.8 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -46,7 +46,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.6.7. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.6.8. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -62,8 +62,10 @@ that file and appends the generated archive checksum.
 
 ## Architecture
 
-1. `ui.state.decorate` marks only the released ordinary title Menu and wraps
-   its draw method with a dynamic, presentation-completeness guard. It does not
+1. The released ordinary title Menu is identified by its `titleUiBox` marker
+   and its class draw method is wrapped with a dynamic,
+   presentation-completeness guard. On clients exposing `ui.state.decorate`,
+   the same guard is also applied to the decorated instance. It does not
    replace the state or touch update/input/callbacks.
 2. `render.zones` caches the live `Game` reference immediately before
    composition, because `render.compose` does not receive it directly.
@@ -93,7 +95,7 @@ that file and appends the generated archive checksum.
 8. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.6.7 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.6.8 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -135,8 +137,11 @@ classic UI is suppressed independently.
   replaced world draw or foreign overworld still forces classic fallback.
 - The title menu is the one narrow presentation-only state decoration: its
   ordinary Menu draw is skipped only while the full title/menu stack remains
-  presentable. The title artwork canvas is preserved rather than cleared. Any
-  unknown overlay or custom draw immediately restores the native title Menu.
+  presentable. The title artwork canvas is preserved rather than cleared. While
+  the modern menu is active, its true-color palette marker expands to the full
+  title canvas for a uniform grayscale treatment; the original marker returns
+  when the menu closes. Any unknown overlay or custom draw immediately
+  restores the native title Menu.
 - Dynamic rows supplied by other mods are read from the current state on every
   HUD pass. The presenter does not mutate those arrays.
 - Optional row artwork uses `image`, `icon`, `thumbnail`, `sprite`, or `asset`
@@ -150,6 +155,11 @@ classic UI is suppressed independently.
   `frames = 2` and loop at 450 ms per frame. Battle sprite replacements remain
   complete single-frame pictures. Every frame keeps nearest-neighbor filtering
   and aspect-ratio-preserving scale.
+- PokePCFollowers' `follower_###.png` assets are a known compatibility case:
+  its six-frame sheets are registered as `frames = 1` icon descriptors. The
+  presenter detects that path and crops a 16px frame for icons and previews
+  without changing the follower mod or its enabled-state semantics. See the
+  [PokePCFollowers repository](https://github.com/gamecorner-033/PokePCFollowers).
 - The manager, third-party OptionRows settings, Trainer Card, Pokédex, Useful
   Dex entry, Bag/Shop/Player-PC,
   released Bill's PC, Party, and Gen 3 Box adapters read public state fields
@@ -166,6 +176,11 @@ classic UI is suppressed independently.
   timing, waits, advancement, sounds, and choice callbacks.
 - Useful Dex move pages show an `UP/DOWN page` footer hint only when the live
   screen reports multiple pages, matching its actual input behavior.
+- Released `src.link.LinkState` stages (LAN, online, tournament, connection,
+  trade, and battle handshakes) use a draw-only modern adapter. Networking,
+  code/address editing, and callbacks remain owned by LinkState.
+- Dialogue panels reserve up to five wrapped lines plus the prompt strip;
+  high-resolution text is no longer limited to the classic two-line window.
 - The battle adapter reads public battler, phase, move, and message fields. Its
   `battleUiWip` toggle is WIP and defaults off; other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
@@ -177,6 +192,10 @@ classic UI is suppressed independently.
   row; SELECT, A, or B dismisses the card without changing the setting.
 - The richer presentation is the default: `minimalUi` starts `false` on new
   installs and only becomes compact when the player enables it.
+- Gen1 Modern UI settings are presented in expandable Appearance, Navigation,
+  Presenters, and Advanced categories. The underlying flat schema remains the
+  released manager contract, so existing saves and third-party tooling keep
+  their option keys.
 - `minimalUi` is presentation-only. It removes optional Pokédex/Bag/Shop
   previews and large Party/Bill detail panes while retaining live rows,
   selection, essential Pokémon data, prompts, and input ownership.
