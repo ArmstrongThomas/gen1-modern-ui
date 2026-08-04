@@ -683,6 +683,8 @@ return function(mod)
       description = "Add a direct UI SETTINGS entry to the in-game Start menu.", },
     { key = "startMenuFastJump", label = "START MENU FAST JUMP", type = "toggle", default = true,
       description = "Let left/right directional presses jump five rows in the Start menu.", },
+    -- Keep the richer presentation as the first-run experience. Existing
+    -- saves retain a player's explicit choice through the normal option store.
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
       description = "Use a compact presentation with fewer previews and less extra detail.", },
     { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true,
@@ -1093,30 +1095,106 @@ return function(mod)
     return expectedDraw ~= nil and actualDraw ~= nil and actualDraw ~= expectedDraw
   end
 
+  -- Rich screens are allowed to come from other screen factories.  The
+  -- released SummaryMenu stores its live record in `mon`, while a few older
+  -- callers and third-party wrappers use `pokemon`, `target`, or keep the
+  -- vanilla record underneath the wrapper.  Resolve those shapes in one
+  -- place so floating presentation never clears the classic canvas before
+  -- the replacement has enough data to draw.
+  local function pokemonDefinition(game, species)
+    local data = game and game.data
+    local pokemon = data and data.pokemon
+    return pokemon and species and pokemon[species] or nil
+  end
+
+  local function summaryPokemon(state)
+    if type(state) ~= "table" then return nil end
+    local candidates = { state.mon, state.pokemon, state.target, state.poke }
+    if type(state.vanilla) == "table" then
+      candidates[#candidates + 1] = state.vanilla.mon
+      candidates[#candidates + 1] = state.vanilla.pokemon
+    end
+    for _, candidate in ipairs(candidates) do
+      if type(candidate) == "table" and candidate.species ~= nil then
+        return candidate
+      end
+    end
+    return nil
+  end
+
+  local function dexDefinition(game, state)
+    if type(state) ~= "table" then return nil end
+    local def = state.def
+    if type(def) ~= "table" and type(state.vanilla) == "table" then
+      def = state.vanilla.def
+    end
+    if type(def) == "table" and (def.id or def.name or def.dex
+        or def.dexEntry) then
+      return def
+    end
+    local species = state.species or state.speciesId
+    if type(species) == "table" then
+      species = species.species or species.id
+    end
+    if not species and type(state.vanilla) == "table" then
+      species = state.vanilla.species or state.vanilla.speciesId
+    end
+    return pokemonDefinition(game, species)
+  end
+
+  local function presenterReady(game, state, kind)
+    if kind == "summary" then
+      local mon = summaryPokemon(state)
+      return mon ~= nil and pokemonDefinition(game, mon.species) ~= nil
+    elseif kind == "dex_entry" then
+      return dexDefinition(game, state) ~= nil
+    end
+    return true
+  end
+
+  local function syncStateVisibility(game, state)
+    if not (game and state and state ~= game.overworld) then return end
+    local kind = kindFor(state)
+    local revealWorld = worldVisibleLayout(nil)
+      and option("hideOriginalUi", true) ~= false
+    local eligible = revealWorld and kind and presenterEnabled(kind)
+      and not state.capture and not hasUnknownDrawOverride(state, kind)
+    if eligible then
+      if state._gen1ModernOpaqueManaged == nil then
+        state._gen1ModernOpaqueManaged = true
+        state._gen1ModernOriginalOpaque = state.isOpaque == true
+      end
+      state.isOpaque = false
+    elseif state._gen1ModernOpaqueManaged then
+      state.isOpaque = state._gen1ModernOriginalOpaque == true
+      state._gen1ModernOpaqueManaged = nil
+      state._gen1ModernOriginalOpaque = nil
+    end
+  end
+
   syncWorldVisibility = function(game)
     local stack = game and game.stack
     local states = stack and stack.states
     if type(states) ~= "table" then return end
-    local revealWorld = worldVisibleLayout(nil)
-      and option("hideOriginalUi", true) ~= false
     for _, state in ipairs(states) do
       if state and state ~= game.overworld then
-        local kind = kindFor(state)
-        local eligible = revealWorld and kind and presenterEnabled(kind)
-          and not state.capture and not hasUnknownDrawOverride(state, kind)
-        if eligible then
-          if state._gen1ModernOpaqueManaged == nil then
-            state._gen1ModernOpaqueManaged = true
-            state._gen1ModernOriginalOpaque = state.isOpaque == true
-          end
-          state.isOpaque = false
-        elseif state._gen1ModernOpaqueManaged then
-          state.isOpaque = state._gen1ModernOriginalOpaque == true
-          state._gen1ModernOpaqueManaged = nil
-          state._gen1ModernOriginalOpaque = nil
-        end
+        syncStateVisibility(game, state)
       end
     end
+  end
+
+  -- `input.step` runs before the active state's update.  Screens pushed by a
+  -- button press therefore used to remain opaque until the *next* fixed step,
+  -- which is exactly the frame where Summary/DexEntry could be composited
+  -- without their world pass.  The screen lifecycle event fires immediately
+  -- after StateStack:push and is safe to use when the host exposes events;
+  -- the per-step sweep remains the compatibility fallback for older clients.
+  if mod.events and type(mod.events.on) == "function" then
+    mod.events:on("screen.pushed", function(payload)
+      local state = payload and payload.state
+      local game = state and state.game or currentGame
+      syncStateVisibility(game, state)
+    end, 90)
   end
 
   -- Build the complete visible UI stack bottom-up. `ctx.uiCanvas` contains
@@ -1163,7 +1241,8 @@ return function(mod)
       elseif type(visible and visible.draw) == "function" then
         local kind = kindFor(visible)
         if not kind or not presenterEnabled(kind) or visible.capture
-            or hasUnknownDrawOverride(visible, kind) then
+            or hasUnknownDrawOverride(visible, kind)
+            or not presenterReady(game, visible, kind) then
           return {}, false
         end
         layers[#layers + 1] = { state = visible, kind = kind, index = index }
@@ -1953,8 +2032,8 @@ return function(mod)
       (w > h * 1.20) and 430 or 560)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local compact = panelH < 380
-    local mon = state.mon or {}
-    local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+    local mon = summaryPokemon(state) or {}
+    local def = pokemonDefinition(game, mon.species)
     local name = mon.nickname or (def and def.name) or mon.species or "POKéMON"
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
       or theme.typography.title)
@@ -2039,8 +2118,10 @@ return function(mod)
       local statRows = {
         { "ATTACK", stats.attack }, { "DEFENSE", stats.defense },
         { "SPEED", stats.speed }, { "SPECIAL", stats.special },
-        { "ID", mon.otId or game.save.player.id or 0 },
-        { "OT", mon.ot or game.save.player.name or "RED" },
+        { "ID", mon.otId or (game.save and game.save.player
+          and game.save.player.id) or 0 },
+        { "OT", mon.ot or (game.save and game.save.player
+          and game.save.player.name) or "RED" },
       }
       for i, item in ipairs(statRows) do
         setColor(theme.colors.textMuted)
@@ -3197,10 +3278,12 @@ return function(mod)
     local panelH = math.min(h - gutter * 2,
       (w > h * 1.10) and 520 or 700)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local def = state.def or (state.vanilla and state.vanilla.def) or {}
+    local def = dexDefinition(game, state) or {}
+    local species = def.id or state.species or state.speciesId
+    if type(species) == "table" then species = species.species or species.id end
     local page = state.view or "data"
     local title = safeText(def.name or "POKÃ©DEX")
-    local sprite = spriteFor(game, { species = def.id }, state.sprite or
+    local sprite = spriteFor(game, { species = species }, state.sprite or
       (state.vanilla and state.vanilla.sprite))
     local titleFont = font(fontCache, theme.typography.title)
     local bodyFont = font(fontCache, theme.typography.body)

@@ -21,6 +21,7 @@ function love.load()
   check(entryPath and entryPath ~= "", "GEN1_UI_MAIN is required")
 
   local hooks = {}
+  local eventListeners = {}
   local values = {}
   local schemas = {}
   local menuDraws = 0
@@ -64,6 +65,11 @@ function love.load()
         hooks[name] = callback
       end,
     },
+    events = {
+      on = function(_, name, callback)
+        eventListeners[name] = callback
+      end,
+    },
     options = {
       define = function(_, schema)
         schemas[#schemas + 1] = schema
@@ -91,6 +97,14 @@ function love.load()
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
+  local minimalRow
+  for _, schema in ipairs(schemas) do
+    for _, row in ipairs(schema) do
+      if row.key == "minimalUi" then minimalRow = row break end
+    end
+  end
+  check(minimalRow and minimalRow.default == false,
+    "minimal UI defaults to the richer presentation")
   check(type(themeRow.description) == "string" and themeRow.description ~= "",
     "mod settings expose option descriptions")
   local expectedThemes = {
@@ -130,6 +144,8 @@ function love.load()
   check(type(hooks["render.hud"]) == "function", "render.hud hook registered")
   check(type(hooks["ui.state.decorate"]) == "function",
     "ui.state.decorate hook registered")
+  check(type(eventListeners["screen.pushed"]) == "function",
+    "screen lifecycle visibility listener registered")
 
   local state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
     { __index = optionsClass })
@@ -549,6 +565,57 @@ function love.load()
   }
   renderHud({ party }, "party_injected_actions")
   party.submenu, party.subItems = nil, nil
+
+  -- Floating rich-screen regression coverage: a Summary/DexEntry stack must
+  -- remain visible after its opaque states are made world-visible.  The
+  -- classic canvas is cleared by compose, so a missing modern layer would
+  -- otherwise leave a blank screen.
+  values.layoutStyle = "floating"
+  values.hideOriginalUi = true
+  local summary = setmetatable({ screenId = "SummaryMenu", game = game,
+    mon = testMon, page = 1 }, { __index = summaryClass })
+  game.stack.states = { overworld, party, summary }
+  hooks["input.step"](function() end, game, 0)
+  local floatingSummary = renderHud({ party, summary }, "summary_floating")
+  fill()
+  compose(false)
+  check(pixelAlpha(floatingSummary, 320, 180) > 0,
+    "floating Summary presenter survives classic UI suppression")
+
+  local dexEntry = setmetatable({ screenId = "DexEntryMenu", vanilla = {},
+    def = game.data.pokemon.TESTMON, view = "data", forceOwned = true },
+    { __index = dexEntryClass })
+  local dexOverlay = setmetatable({ screenId = "PokedexMenu", title = "POKéDEX",
+    items = { { label = "001 TESTMON", value = "TESTMON", ball = true } },
+    index = 1, scroll = 0, pageJump = true, footer = "SEEN 1  OWN 1" },
+    { __index = listClass })
+  game.stack.states = { overworld, dexOverlay, dexEntry }
+  hooks["input.step"](function() end, game, 0)
+  local floatingDexEntry = renderHud({ dexOverlay, dexEntry }, "dex_entry_floating")
+  fill()
+  compose(false)
+  check(pixelAlpha(floatingDexEntry, 320, 180) > 0,
+    "floating Dex Entry presenter survives classic UI suppression")
+
+  -- A malformed/partially initialized rich state must never leave a blank
+  -- world-visible frame.  The classic canvas remains available until the
+  -- presenter can resolve its live record.
+  local missingSummary = setmetatable({ screenId = "SummaryMenu", game = game,
+    page = 1 }, { __index = summaryClass })
+  game.stack.states = { overworld, missingSummary }
+  eventListeners["screen.pushed"]({ state = missingSummary })
+  fill()
+  compose(false)
+  check(alpha() == 1,
+    "floating Summary fallback keeps classic UI when live data is missing")
+  local missingDexEntry = setmetatable({ screenId = "DexEntryMenu",
+    vanilla = {}, view = "data" }, { __index = dexEntryClass })
+  game.stack.states = { overworld, missingDexEntry }
+  eventListeners["screen.pushed"]({ state = missingDexEntry })
+  fill()
+  compose(false)
+  check(alpha() == 1,
+    "floating Dex Entry fallback keeps classic UI when live data is missing")
 
   local boxRootItems = {}
   for index = 1, 4 do

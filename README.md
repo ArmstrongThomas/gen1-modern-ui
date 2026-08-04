@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.2 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.3 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -55,6 +55,9 @@ when the listing is enabled there.
 - Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
   clears the UI canvas when a supported modern presenter safely owns the whole
   visible UI layer; nested or custom prompts retain their classic context.
+- Floating Summary and Pokédex entry screens validate their live Pokémon data
+  before suppressing the classic canvas, preventing blank frames while a
+  mobile stats or entry page is being initialized.
 - Live rows and options, so other mods' menu entries remain visible.
 - Stack-aware dialogue, YES/NO, quantity, and action cards that preserve the
   game's typewriter timing and callback/input ownership.
@@ -67,8 +70,9 @@ when the listing is enabled there.
   stats are calculated for display without mutating the save.
 - Bag and Shop details show the base purchase value and half-price sell value,
   including TM move/type/PP/value data; Trainer Card includes the five-digit ID.
-- **MINIMAL UI** keeps the modern shell and live controls while removing
-  optional detail/preview panes and recomputing a genuinely compact layout.
+- **MINIMAL UI** is off by default. When enabled, it keeps the modern shell and
+  live controls while removing optional detail/preview panes and recomputing a
+  genuinely compact layout.
 - Content-sized option rows reserve enough width for long values and
   localized labels before falling back to safe, non-overlapping truncation.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
@@ -149,7 +153,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.2.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.3.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -165,7 +169,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.6.2`) and push that commit to `main`. Each release includes a commit-based
+`0.6.3`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

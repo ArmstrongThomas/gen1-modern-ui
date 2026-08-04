@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.6.2 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.6.3 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -45,6 +45,9 @@ custom engine checkout or a patched binary.
 - The presenter reads the complete visible state stack after the classic
   frame. It does not rebuild hook-provided descriptor tables or call callbacks
   directly.
+- **MINIMAL UI** defaults to off so new installs receive the richer Party,
+  Pokédex, Bag, Shop, and PC presenters; enable it when a compact list is
+  preferred.
 - The presenter leaves unknown custom screens vanilla; explicit adapters are
   added only for screens with a stable public state contract.
 - The presenter decorates `Menu`, `ListMenu`, `ChoiceBox`, `QuantityBox`,
@@ -59,7 +62,7 @@ custom engine checkout or a patched binary.
 
 ### Dialogue and modal stacks
 
-Version 0.6.2 presents ordinary `TextBox` dialogue and attached `Menu`,
+Version 0.6.3 presents ordinary `TextBox` dialogue and attached `Menu`,
 `ChoiceBox`, and `QuantityBox` layers as one composition. The text presenter
 reconstructs only the glyphs already revealed by the live typewriter state;
 the original state still owns reveal speed, waiting, advancement, sounds, and
@@ -98,6 +101,13 @@ unchanged. This is the safe fallback and prevents an unfinished or disabled
 presenter from blanking the classic interface. The engine draws
 `TouchControls` after `render.hud`, so mobile controls remain above the modern
 layer and continue to own touch input.
+
+Floating Summary and Pokédex entry presenters validate their live Pokémon
+record before the classic canvas is hidden. A screen pushed by the same input
+step is synchronized through the screen lifecycle event when the host exposes
+it; older clients use the next-step compatibility sweep. If a third-party
+wrapper is still initializing, the classic page remains visible instead of
+showing a blank frame.
 
 Mods that also inspect, clear, or replace `ctx.uiCanvas` inside
 `render.compose` need extra care: on supported frames they may receive or leave

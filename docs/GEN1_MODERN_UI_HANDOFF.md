@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.6.2 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.6.3 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -38,7 +38,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.6.2. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.6.3. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -67,19 +67,25 @@ that file and appends the generated archive checksum.
    keeps the entire classic slice. The false result then falls
    through to the normal engine compositor, so scaling, fades, zones, and
    effects remain active.
-4. `render.hud` calls `next(game, viewport)` exactly once, then draws the
+4. Rich Summary and Pokédex entry layers validate their live Pokémon record
+   before this suppression is allowed. `screen.pushed` synchronizes eligible
+   opaque states immediately on hosts that expose the lifecycle event; the
+   existing per-step sweep remains the fallback for older clients. Partially
+   initialized third-party wrappers therefore retain the classic canvas rather
+   than producing a blank floating frame.
+5. `render.hud` calls `next(game, viewport)` exactly once, then draws the
    complete modern stack from its visible base upward. The engine's
    `TouchControls` draw afterward and remain visible.
-5. Supported states are recognized by their released UI classes or screen IDs.
+6. Supported states are recognized by their released UI classes or screen IDs.
    Rows are read afresh from the state each frame, so third-party additions,
    labels, ordering, and values remain visible without rebuilding callbacks.
-6. The presenter draws directly in window coordinates using the safe viewport
+7. The presenter draws directly in window coordinates using the safe viewport
    when the runtime provides one (falling back to the full window); the
    world and normal whole-window composition remain intact underneath.
-7. Theme tokens are merged with the built-in defaults. The presenter owns only
+8. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.6.2 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.6.3 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -93,6 +99,10 @@ classic UI is suppressed independently.
 - If the option is off or any state/presenter/context prerequisite is missing,
   the UI canvas is untouched. This is the safe fallback for unknown,
   unfinished, disabled, incomplete-stack, custom-capture, and headless paths.
+- A Summary or DexEntry state without a resolvable live Pokémon record is
+  treated as an incomplete prerequisite. The original canvas remains intact
+  until the state has initialized; alternate public wrapper fields (`pokemon`,
+  `target`, `vanilla.def`, and species IDs) are accepted when available.
 - `render.compose` continues through the normal engine compositor and leaves
   the chain unclaimed (`false`); `render.hud` supplies the replacement UI later.
 - Other mods that consume the same `ctx.uiCanvas` may observe it after it has
@@ -156,6 +166,8 @@ classic UI is suppressed independently.
 - Every option schema row includes a short description. The modern manager
   presents it as a non-destructive help card when SELECT is pressed on that
   row; SELECT, A, or B dismisses the card without changing the setting.
+- The richer presentation is the default: `minimalUi` starts `false` on new
+  installs and only becomes compact when the player enables it.
 - `minimalUi` is presentation-only. It removes optional Pokédex/Bag/Shop
   previews and large Party/Bill detail panes while retaining live rows,
   selection, essential Pokémon data, prompts, and input ownership.
