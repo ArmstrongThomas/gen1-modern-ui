@@ -6,7 +6,7 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.7.0 uses four released hooks plus a narrowly scoped class wrapper:
+Version 0.7.1 uses four released hooks plus a narrowly scoped class wrapper:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -65,7 +65,8 @@ input coordinates are never changed.
 The presenter marks viewports with visible virtual controls before layout.
 `layoutStyle=auto` is the default and leaves the area outside content-sized
 cards transparent on desktop and mobile; the Start Menu docks to a compact
-card and richer screens grow only when their live content requires it.
+card and richer screens use scale-aware height budgets when the safe viewport
+has room, so larger readability settings reveal more of the available card.
 `layoutStyle=floating` forces this world-visible behavior for every supported
 presenter, including full-card screens such as Party, Trainer Card, Pokédex,
 and PC. `layoutStyle=full` is the explicit backdrop-first presentation: it
@@ -109,6 +110,9 @@ classic.
 
 These hooks must remain presentation-only. Do not replace `game.stack` states,
 mutate another mod's menu arrays, or invoke menu callbacks from a draw hook.
+For released `ChoiceBox` states, the input hook aliases LEFT to UP and RIGHT
+to DOWN so horizontal YES/NO cards remain navigable without changing the
+engine's state or callback implementation.
 
 ### `render.compose` interoperability
 
@@ -298,6 +302,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.0 targets released game
+- Do not assume a custom engine build: version 0.7.1 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

@@ -537,6 +537,19 @@ function love.load()
   local bag = setmetatable({ screenId = "BagMenu", items = {}, index = 1 },
     { __index = listClass })
   local choice = setmetatable({ index = 1 }, { __index = choiceClass })
+  local choiceNavigationState = setmetatable({ index = 1 },
+    { __index = choiceClass })
+  local choiceNavigationInput = { pressQueue = { "left" } }
+  local choiceNavigationGame = { input = choiceNavigationInput, stack = {
+    top = function() return choiceNavigationState end,
+  } }
+  hooks["input.step"](function() end, choiceNavigationGame, 0)
+  check(choiceNavigationInput.pressQueue[1] == "up",
+    "horizontal LEFT maps to YES/NO up navigation")
+  choiceNavigationInput.pressQueue = { "right" }
+  hooks["input.step"](function() end, choiceNavigationGame, 0)
+  check(choiceNavigationInput.pressQueue[1] == "down",
+    "horizontal RIGHT maps to YES/NO down navigation")
   game.stack.states = { bag, choice }
   fill()
   compose(false)
@@ -616,6 +629,8 @@ function love.load()
   local mobileLandscapeViewport = { width = 640, height = 360,
     safe = { x = 0, y = 0, width = 640, height = 360 },
     _gen1TouchVisible = true }
+  local largeDesktopViewport = { width = 1600, height = 1000,
+    safe = { x = 0, y = 0, width = 1600, height = 1000 } }
   local hudCanvases = {}
   local captureHud = os.getenv("GEN1_UI_SHOTS") == "1"
   local function renderHud(states, name, activeViewport)
@@ -921,6 +936,29 @@ function love.load()
   values.minimalUi = true
   renderHud({ shop }, "shop_minimal")
   values.minimalUi = false
+
+  -- On a large desktop viewport, rich screens should spend the extra vertical
+  -- room that readability scaling requests instead of keeping the reference
+  -- height ceiling. At 150% the shop frame reaches this sample row; at 100%
+  -- it intentionally ends above it.
+  local savedShopItems = shop.items
+  local largeShopItems = {}
+  for index = 1, 12 do
+    largeShopItems[index] = { label = "SHOP ITEM " .. index,
+      right = "¥" .. (index * 100), value = "POTION" }
+  end
+  shop.items = largeShopItems
+  values.layoutStyle = "floating"
+  values.uiScale, values.fontScale = "100", "100"
+  local largeShop100 = renderHud({ shop }, "shop_large_100", largeDesktopViewport)
+  local largeShop100Sample = pixelAlpha(largeShop100, 800, 850)
+  values.uiScale, values.fontScale = "150", "150"
+  local largeShop150 = renderHud({ shop }, "shop_large_150", largeDesktopViewport)
+  check(largeShop100Sample == 0
+      and pixelAlpha(largeShop150, 800, 850) > 0,
+    "large desktop shop uses additional vertical room at higher readability scale")
+  shop.items = savedShopItems
+  values.uiScale, values.fontScale = "100", "100"
 
   local pc = setmetatable({ title = "WITHDRAW", messageBox = true,
     footer = "Withdraw how many?",

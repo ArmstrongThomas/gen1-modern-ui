@@ -4,14 +4,16 @@ Last updated: 2026-08-04
 
 ## Implementation status
 
-The v0.7.0 implementation ships the independent UI, font, and dialogue scale
+The v0.7.1 implementation ships the independent UI, font, and dialogue scale
 settings described below. Effective themes are cached by authored theme,
 density, scale values, opacity, and viewport class; fonts are cached by
 effective pixel size. Generic menu rows measure live labels and values before
 layout, grow to a readable two-line minimum when the content cannot coexist in
 one row, and dialogue wraps the currently revealed text without changing the
 typewriter cursor. Rich presenters consume the same scaled typography,
-spacing, density, and metric tokens. The remaining acceptance work is
+spacing, density, and metric tokens; their height ceilings now grow with the
+active readability scale on large safe viewports so larger screens reveal more
+rows instead of only enlarging existing rows. The remaining acceptance work is
 released-game screenshot QA across every rich presenter, theme, and opacity
 combination.
 
@@ -49,7 +51,8 @@ and leaves input hints or borders at the wrong size.
 - Dialogue rewraps from live revealed text without advancing its typewriter.
 - When content cannot fit, prefer wrapping, scrolling, paging, or a narrower
   detail pane before truncating essential values.
-- Floating panels remain content-sized and clamped to the safe viewport.
+- Compact floating panels remain content-sized; rich panels use scale-aware
+  height budgets and remain clamped to the safe viewport.
 - Full Screen uses the same scaled content rules over its themed backdrop.
 - Portrait and landscape layouts may choose different row counts, but must
   preserve the live cursor, scroll, and callbacks.
@@ -70,8 +73,9 @@ and leaves input hints or borders at the wrong size.
    compatible and do not need to hard-code one font size.
 
 The shared scaled theme and minimum-row resolver described in steps 1–6 ship
-in v0.7.0. Rich-screen screenshot QA and any screen-specific polish remain
-follow-up work rather than a change to the scaling contract.
+in v0.7.0. The v0.7.1 follow-up makes rich-screen height budgets scale-aware
+and adds a large-desktop shop regression check; released-game screenshot QA
+and any screen-specific polish remain follow-up work.
 
 ## Compatibility and performance
 

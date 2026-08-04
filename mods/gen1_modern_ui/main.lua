@@ -1440,7 +1440,28 @@ return function(mod)
     consumePending(input, { select = true })
   end
 
+  local function remapChoiceDirections(game)
+    local top = game and game.stack and game.stack.top and game.stack:top()
+    local input = game and game.input
+    if not (choiceClass and top and inherits(classOf(top), choiceClass)
+        and input and type(input.pressQueue) == "table") then
+      return
+    end
+    -- The modern presenter can place YES/NO side by side on a wide window,
+    -- while ChoiceBox's released update only listens to up/down. Translate
+    -- horizontal presses at the input boundary so the engine retains all of
+    -- its existing selection, sound, and callback behavior.
+    for index, button in ipairs(input.pressQueue) do
+      if button == "left" then
+        input.pressQueue[index] = "up"
+      elseif button == "right" then
+        input.pressQueue[index] = "down"
+      end
+    end
+  end
+
   mod.hooks:wrap("input.step", function(next, game, dt)
+    remapChoiceDirections(game)
     local result = next(game, dt)
     if not game then
       return result
@@ -2138,6 +2159,19 @@ return function(mod)
   local function themeMetric(theme, name, fallback)
     local metrics = theme.metrics or {}
     return metrics[name] or fallback
+  end
+
+  -- Rich presenters historically used fixed height ceilings. That worked at
+  -- the reference viewport, but it made larger UI/font scales consume more
+  -- rows without giving the screen any additional vertical room. Scale the
+  -- ceiling with the largest readability control, then let each presenter
+  -- clamp it to the safe viewport below.
+  local function scaledPanelHeight(theme, landscape, landscapeBase, portraitBase)
+    local scale = theme.scale or {}
+    local readabilityScale = math.max(tonumber(scale.ui) or 1,
+      tonumber(scale.font) or 1)
+    local base = landscape and landscapeBase or portraitBase
+    return base * readabilityScale
   end
 
   local function layoutFor(viewport, theme, kind, rows, title, footerText)
@@ -2841,7 +2875,7 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       theme.density.panelMax or 780)
     local panelH = math.min(h - gutter * 2,
-      (w > h * 1.20) and 430 or 560)
+      scaledPanelHeight(theme, w > h * 1.20, 430, 560))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local compact = panelH < 380
     local mon = summaryPokemon(state) or {}
@@ -3090,7 +3124,7 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 860))
     local panelH = math.min(h - gutter * 2,
-      (w > h * 1.15) and 500 or 640)
+      scaledPanelHeight(theme, w > h * 1.15, 500, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.15
 
@@ -3419,7 +3453,7 @@ return function(mod)
     local footerH = theme.typography.caption + spacing.lg
     local compactH = headerH + footerH + math.min(#rows, 6) *
       minimumRowHeight(theme) + spacing.lg * 2
-    local richH = w > h * 1.20 and 520 or 640
+    local richH = scaledPanelHeight(theme, w > h * 1.20, 520, 640)
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.15
@@ -3520,7 +3554,7 @@ return function(mod)
     local compactH = theme.typography.title + theme.typography.caption
       + math.min(#rows, 6) * minimumRowHeight(theme)
       + spacing.lg * 3
-    local richH = w > h * 1.20 and 520 or 640
+    local richH = scaledPanelHeight(theme, w > h * 1.20, 520, 640)
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     if minimal then
@@ -3592,7 +3626,7 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 920))
     local panelH = math.min(h - gutter * 2,
-      (w > h * 1.05) and 520 or 680)
+      scaledPanelHeight(theme, w > h * 1.05, 520, 680))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.05
     local headerH = theme.typography.title + spacing.lg
@@ -3720,7 +3754,8 @@ return function(mod)
       + math.min(#rows, 7) * minimumRowHeight(theme)
       + spacing.lg * 3
     local panelH = math.min(h - gutter * 2,
-      minimalBag and compactBagH or ((w > h * 1.05) and 520 or 640))
+      minimalBag and compactBagH
+        or scaledPanelHeight(theme, w > h * 1.05, 520, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.05
     local minimal = minimalBag
@@ -3860,7 +3895,8 @@ return function(mod)
       + math.min(#rows, 6) * minimumRowHeight(theme)
       + spacing.lg * 4
     local panelH = math.min(h - gutter * 2,
-      minimalContext and compactContextH or ((w > h * 1.10) and 520 or 640))
+      minimalContext and compactContextH
+        or scaledPanelHeight(theme, w > h * 1.10, 520, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.10
     local headerH = theme.typography.title + spacing.lg
@@ -3987,7 +4023,7 @@ return function(mod)
     -- The grid itself is the content. Keep a compact square-cell frame
     -- instead of reserving the entire viewport around a 5x4 or 3x2 grid.
     local panelH = math.min(h - gutter * 2,
-      (w > h * 1.20) and 470 or 620)
+      scaledPanelHeight(theme, w > h * 1.20, 470, 620))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local mode = state.mode == "party" and "party" or "box"
     local cols, gridRows = mode == "box" and 5 or 3, mode == "box" and 4 or 2
@@ -4128,7 +4164,7 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       theme.density.panelMax or 780)
     local panelH = math.min(h - gutter * 2,
-      (w > h * 1.10) and 520 or 700)
+      scaledPanelHeight(theme, w > h * 1.10, 520, 700))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local def = dexDefinition(game, state) or {}
     local species = def.id or state.species or state.speciesId
