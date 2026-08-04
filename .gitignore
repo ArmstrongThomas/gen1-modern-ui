@@ -1,0 +1,5 @@
+artifacts/
+*.gpa.gb
+*.tmp
+*.bak
+.DS_Store
