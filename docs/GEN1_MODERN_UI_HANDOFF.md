@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.6.6 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.6.7 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -31,9 +31,11 @@ detail model and continues to render injected live submenu rows. Battle states
 have a responsive, draw-only overlay for status cards, HP bars, sprites,
 action/move panels, and messages, but it is WIP and disabled by default.
 
-The Start-menu hook can collect rows appended by lower-priority mod hooks into
-one **MOD MENUS** entry (`START MOD MENUS`, enabled by default). Rows retain
-their original descriptors and callbacks inside the submenu; disabling the
+The Start-menu hook collects rows appended by lower-priority mod hooks and this
+mod's UI settings into one **MOD MENUS** entry (`START MOD MENUS`, enabled by
+default). Rows retain their original descriptors and callbacks inside the
+submenu. Pressing **SELECT** on the highlighted row toggles a stable-ID pin so
+frequently used mod menus can remain direct Start-menu entries; disabling the
 option restores the flat list. This is intentionally conservative because the
 released hook does not require a mod-id field on every row.
 
@@ -44,7 +46,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.6.6. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.6.7. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -91,7 +93,7 @@ that file and appends the generated archive checksum.
 8. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.6.6 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.6.7 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.

@@ -238,6 +238,9 @@ local function titleFor(Strings, state, kind)
     QualityOfLife = "QUALITY OF LIFE",
   }
   local title = state and state.title or names[state and state.screenId]
+  if state and state._gen1ModMenus and not state.title then
+    title = "MOD MENUS"
+  end
   if not title then
     title = ({ menu = "MENU", list = "LIST", choice = "CHOOSE",
                quantity = "QUANTITY", options = "OPTIONS",
@@ -683,8 +686,8 @@ return function(mod)
     -- Retained as a migration field for saves created by v0.5.0.
     { key = "desktopFloating", label = "DESKTOP FLOATING UI", type = "toggle", default = true,
       description = "Legacy compatibility setting. Use LAYOUT STYLE for new installs.", },
-    { key = "startMenuShortcut", label = "START UI SETTINGS", type = "toggle", default = true,
-      description = "Add a direct UI SETTINGS entry to the in-game Start menu.", },
+    { key = "startMenuShortcut", label = "PIN UI SETTINGS", type = "toggle", default = false,
+      description = "Pin UI SETTINGS directly on the Start menu. When off, it remains under MOD MENUS.", },
     { key = "startMenuModMenus", label = "START MOD MENUS", type = "toggle", default = true,
       description = "Group menu entries added by other mods under one MOD MENUS entry.", },
     { key = "startMenuFastJump", label = "START MENU FAST JUMP", type = "toggle", default = true,
@@ -790,6 +793,66 @@ return function(mod)
     return manager
   end
 
+  -- Start-menu pinning is intentionally keyed by the descriptor's stable id.
+  -- A label fallback keeps older third-party rows usable, but authors should
+  -- provide ids so renaming a menu does not create a second pin.
+  local pinCache
+  local function pinKey(item)
+    if type(item) ~= "table" then return nil end
+    if type(item.id) == "string" and item.id ~= "" then return item.id end
+    if type(item.label) == "string" and item.label ~= "" then
+      return "label:" .. item.label
+    end
+    return nil
+  end
+
+  local function pinMap()
+    if type(pinCache) == "table" then return pinCache end
+    local ok, stored = false, nil
+    if mod.save and type(mod.save.get) == "function" then
+      ok, stored = pcall(mod.save.get, mod.save, "startMenuPins", {})
+    end
+    pinCache = ok and type(stored) == "table" and stored or {}
+    return pinCache
+  end
+
+  local function isPinned(item)
+    local key = pinKey(item)
+    if not key then return false end
+    local pins = pinMap()
+    if pins[key] ~= nil then return pins[key] == true end
+    -- Migrate the old direct-shortcut setting for existing saves. An
+    -- explicit pin-map value always wins, so SELECT can unpin it normally.
+    return key == "gen1_modern_ui.options"
+      and option("startMenuShortcut", false) == true
+  end
+
+  local function setPinned(item, pinned)
+    local key = pinKey(item)
+    if not key then return nil end
+    local pins = pinMap()
+    pins[key] = pinned == true
+    if mod.save and type(mod.save.set) == "function" then
+      pcall(mod.save.set, mod.save, "startMenuPins", pins)
+    end
+    return pins[key]
+  end
+
+  local function togglePinned(item)
+    local key = pinKey(item)
+    if not key then return nil end
+    local nextPinned = not isPinned(item)
+    return setPinned(item, nextPinned)
+  end
+
+  local function uiSettingsRow(game)
+    return {
+      id = "gen1_modern_ui.options",
+      label = "UI SETTINGS",
+      onSelect = function() openModernOptions(game) end,
+    }
+  end
+
   local function openModMenus(game, items)
     if not (game and mod.ui and mod.ui.Menu and type(mod.ui.Menu.new) == "function") then
       return
@@ -800,13 +863,15 @@ return function(mod)
       tx = 8, ty = 1, tw = 12,
       onCancel = function() mod.ui.push(game, "StartMenu") end,
     })
+    menu._gen1ModMenus = true
     game.stack:push(menu)
   end
 
-  -- The shortcut is additive and anchored on a stable label. It remains a
-  -- normal Start-menu row, so the existing callbacks and Back path stay
-  -- engine-owned. Older clients without ManagerState/openOptions simply open
-  -- the ordinary manager and retain full compatibility.
+  -- The grouping is additive and anchored on stable labels. Each descriptor
+  -- remains intact, so the source mod still owns its callback and navigation.
+  -- UI SETTINGS is treated as one more mod menu: it is grouped by default and
+  -- only appears directly when pinned (or when an older save migrated the
+  -- former START UI SETTINGS shortcut setting).
   mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
     local original = {}
     for _, item in ipairs(items or {}) do original[item] = true end
@@ -820,27 +885,49 @@ return function(mod)
     -- presentation layer without rewriting labels or guessing at vanilla rows.
     local canGroupModMenus = mod.ui and mod.ui.Menu
       and type(mod.ui.Menu.new) == "function"
-    if option("startMenuModMenus", true) ~= false and canGroupModMenus then
-      local added, addedSet, hasOriginal = {}, {}, false
-      for _, item in ipairs(out) do
-        if type(item) == "table" then
-          if original[item] then
-            hasOriginal = true
-          elseif item.id ~= "gen1_modern_ui.options"
-              and item.id ~= "gen1_modern_ui.mod_menus" then
-            added[#added + 1] = item
-            addedSet[item] = true
-          end
+    local groupingEnabled = option("startMenuModMenus", true) ~= false
+      and canGroupModMenus
+    local settings = uiSettingsRow(game)
+    local added, addedSet, hasOriginal, hasGroup, hasSettings = {}, {}, false,
+      false, false
+    local pinnedDirect = {}
+    for _, item in ipairs(out) do
+      if type(item) == "table" then
+        if original[item] then
+          hasOriginal = true
+        elseif item.id == "gen1_modern_ui.mod_menus" then
+          hasGroup = true
+        elseif item.id == "gen1_modern_ui.options" then
+          hasSettings = true
+        else
+          added[#added + 1] = item
+          addedSet[item] = true
+          if isPinned(item) then pinnedDirect[item] = true end
         end
       end
-      if #added > 0 and hasOriginal then
-        for index = #out, 1, -1 do
-          if addedSet[out[index]] then table.remove(out, index) end
+    end
+
+    if groupingEnabled then
+      -- Unpinned rows live inside MOD MENUS; pinned rows remain direct start
+      -- menu entries. UI SETTINGS follows the same rule and is grouped by
+      -- default, which keeps the root menu short as other mods add options.
+      local groupedItems = {}
+      for _, item in ipairs(added) do
+        if not pinnedDirect[item] then groupedItems[#groupedItems + 1] = item end
+      end
+      if not isPinned(settings) then groupedItems[#groupedItems + 1] = settings end
+
+      for index = #out, 1, -1 do
+        local item = out[index]
+        if addedSet[item] and not pinnedDirect[item] then
+          table.remove(out, index)
         end
+      end
+      if #groupedItems > 0 and hasOriginal and not hasGroup then
         local grouped = {
           id = "gen1_modern_ui.mod_menus",
           label = Strings("MOD MENUS"),
-          onSelect = function() openModMenus(game, added) end,
+          onSelect = function() openModMenus(game, groupedItems) end,
         }
         if mod.ui and type(mod.ui.insertBefore) == "function" then
           mod.ui.insertBefore(out, "MODS", grouped)
@@ -848,23 +935,26 @@ return function(mod)
           table.insert(out, grouped)
         end
       end
-    end
-
-    if option("startMenuShortcut", true) == false then return out end
-    for _, item in ipairs(out) do
-      if type(item) == "table" and item.id == "gen1_modern_ui.options" then
-        return out
+    elseif not hasSettings then
+      -- Disabling grouping should never strand the modern UI settings. In
+      -- that explicit compatibility mode the settings row is direct again.
+      hasSettings = true
+      if mod.ui and type(mod.ui.insertBefore) == "function" then
+        mod.ui.insertBefore(out, "OPTION", settings)
+      else
+        table.insert(out, 1, settings)
       end
     end
-    local shortcut = {
-      id = "gen1_modern_ui.options",
-      label = Strings("UI SETTINGS"),
-      onSelect = function() openModernOptions(game) end,
-    }
-    if mod.ui and type(mod.ui.insertBefore) == "function" then
-      return mod.ui.insertBefore(out, "OPTION", shortcut)
+
+    -- A pinned UI SETTINGS row is direct even while grouping is enabled. This
+    -- also migrates the former START UI SETTINGS shortcut setting via isPinned.
+    if groupingEnabled and isPinned(settings) and not hasSettings then
+      if mod.ui and type(mod.ui.insertBefore) == "function" then
+        mod.ui.insertBefore(out, "OPTION", settings)
+      else
+        table.insert(out, 1, settings)
+      end
     end
-    table.insert(out, 1, shortcut)
     return out
   end, 90)
 
@@ -914,6 +1004,19 @@ return function(mod)
     return top
   end
 
+  local function updateModMenuPin(game, input)
+    local top = game and game.stack and game.stack.top and game.stack:top()
+    if not (top and top._gen1ModMenus and type(top.items) == "table"
+        and type(top.index) == "number") then return end
+    if not pendingPress(input, "select") then return end
+    local item = top.items[top.index]
+    if togglePinned(item) ~= nil then
+      -- SELECT is a presentation-only pin action. Leave A/arrow callbacks to
+      -- the engine so every source mod keeps its normal menu behavior.
+      consumePending(input, { select = true })
+    end
+  end
+
   local function updateOptionHelp(game, input)
     if option("managerUi", true) == false then return end
     local state = optionState(game)
@@ -952,6 +1055,7 @@ return function(mod)
     end
     if syncWorldVisibility then syncWorldVisibility(game) end
     local input = game.input
+    updateModMenuPin(game, input)
     updateOptionHelp(game, input)
     if option("startMenuFastJump", true) == false then return result end
     local top = game.stack and game.stack.top and game.stack:top()
@@ -1344,53 +1448,10 @@ return function(mod)
   end
 
   -- TitleState draws its artwork and its native Menu into the same 160x144
-  -- UI canvas.  Unlike ordinary screens, clearing that canvas would erase the
-  -- logo and title Pokémon too.  The title menu publishes an inclusive tile
-  -- rectangle (`titleUiBox`), so vacate only that region before the normal
-  -- renderer composites the canvas.  This keeps the original title art while
-  -- removing the duplicate native Continue/New Game/Option menu underneath
-  -- the modern presenter.
-  local function titleMenuCanvasRect(game, layers)
-    if not game or not titleClass or type(layers) ~= "table" then return nil end
-    local states = game.stack and game.stack.states
-    if type(states) ~= "table" then return nil end
-    local hasTitle = false
-    for _, visible in ipairs(states) do
-      if visible and visible.screenId == "TitleState"
-          and inherits(classOf(visible), titleClass) then
-        hasTitle = true
-        break
-      end
-    end
-    if not hasTitle then return nil end
-    for _, layer in ipairs(layers) do
-      local state = layer and layer.state
-      local box = state and state.titleUiBox
-      if layer and layer.kind == "menu" and type(box) == "table"
-          and #box >= 4 then
-        local tx1, ty1 = tonumber(box[1]), tonumber(box[2])
-        local tx2, ty2 = tonumber(box[3]), tonumber(box[4])
-        if tx1 and ty1 and tx2 and ty2 and tx2 >= tx1 and ty2 >= ty1 then
-          return tx1 * 8, ty1 * 8,
-            (tx2 - tx1 + 1) * 8, (ty2 - ty1 + 1) * 8
-        end
-      end
-    end
-    return nil
-  end
-
-  local function clearCanvasRect(canvas, x, y, w, h)
-    if not (canvas and love and love.graphics and love.graphics.setCanvas
-        and love.graphics.setScissor and love.graphics.clear) then return end
-    love.graphics.push("all")
-    love.graphics.setCanvas(canvas)
-    if love.graphics.origin then love.graphics.origin() end
-    love.graphics.setScissor(x, y, w, h)
-    love.graphics.clear(0, 0, 0, 0)
-    love.graphics.setScissor()
-    love.graphics.pop()
-  end
-
+  -- UI canvas. Unlike ordinary screens, clearing that canvas would erase the
+  -- logo and title Pokémon too. The title Menu decorator suppresses the
+  -- duplicate native rows while the modern presenter owns the complete stack,
+  -- so the shared artwork canvas must remain untouched.
   local function optionValue(game, row)
     if not row or row.value == nil then return "" end
     if type(row.value) ~= "function" then return safeText(row.value) end
@@ -1493,13 +1554,17 @@ return function(mod)
           -- metadata; this keeps third-party list rows from leaking internals.
           value = item.right ~= nil and item.right or item.displayValue,
           enabled = item.enabled,
-          marker = item.ball or state.swapIndex == index or state.hollowIndex == index,
+          marker = item.ball or state.swapIndex == index or state.hollowIndex == index
+            or (state._gen1ModMenus and isPinned(item)),
           image = imageCandidate(item),
           source = item,
         }
       end
       if #rows == 0 then rows[1] = { label = Strings("Nothing here.") } end
       footer = state.footer
+      if state._gen1ModMenus then
+        footer = Strings("A  open   SELECT  pin/unpin   B  back")
+      end
       if not footer and state.money then
         local ok, money = pcall(state.money)
         if ok and money ~= nil then footer = ("¥%d"):format(money) end
@@ -4003,10 +4068,12 @@ return function(mod)
         love.graphics.setCanvas(ctx.uiCanvas)
         love.graphics.clear(0, 0, 0, 0)
         love.graphics.pop()
-      else
-        local tx, ty, tw, th = titleMenuCanvasRect(game, layers)
-        if tx then clearCanvasRect(ctx.uiCanvas, tx, ty, tw, th) end
       end
+      -- TitleState and its Menu share the same canvas as the logo and title
+      -- artwork. The title Menu decorator above already suppresses duplicate
+      -- native rows when the modern presenter is complete, so never clear a
+      -- rectangle here. Clearing the published `titleUiBox` exposes the
+      -- window's black backdrop and turns the title screen into a black block.
     end
     return handled
   end, 100)

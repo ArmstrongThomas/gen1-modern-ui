@@ -23,6 +23,7 @@ function love.load()
   local hooks = {}
   local eventListeners = {}
   local values = {}
+  local savedPins = {}
   local schemas = {}
   local menuDraws = 0
   local menuClass = {
@@ -87,6 +88,10 @@ function love.load()
       Menu = menuClass, ListMenu = listClass,
       ChoiceBox = choiceClass, QuantityBox = quantityClass,
       TextBox = textBoxClass,
+    },
+    save = {
+      get = function(_, key, default) return savedPins[key] or default end,
+      set = function(_, key, value) savedPins[key] = value end,
     },
   }
 
@@ -167,6 +172,8 @@ function love.load()
   local game = { overworld = overworld, stack = {
     states = { overworld, state },
     top = function(self) return self.states[#self.states] end,
+    push = function(self, value) self.states[#self.states + 1] = value end,
+    pop = function(self) return table.remove(self.states) end,
     visibleBase = function(self)
       for index = #self.states, 1, -1 do
         if self.states[index].isOpaque then return index end
@@ -178,13 +185,20 @@ function love.load()
     "start-menu hook registered")
   local shortcutItems = hooks["ui.start_menu.items"](
     function(_, items) return items end, game,
-    { { label = "SAVE" }, { label = "OPTION" } })
-  local shortcutFound = false
+    { { label = "SAVE" }, { label = "OPTION" }, { label = "MODS" } })
+  local shortcutFound, modMenusRow
   for _, item in ipairs(shortcutItems) do
-    if item.id == "gen1_modern_ui.options" then shortcutFound = true break end
+    if item.id == "gen1_modern_ui.options" then shortcutFound = true end
+    if item.id == "gen1_modern_ui.mod_menus" then modMenusRow = item end
   end
-  check(#shortcutItems == 3 and shortcutFound,
-    "Start menu exposes the direct UI settings shortcut")
+  check(not shortcutFound and modMenusRow,
+    "UI settings default under the MOD MENUS start entry")
+  modMenusRow.onSelect()
+  local groupedMenu = game.stack:top()
+  check(groupedMenu._gen1ModMenus and #groupedMenu.items == 1
+      and groupedMenu.items[1].id == "gen1_modern_ui.options",
+    "MOD MENUS contains UI SETTINGS by default")
+  game.stack:pop()
   local modMenuRow = { id = "example.dexnav", label = "DEXNAV",
     onSelect = function() end }
   local groupedItems = hooks["ui.start_menu.items"](
@@ -197,6 +211,37 @@ function love.load()
   end
   check(groupedFound and not leaked,
     "Start menu groups rows appended by other mods")
+  local pinMenuRow
+  for _, item in ipairs(groupedItems) do
+    if item.id == "gen1_modern_ui.mod_menus" then pinMenuRow = item end
+  end
+  check(pinMenuRow and type(pinMenuRow.onSelect) == "function",
+    "MOD MENUS exposes a navigable grouped submenu")
+  pinMenuRow.onSelect()
+  local pinMenu = game.stack:top()
+  local dexIndex
+  for index, item in ipairs(pinMenu.items) do
+    if item.id == "example.dexnav" then dexIndex = index end
+  end
+  check(dexIndex, "grouped submenu retains third-party row identity")
+  pinMenu.index = dexIndex
+  local pinInput = { pressQueue = { "select" } }
+  local pinGame = { input = pinInput, stack = game.stack }
+  hooks["input.step"](function() end, pinGame, 0)
+  check(savedPins.startMenuPins and savedPins.startMenuPins["example.dexnav"] == true
+      and #pinInput.pressQueue == 0,
+    "SELECT pins the highlighted mod menu")
+  game.stack:pop()
+  local pinnedItems = hooks["ui.start_menu.items"](
+    function(_, list) list[#list + 1] = modMenuRow return list end, game,
+    { { label = "OPTION" }, { label = "MODS" } })
+  local pinnedDirect, pinnedGroup = false, false
+  for _, item in ipairs(pinnedItems) do
+    if item.id == "example.dexnav" then pinnedDirect = true end
+    if item.id == "gen1_modern_ui.mod_menus" then pinnedGroup = true end
+  end
+  check(pinnedDirect and pinnedGroup,
+    "pinned mod menus remain direct while other rows stay grouped")
   values.startMenuModMenus = false
   local flatItems = hooks["ui.start_menu.items"](
     function(_, list) list[#list + 1] = modMenuRow return list end, game,
@@ -362,8 +407,8 @@ function love.load()
   startState.draw = nil
 
   -- Title art shares the UI canvas with its private main Menu. The decorator
-  -- suppresses only that ordinary Menu draw while compose vacates its small
-  -- canvas rectangle and preserves the title pixels around it.
+  -- suppresses only that ordinary Menu draw; compose must preserve the whole
+  -- canvas so the title background and artwork cannot become a black block.
   local title = setmetatable({ screenId = "TitleState" }, { __index = titleClass })
   game.stack.states = { title }
   local titleMenu = setmetatable({ items = { { label = "NEW GAME" } }, index = 1,
@@ -376,8 +421,8 @@ function love.load()
   check(menuDraws == 0, "modern title Menu suppresses only its classic draw")
   fill()
   compose(false)
-  check(alphaAt(0, 0) == 0 and alphaAt(15, 15) == 1,
-    "title menu rectangle is cleared while surrounding artwork is preserved")
+  check(alphaAt(0, 0) == 1 and alphaAt(15, 15) == 1,
+    "title artwork remains intact while the native menu is suppressed")
   game.stack.states = { title, titleMenu, { draw = function() end } }
   menuDraws = 0
   titleMenu:draw()

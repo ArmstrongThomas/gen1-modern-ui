@@ -75,7 +75,7 @@ than their live semantic contract.
 | YES/NO | `ChoiceBox`; `index`, `pending` | Shipped layered modal | Renders above a complete modern parent stack; pending timing remains engine-owned. |
 | Quantity | `QuantityBox`; `qty`, `max`, `unitPrice` | Shipped layered modal | Layers above Bag/Shop/PC and displays totals when unit price is available. |
 | Picture popup | `mod.ui.PicBox`; `image`, `text` | Vanilla | **P2.** Aspect-fit nearest-neighbor image modal plus caption. |
-| Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel and automatic third-party rows. |
+| Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel, group third-party/UI settings rows under MOD MENUS, and support SELECT pin/unpin for direct shortcuts. |
 | Save/quit flow | Start row plus TextBox and ChoiceBox states | Stack-ready; QA needed | Dialogue/modal layering is shipped; test overwrite, saving, quit, and return-to-title branches before calling the family complete. |
 | Trainer/badge card | `screenId="TrainerCard"`; player ID/name, money, play time, badges, portrait | Shipped | Responsive profile card, five-digit Trainer ID, active portrait, live metadata, and scalable badge grid with optional custom badge art. |
 | Bag | `screenId="BagMenu"`; rows/item defs/counts/swap/money plus nested actions | Shipped specialized presenter | Live counts, pockets, BASE/SELL values, TM move/type/PP/value, swap markers, and layered actions. Continue compatibility QA with Modern Bag, Bag 999, Item Shortcut, and reusable machines. |

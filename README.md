@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.6 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.7 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -45,11 +45,11 @@ when the listing is enabled there.
   callbacks remain engine-owned.
 - Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
   transparent panels readable without fading borders or labels.
-- **START UI SETTINGS** adds a direct Start-menu shortcut to this mod's
-  options, enabled by default.
-- **START MOD MENUS** groups rows appended by other mods under one **MOD
-  MENUS** entry, keeping a busy Start menu readable while preserving each
-  mod's live callback. It can be disabled when a flat list is preferred.
+- **START MOD MENUS** groups rows appended by other mods and this mod's **UI
+  SETTINGS** beneath one **MOD MENUS** entry by default, keeping a busy Start
+  menu readable while preserving each mod's live callback. Highlight a row in
+  that submenu and press **SELECT** to pin or unpin it on the Start menu. The
+  grouping can be disabled when a flat list is preferred.
 - **START MENU FAST JUMP** lets a left/right touch-button press (or the same
   directional input from a keyboard/controller) jump five rows in the Start
   menu, with normal up/down navigation unchanged.
@@ -69,7 +69,7 @@ when the listing is enabled there.
   game's typewriter timing and callback/input ownership.
 - The in-game Start menu and title-screen main menu use the same floating
   desktop presentation; title art is preserved independently and the native
-  title menu is cleared from its shared canvas so it is not drawn twice.
+  title menu is suppressed without clearing the shared artwork canvas.
 - Responsive Trainer Card, Pokédex list, Bag, Shop, Player PC, Party, and
   Bill's PC presenters built from live state rather than replacement menus.
 - Party and Bill's PC Pokémon lists include active sprite-pack artwork, HP and
@@ -170,7 +170,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.6.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.7.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -186,7 +186,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.6.6`) and push that commit to `main`. Each release includes a commit-based
+`0.6.7`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds
