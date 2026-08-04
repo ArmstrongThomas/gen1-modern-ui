@@ -110,6 +110,8 @@ See [the handoff document](docs/GEN1_MODERN_UI_HANDOFF.md) for the compatibility
 contract, layout rules, testing notes, and release checklist.
 The [screen roadmap](docs/SCREEN_ROADMAP.md) tracks every audited built-in and
 installed-mod UI surface, its detection contract, priority, and fallback plan.
+The [readability and scaling plan](docs/READABILITY_SCALING_PLAN.md) defines
+the next UI/font/dialogue sizing milestone and its mobile reflow requirements.
 The [input and interoperability audit](docs/INPUT_AND_INTEROP_AUDIT.md)
 documents the current engine pointer seams, safe direct-navigation rules, and
 the adapter plan for category bags and other replacement UIs.

@@ -312,6 +312,9 @@ for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
 
 ## Next milestones
 
+- Implement the independent UI/font/dialogue scaling milestone in
+  `docs/READABILITY_SCALING_PLAN.md`, starting with dialogue and generic menu
+  measurement before applying it to richer presenters.
 - Exercise the new dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag,
   Shop, and Player-PC
   presenters in the released game with installed UI/category mods and retain
