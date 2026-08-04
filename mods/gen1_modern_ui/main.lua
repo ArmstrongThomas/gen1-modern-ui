@@ -866,7 +866,16 @@ return function(mod)
         if candidate.id == MOD_ID then manifest = candidate break end
       end
     end
-    if manifest then pcall(manager.openOptions, manager, manifest) end
+    if manifest then
+      -- ManagerState's normal detail -> options path sets currentMod before
+      -- opening the option rows.  The Start-menu shortcut jumps directly to
+      -- openOptions, so establish that context here as well; otherwise the
+      -- category adapter cannot recognize our manifest and the flat legacy
+      -- list is rendered instead.
+      manager.currentMod = manifest
+      manager._gen1ModernOptions = true
+      pcall(manager.openOptions, manager, manifest)
+    end
     return manager
   end
 
@@ -922,6 +931,14 @@ return function(mod)
     return setPinned(item, nextPinned)
   end
 
+  local function decoratePinned(item)
+    if type(item) ~= "table" then return item end
+    local decorated = {}
+    for key, value in pairs(item) do decorated[key] = value end
+    decorated._gen1Pinned = true
+    return decorated
+  end
+
   local function uiSettingsRow(game)
     return {
       id = "gen1_modern_ui.options",
@@ -967,6 +984,7 @@ return function(mod)
     local settings = uiSettingsRow(game)
     local added, addedSet, hasOriginal, hasGroup, hasSettings = {}, {}, false,
       false, false
+    local settingsItem
     local pinnedDirect = {}
     for _, item in ipairs(out) do
       if type(item) == "table" then
@@ -976,6 +994,7 @@ return function(mod)
           hasGroup = true
         elseif item.id == "gen1_modern_ui.options" then
           hasSettings = true
+          settingsItem = item
         else
           added[#added + 1] = item
           addedSet[item] = true
@@ -985,19 +1004,35 @@ return function(mod)
     end
 
     if groupingEnabled then
-      -- Unpinned rows live inside MOD MENUS; pinned rows remain direct start
-      -- menu entries. UI SETTINGS follows the same rule and is grouped by
-      -- default, which keeps the root menu short as other mods add options.
+      -- MOD MENUS is the complete inventory of added entries. Pinning changes
+      -- only whether a row is also promoted to the root Start menu; it must
+      -- never remove the row from this grouped view, otherwise SELECT could
+      -- not be used to unpin it later.
       local groupedItems = {}
       for _, item in ipairs(added) do
-        if not pinnedDirect[item] then groupedItems[#groupedItems + 1] = item end
+        groupedItems[#groupedItems + 1] = item
       end
-      if not isPinned(settings) then groupedItems[#groupedItems + 1] = settings end
+      if not settingsItem or not addedSet[settingsItem] then
+        groupedItems[#groupedItems + 1] = settings
+      end
 
       for index = #out, 1, -1 do
         local item = out[index]
         if addedSet[item] and not pinnedDirect[item] then
           table.remove(out, index)
+        elseif item.id == "gen1_modern_ui.options" and not isPinned(item) then
+          -- Respect an already-present descriptor supplied by another hook,
+          -- but keep the unpinned row grouped with the canonical settings.
+          table.remove(out, index)
+          settingsItem = item
+        end
+      end
+      -- Direct entries are shallow copies so the modern presenter can expose
+      -- a stable visual PINNED marker without mutating another mod's row.
+      for index, item in ipairs(out) do
+        if pinnedDirect[item] or (item.id == "gen1_modern_ui.options"
+            and isPinned(item)) then
+          out[index] = decoratePinned(item)
         end
       end
       if #groupedItems > 0 and hasOriginal and not hasGroup then
@@ -1026,10 +1061,11 @@ return function(mod)
     -- A pinned UI SETTINGS row is direct even while grouping is enabled. This
     -- also migrates the former START UI SETTINGS shortcut setting via isPinned.
     if groupingEnabled and isPinned(settings) and not hasSettings then
+      local directSettings = decoratePinned(settings)
       if mod.ui and type(mod.ui.insertBefore) == "function" then
-        mod.ui.insertBefore(out, "OPTION", settings)
+        mod.ui.insertBefore(out, "OPTION", directSettings)
       else
-        table.insert(out, 1, settings)
+        table.insert(out, 1, directSettings)
       end
     end
     return out
@@ -1753,15 +1789,21 @@ return function(mod)
       rows = { { label = Strings("QUANTITY"), value = value } }
     else
       for index, item in ipairs(state.items or {}) do
+        local value = item.right ~= nil and item.right or item.displayValue
+        local pinned = isPinned(item)
+        if pinned then
+          local renderedValue = safeText(value)
+          value = renderedValue ~= "" and (renderedValue .. "  PINNED") or "PINNED"
+        end
         rows[#rows + 1] = {
           label = item.label or item.name or "",
           -- `value` is commonly an opaque callback payload, item ID, or table.
           -- Only render fields that a row explicitly declares as presentation
           -- metadata; this keeps third-party list rows from leaking internals.
-          value = item.right ~= nil and item.right or item.displayValue,
+          value = value,
           enabled = item.enabled,
           marker = item.ball or state.swapIndex == index or state.hollowIndex == index
-            or (state._gen1ModMenus and isPinned(item)),
+            or pinned,
           image = imageCandidate(item),
           source = item,
         }

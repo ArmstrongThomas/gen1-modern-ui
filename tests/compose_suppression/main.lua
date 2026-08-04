@@ -90,6 +90,19 @@ function love.load()
       Menu = menuClass, ListMenu = listClass,
       ChoiceBox = choiceClass, QuantityBox = quantityClass,
       TextBox = textBoxClass,
+      push = function(targetGame, screen)
+        if screen ~= "ManagerState" then return nil end
+        local manager = {
+          screenId = "ManagerState", screen = "list", cursor = 1, optionRows = {},
+          byId = { ["gen1_modern_ui"] = { id = "gen1_modern_ui" } },
+          openOptions = function(self)
+            self.screen = "options"
+            self.optionRows = { { id = "theme", label = "UI THEME" } }
+          end,
+        }
+        targetGame.stack:push(manager)
+        return manager
+      end,
     },
     save = {
       get = function(_, key, default) return savedPins[key] or default end,
@@ -214,6 +227,16 @@ function love.load()
   check(groupedMenu._gen1ModMenus and #groupedMenu.items == 1
       and groupedMenu.items[1].id == "gen1_modern_ui.options",
     "MOD MENUS contains UI SETTINGS by default")
+  groupedMenu.items[1].onSelect()
+  local shortcutManager = game.stack:top()
+  check(shortcutManager.currentMod and shortcutManager.currentMod.id == "gen1_modern_ui",
+    "UI SETTINGS shortcut opens the categorized modern options context")
+  hooks["input.step"](function() end,
+    { input = { pressQueue = {} }, stack = game.stack }, 0)
+  check(shortcutManager.optionRows[1]
+      and shortcutManager.optionRows[1].id == "__category:appearance",
+    "direct UI SETTINGS opens with categorized option rows")
+  game.stack:pop()
   game.stack:pop()
   local modMenuRow = { id = "example.dexnav", label = "DEXNAV",
     onSelect = function() end }
@@ -236,10 +259,13 @@ function love.load()
   pinMenuRow.onSelect()
   local pinMenu = game.stack:top()
   local dexIndex
+  local settingsIndex
   for index, item in ipairs(pinMenu.items) do
     if item.id == "example.dexnav" then dexIndex = index end
+    if item.id == "gen1_modern_ui.options" then settingsIndex = index end
   end
-  check(dexIndex, "grouped submenu retains third-party row identity")
+  check(dexIndex and settingsIndex,
+    "grouped submenu retains every third-party row and UI SETTINGS")
   pinMenu.index = dexIndex
   local pinInput = { pressQueue = { "select" } }
   local pinGame = { input = pinInput, stack = game.stack }
@@ -258,6 +284,41 @@ function love.load()
   end
   check(pinnedDirect and pinnedGroup,
     "pinned mod menus remain direct while other rows stay grouped")
+  local pinnedDirectRow
+  for _, item in ipairs(pinnedItems) do
+    if item.id == "example.dexnav" then pinnedDirectRow = item end
+  end
+  check(pinnedDirectRow and pinnedDirectRow._gen1Pinned == true,
+    "pinned direct rows carry a visible presentation marker")
+
+  -- A pinned row remains in MOD MENUS so SELECT can toggle it back off.
+  local pinnedGroupRow
+  for _, item in ipairs(pinnedItems) do
+    if item.id == "gen1_modern_ui.mod_menus" then pinnedGroupRow = item end
+  end
+  pinnedGroupRow.onSelect()
+  local pinnedGroupMenu = game.stack:top()
+  local pinnedDexIndex
+  for index, item in ipairs(pinnedGroupMenu.items) do
+    if item.id == "example.dexnav" then pinnedDexIndex = index end
+  end
+  check(pinnedDexIndex, "pinned row remains available in MOD MENUS")
+  pinnedGroupMenu.index = pinnedDexIndex
+  local unpinInput = { pressQueue = { "select" } }
+  hooks["input.step"](function() end, { input = unpinInput, stack = game.stack }, 0)
+  check(savedPins.startMenuPins and savedPins.startMenuPins["example.dexnav"] == false
+      and #unpinInput.pressQueue == 0,
+    "SELECT unpins the highlighted mod menu")
+  game.stack:pop()
+  local unpinnedItems = hooks["ui.start_menu.items"](
+    function(_, list) list[#list + 1] = modMenuRow return list end, game,
+    { { label = "OPTION" }, { label = "MODS" } })
+  local directAfterUnpin = false
+  for _, item in ipairs(unpinnedItems) do
+    if item.id == "example.dexnav" then directAfterUnpin = true end
+  end
+  check(not directAfterUnpin,
+    "unpinning removes the row from the root Start menu")
   values.startMenuModMenus = false
   local flatItems = hooks["ui.start_menu.items"](
     function(_, list) list[#list + 1] = modMenuRow return list end, game,
