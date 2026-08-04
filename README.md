@@ -10,15 +10,25 @@ modify the game executable or require a custom engine checkout at runtime.
 
 1. Download the newest `gen1_modern_ui-<version>.zip` from the
    [Releases page](https://github.com/ArmstrongThomas/gen1-modern-ui/releases).
-2. Extract the archive into
-   `%APPDATA%\pokemon-love2d\mods\gen1_modern_ui` so that `manifest.json` and
-   `main.lua` are directly inside that folder.
-3. Restart gen1recomp, then enable **Gen1 Modern UI** under the in-game
-   **Mods → UI** section if it is not already enabled.
+2. Launch gen1recomp and open the **Mods** tab.
+3. Choose **Import mod .zip**, select the downloaded archive, and confirm the
+   import.
+4. Enable **Gen1 Modern UI** under the **UI** section if it is not already
+   enabled, then restart the game if prompted.
 
-The archive is already in the client-ready mod format. Do not add an extra
-nested `gen1_modern_ui` folder inside the destination. Windows users can also
-use `sync_gen1_modern_ui.cmd` when working from a source checkout.
+The launcher handles extraction and installation; users do not need to unpack
+the archive manually. Windows users can also use `sync_gen1_modern_ui.cmd` when
+working from a source checkout.
+
+## Updates
+
+The mod manifest advertises this repository as
+`ArmstrongThomas/gen1-modern-ui`, and every release includes the matching
+`gen1_modern_ui-<version>.zip` asset. This lets gen1recomp show the mod's
+available versions and offer updates from its Mods panel. The same release
+shape is compatible with the community
+[gen1recomp mod index](https://github.com/bryanthaboi/gen1recomp-mod-index)
+when the listing is enabled there.
 
 ## Highlights
 

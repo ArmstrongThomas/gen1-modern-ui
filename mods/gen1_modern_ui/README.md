@@ -11,15 +11,18 @@ for input, state transitions, and callbacks.
 
 Download the newest archive from the
 [Gen1 Modern UI Releases page](https://github.com/ArmstrongThomas/gen1-modern-ui/releases),
-then extract its contents into
-`%APPDATA%\pokemon-love2d\mods\gen1_modern_ui`. Keep `manifest.json` and
-`main.lua` directly inside that folder. Restart gen1recomp and enable the mod
-under **Mods → UI** if needed.
+then launch gen1recomp and open **Mods → Import mod .zip**. Select the archive,
+confirm the import, and enable the mod under **UI** if needed. The launcher
+extracts and installs the package automatically.
 
 For bug reports, compatibility requests, or new UI ideas, please
 [open an issue](https://github.com/ArmstrongThomas/gen1-modern-ui/issues) with
 your gen1recomp version, screen, resolution/orientation, and reproduction
 details.
+
+The manifest points to `ArmstrongThomas/gen1-modern-ui`, so gen1recomp can
+check Releases for newer `gen1_modern_ui-<version>.zip` packages and offer
+updates from the Mods panel.
 
 ## Layout
 

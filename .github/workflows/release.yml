@@ -119,14 +119,12 @@ jobs:
           ## Quick start
 
           1. Download **$ASSET** from the Assets section below.
-          2. Extract its five files directly into
-             `%APPDATA%\\pokemon-love2d\\mods\\gen1_modern_ui`.
-          3. Restart the game so the mod loader discovers the updated mod.
-          4. Open the in-game Mods menu and enable **Gen1 Modern UI** under **UI**
-             if it is not already enabled.
+          2. In gen1recomp, open **Mods → Import mod .zip** and select the archive.
+          3. Confirm the import, then enable **Gen1 Modern UI** under **UI**.
+          4. Restart the game if prompted.
 
-          The included archive is a launcher-ready mod package; do not place an
-          extra nested `gen1_modern_ui` folder inside the target directory.
+          The launcher extracts and installs the package automatically; manual
+          archive extraction is not required.
 
           ## Compatibility and notes
 

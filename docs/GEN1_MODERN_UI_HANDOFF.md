@@ -25,7 +25,7 @@ version; a source checkout is optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.1.0. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.2.0. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
