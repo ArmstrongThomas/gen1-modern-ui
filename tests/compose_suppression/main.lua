@@ -581,6 +581,8 @@ function love.load()
   compose(false)
   check(pixelAlpha(floatingSummary, 320, 180) > 0,
     "floating Summary presenter survives classic UI suppression")
+  check(pixelAlpha(floatingSummary, 20, 20) > 0,
+    "nested Summary uses its rich presenter instead of a generic modal")
 
   local dexEntry = setmetatable({ screenId = "DexEntryMenu", vanilla = {},
     def = game.data.pokemon.TESTMON, view = "data", forceOwned = true },
@@ -596,6 +598,8 @@ function love.load()
   compose(false)
   check(pixelAlpha(floatingDexEntry, 320, 180) > 0,
     "floating Dex Entry presenter survives classic UI suppression")
+  check(pixelAlpha(floatingDexEntry, 20, 20) > 0,
+    "nested Dex Entry uses its rich presenter instead of a generic modal")
 
   -- A malformed/partially initialized rich state must never leave a blank
   -- world-visible frame.  The classic canvas remains available until the

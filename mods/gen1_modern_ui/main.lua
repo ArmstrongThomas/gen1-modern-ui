@@ -3758,6 +3758,16 @@ return function(mod)
     love.graphics.pop()
   end
 
+  -- A stack can contain a full rich screen above another rich screen (Party
+  -- -> Summary, Pokédex -> DexEntry, Box -> Pokémon list).  Only actual
+  -- modal layers should switch to the compact rows card.  Treating every
+  -- layer after the first as modal made those screens render an empty
+  -- "Nothing here" card and hid the page that was just opened.
+  local function isModalLayer(kind)
+    return kind == "menu" or kind == "list" or kind == "choice"
+      or kind == "quantity" or kind == "text"
+  end
+
   local function drawModernStack(game, layers, viewport)
     local theme = responsiveTheme(currentTheme(), viewport)
     love.graphics.push("all")
@@ -3765,7 +3775,7 @@ return function(mod)
     for index, layer in ipairs(layers) do
       local underKind = index > 1 and layers[index - 1].kind or nil
       drawModern(game, layer.state, layer.kind, viewport, theme,
-        index > 1, underKind)
+        index > 1 and isModalLayer(layer.kind), underKind)
     end
     love.graphics.pop()
   end
