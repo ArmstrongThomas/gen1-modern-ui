@@ -139,6 +139,25 @@ function love.load()
   end
   check(modMenusRow and modMenusRow.default == true,
     "Start menu mod grouping defaults to enabled")
+  local uiScaleRow, fontScaleRow, dialogueScaleRow
+  for _, schema in ipairs(schemas) do
+    for _, row in ipairs(schema) do
+      if row.key == "uiScale" then uiScaleRow = row end
+      if row.key == "fontScale" then fontScaleRow = row end
+      if row.key == "dialogueTextScale" then dialogueScaleRow = row end
+    end
+  end
+  check(uiScaleRow and #uiScaleRow.choices == 16 and uiScaleRow.default == "100",
+    "UI scale exposes 75% through 150% in 5% steps")
+  check(fontScaleRow and #fontScaleRow.choices == 25 and fontScaleRow.default == "100",
+    "font scale exposes 80% through 200% in 5% steps")
+  check(dialogueScaleRow and #dialogueScaleRow.choices == 6
+      and dialogueScaleRow.default == "inherit",
+    "dialogue scale exposes inherit and readability presets")
+  check(mod.exports.getScaleTokens().uiScale == 1
+      and mod.exports.getScaleTokens().fontScale == 1
+      and mod.exports.getScaleTokens().dialogueTextScale == 1,
+    "scale token API reports default effective sizes")
   check(type(themeRow.description) == "string" and themeRow.description ~= "",
     "mod settings expose option descriptions")
   local expectedThemes = {
@@ -623,6 +642,39 @@ function love.load()
   end
   bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
   bag.footer = "¥1234"
+  local savedPage = textBox.pages
+  local savedCharIndex = textBox.charIndex
+  for _, scaleCase in ipairs({
+      { ui = "75", font = "80", dialogue = "inherit" },
+      { ui = "100", font = "100", dialogue = "110" },
+      { ui = "125", font = "125", dialogue = "125" },
+      { ui = "150", font = "150", dialogue = "175" },
+      { ui = "150", font = "200", dialogue = "200" },
+    }) do
+    values.uiScale = scaleCase.ui
+    values.fontScale = scaleCase.font
+    values.dialogueTextScale = scaleCase.dialogue
+    bag.items = { { label = "A VERY LONG LOCALIZED MENU LABEL THAT MUST WRAP",
+      right = "A LONG VALUE COLUMN", value = "POTION" } }
+    renderHud({ bag }, "scaling_bag_" .. scaleCase.font, portraitViewport)
+    textBox.pages = {{
+      "A very long revealed dialogue sentence with an intentionallylongwordthatmustbreakcleanly.",
+    }}
+    textBox.charIndex = #textBox.pages[1][1]
+    renderHud({ overworld, textBox, choice }, "scaling_dialogue_" .. scaleCase.font,
+      scaleCase.font == "200" and mobileLandscapeViewport or portraitViewport)
+  end
+  textBox.pages = savedPage
+  textBox.charIndex = savedCharIndex
+  values.uiScale, values.fontScale, values.dialogueTextScale = "100", "100", "inherit"
+  for _, themeChoice in ipairs(themeRow.choices) do
+    values.theme = themeChoice[2]
+    values.panelOpacity, values.foregroundOpacity = 0, 0
+    renderHud({ bag }, "theme_zero_" .. themeChoice[2]:gsub(":", "_"), portraitViewport)
+    values.panelOpacity, values.foregroundOpacity = 100, 100
+    renderHud({ bag }, "theme_full_" .. themeChoice[2]:gsub(":", "_"), mobileLandscapeViewport)
+  end
+  values.theme = "default"
   local opaqueBag = setmetatable({ screenId = "BagMenu", items = {}, index = 1,
     isOpaque = true }, { __index = listClass })
   game.stack.states = { overworld, opaqueBag }

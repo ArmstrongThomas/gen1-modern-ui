@@ -30,6 +30,10 @@ local DEFAULT_THEME = {
   spacing = { xs = 5, sm = 9, md = 13, lg = 18, xl = 26 },
   radii = { sm = 8, md = 16, lg = 22 },
   density = { rowHeight = 54, panelMax = 780 },
+  -- Metrics are presentation tokens rather than engine pixels.  The
+  -- effective UI scale resolver below adjusts these before any presenter
+  -- measures text or chooses a panel size.
+  metrics = { border = 4, divider = 1, icon = 38, dialogueMinHeight = 112 },
 }
 
 -- Built-in themes are intentionally data-only. They are merged once during
@@ -163,6 +167,12 @@ local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, value))
 end
 
+local function normalizedPercent(value, fallback, minimum, maximum)
+  local percent = tonumber(value) or fallback
+  percent = clamp(percent, minimum, maximum)
+  return math.floor(percent / 5 + 0.5) * 5
+end
+
 local function safeText(value)
   if value == nil then return "" end
   return tostring(value)
@@ -271,18 +281,58 @@ local function truncate(text, maxWidth)
   return text .. suffix
 end
 
-local function wrappedLines(text, maxWidth)
+local utf8TextLibrary
+
+local function textCharacters(value)
+  if utf8TextLibrary == nil then
+    local ok, library = pcall(require, "utf8")
+    utf8TextLibrary = ok and library or false
+  end
+  local chars = {}
+  if utf8TextLibrary and type(utf8TextLibrary.codes) == "function"
+      and type(utf8TextLibrary.char) == "function" then
+    for codepoint in utf8TextLibrary.codes(value) do
+      chars[#chars + 1] = utf8TextLibrary.char(codepoint)
+    end
+  else
+    for index = 1, #value do chars[#chars + 1] = value:sub(index, index) end
+  end
+  return chars
+end
+
+local function wrappedLines(text, maxWidth, textFont)
   local lines = {}
   text = safeText(text):gsub("\v", "\n"):gsub("\f", "\n")
+  maxWidth = math.max(1, tonumber(maxWidth) or 1)
+  textFont = textFont or love.graphics.getFont()
+  local function width(value) return textFont:getWidth(value) end
+  local function appendWord(line, word)
+    if word == "" then return line end
+    if width(word) <= maxWidth then
+      return line == "" and word or line .. " " .. word
+    end
+    if line ~= "" then lines[#lines + 1] = line end
+    local fragment = ""
+    for _, character in ipairs(textCharacters(word)) do
+      local candidate = fragment .. character
+      if fragment ~= "" and width(candidate) > maxWidth then
+        lines[#lines + 1] = fragment
+        fragment = character
+      else
+        fragment = candidate
+      end
+    end
+    return fragment
+  end
   for paragraph in (text .. "\n"):gmatch("(.-)\n") do
     local line = ""
     for word in paragraph:gmatch("%S+") do
       local candidate = line == "" and word or (line .. " " .. word)
-      if line ~= "" and love.graphics.getFont():getWidth(candidate) > maxWidth then
+      if line ~= "" and width(candidate) > maxWidth then
         lines[#lines + 1] = line
-        line = word
+        line = appendWord("", word)
       else
-        line = candidate
+        line = appendWord(line, word)
       end
     end
     if line ~= "" then lines[#lines + 1] = line end
@@ -403,19 +453,75 @@ end
 -- are still physically much taller than a desktop canvas.  A modest portrait
 -- scale keeps 17px body text and 54px rows from looking undersized without
 -- changing landscape/desktop presentation or the underlying input geometry.
-local function responsiveTheme(theme, viewport)
+local function viewportClass(viewport)
   local _, _, w, h = viewportRect(viewport)
-  if not (h > w * 1.55 and w <= 720) then return theme end
-  local scale = clamp(w / 460, 1.16, 1.28)
+  if h > w * 1.55 and w <= 720 then return "portrait-phone" end
+  if w > h * 2.0 then return "ultrawide" end
+  if w > h * 1.2 then return "landscape" end
+  return "standard"
+end
+
+local function scaledTheme(theme, uiScale, fontScale, cache)
+  local key = ("%.3f:%.3f"):format(uiScale, fontScale)
+  local bucket = cache[theme]
+  if not bucket then
+    bucket = {}
+    cache[theme] = bucket
+  end
+  if bucket[key] then return bucket[key] end
+
   local out = copy(theme)
   out.typography = copy(theme.typography)
   out.spacing = copy(theme.spacing)
   out.radii = copy(theme.radii)
   out.density = copy(theme.density)
+  out.metrics = copy(theme.metrics or {})
+  for name, value in pairs(out.typography) do
+    if type(value) == "number" then out.typography[name] = value * fontScale end
+  end
+  for name, value in pairs(out.spacing) do
+    if type(value) == "number" then out.spacing[name] = value * uiScale end
+  end
+  for name, value in pairs(out.radii) do
+    if type(value) == "number" then out.radii[name] = value * uiScale end
+  end
+  if type(out.density.rowHeight) == "number" then
+    out.density.rowHeight = out.density.rowHeight * uiScale
+  end
+  if type(out.density.panelMax) == "number" then
+    out.density.panelMax = out.density.panelMax * uiScale
+  end
+  for name, value in pairs(out.metrics) do
+    if type(value) == "number" then out.metrics[name] = value * uiScale end
+  end
+  out.scale = { ui = uiScale, font = fontScale, dialogue = 1 }
+  bucket[key] = out
+  return out
+end
+
+local function responsiveTheme(theme, viewport, cache)
+  local _, _, w, h = viewportRect(viewport)
+  if not (h > w * 1.55 and w <= 720) then return theme end
+  local scale = clamp(w / 460, 1.16, 1.28)
+  local key = viewportClass(viewport) .. ":" .. ("%.3f"):format(scale)
+  local bucket = cache and cache[theme]
+  if bucket and bucket[key] then return bucket[key] end
+  local out = copy(theme)
+  out.typography = copy(theme.typography)
+  out.spacing = copy(theme.spacing)
+  out.radii = copy(theme.radii)
+  out.density = copy(theme.density)
+  out.metrics = copy(theme.metrics or {})
   for key, value in pairs(out.typography) do out.typography[key] = value * scale end
   for key, value in pairs(out.spacing) do out.spacing[key] = value * scale end
   for key, value in pairs(out.radii) do out.radii[key] = value * scale end
   out.density.rowHeight = out.density.rowHeight * scale
+  for key, value in pairs(out.metrics) do out.metrics[key] = value * scale end
+  if cache then
+    bucket = bucket or {}
+    cache[theme] = bucket
+    bucket[key] = out
+  end
   return out
 end
 
@@ -454,6 +560,10 @@ return function(mod)
   local themes = { default = copy(DEFAULT_THEME) }
   local themeChoices = { { "Gen1 Modern", "default" } }
   local fontCache = {}
+  local themeScaleCache = setmetatable({}, { __mode = "k" })
+  local themePresentationCache = setmetatable({}, { __mode = "k" })
+  local responsiveThemeCache = setmetatable({}, { __mode = "k" })
+  local dialogueThemeCache = setmetatable({}, { __mode = "k" })
   local imageCache = {}
   local utf8Library
   local glyphFont = mod.ui and mod.ui.Font
@@ -644,9 +754,22 @@ return function(mod)
 
   local function currentTheme()
     local base = themes[option("theme", "default")] or themes.default
+    local uiScale = normalizedPercent(option("uiScale", 100), 100, 75, 150) / 100
+    local fontScale = normalizedPercent(option("fontScale", 100), 100, 80, 200) / 100
+    local density = safeText(option("density", "auto"))
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
-    local theme = copy(base)
+    local key = ("%.3f:%.3f:%s:%.3f:%.3f"):format(uiScale, fontScale,
+      density, panelOpacity, foregroundOpacity)
+    local bucket = themePresentationCache[base]
+    if not bucket then
+      bucket = {}
+      themePresentationCache[base] = bucket
+    end
+    if bucket[key] then return bucket[key] end
+
+    local theme = scaledTheme(base, uiScale, fontScale, themeScaleCache)
+    theme = copy(theme)
     theme.colors = copy(base.colors)
     for _, key in ipairs({ "backdrop", "surface", "surfaceRaised", "selected" }) do
       local color = theme.colors[key]
@@ -656,7 +779,34 @@ return function(mod)
       local color = theme.colors[key]
       if color then color[4] = (color[4] or 1) * foregroundOpacity end
     end
+    bucket[key] = theme
     return theme
+  end
+
+  local function dialogueMultiplier()
+    local value = option("dialogueTextScale", "inherit")
+    if value == nil or value == "inherit" then return 1 end
+    return normalizedPercent(value, 100, 100, 200) / 100
+  end
+
+  local function dialogueTheme(theme)
+    local multiplier = dialogueMultiplier()
+    if multiplier == 1 then return theme end
+    local key = ("%.3f"):format(multiplier)
+    local bucket = dialogueThemeCache[theme]
+    if not bucket then
+      bucket = {}
+      dialogueThemeCache[theme] = bucket
+    end
+    if bucket[key] then return bucket[key] end
+    local out = copy(theme)
+    out.typography = copy(theme.typography)
+    out.typography.body = (theme.typography.body or 17) * multiplier
+    out.typography.caption = (theme.typography.caption or 13) * multiplier
+    out.scale = copy(theme.scale or {})
+    out.scale.dialogue = multiplier
+    bucket[key] = out
+    return out
   end
 
   local function registerTheme(spec)
@@ -685,7 +835,27 @@ return function(mod)
     version = API_VERSION,
     registerTheme = registerTheme,
     themes = themes,
+    scaleTokens = {
+      uiMin = 0.75, uiMax = 1.50, uiStep = 0.05,
+      fontMin = 0.80, fontMax = 2.00, fontStep = 0.05,
+      dialogueMin = 1.10, dialogueMax = 2.00, dialogueStep = 0.05,
+    },
+    getScaleTokens = function()
+      return {
+        uiScale = normalizedPercent(option("uiScale", 100), 100, 75, 150) / 100,
+        fontScale = normalizedPercent(option("fontScale", 100), 100, 80, 200) / 100,
+        dialogueTextScale = dialogueMultiplier(),
+      }
+    end,
   }
+
+  local function percentChoices(minimum, maximum)
+    local choices = {}
+    for percent = minimum, maximum, 5 do
+      choices[#choices + 1] = { percent .. "%", tostring(percent) }
+    end
+    return choices
+  end
 
   local optionSchema = {
     { key = "theme", label = "UI THEME", type = "choice",
@@ -695,6 +865,17 @@ return function(mod)
       description = "Adjust the spacing and row height used by modern panels.",
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
+    { key = "uiScale", label = "UI SCALE", type = "choice",
+      description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 150%.",
+      choices = percentChoices(75, 150), default = "100" },
+    { key = "fontScale", label = "FONT SCALE", type = "choice",
+      description = "Scale title, body, caption, value, and hint text from 80% to 200%.",
+      choices = percentChoices(80, 200), default = "100" },
+    { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
+      description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
+      choices = { { "INHERIT", "inherit" }, { "110%", "110" },
+                  { "125%", "125" }, { "150%", "150" },
+                  { "175%", "175" }, { "200%", "200" } }, default = "inherit" },
     { key = "hideOriginalUi", label = "HIDE ORIGINAL UI", type = "toggle", default = true,
       description = "Hide the classic UI canvas when this mod safely presents the complete screen.", },
     -- The battle presenter remains available for testing, but is opt-in until
@@ -1102,6 +1283,20 @@ return function(mod)
     if id == "__reset" then
       return "Restore every Gen1 Modern UI setting to its default value."
     end
+    if id == "uiScale" then
+      return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %d%%."):format(
+        normalizedPercent(option("uiScale", 100), 100, 75, 150))
+    end
+    if id == "fontScale" then
+      return ("Scale readable interface text before measuring and laying out content. Current effective size: %d%%."):format(
+        normalizedPercent(option("fontScale", 100), 100, 80, 200))
+    end
+    if id == "dialogueTextScale" then
+      local value = option("dialogueTextScale", "inherit")
+      local label = value == "inherit" and "INHERIT" or
+        (normalizedPercent(value, 100, 100, 200) .. "%")
+      return ("Scale dialogue, choice, quantity, and confirmation text. Current setting: %s."):format(label)
+    end
     for _, row in ipairs(optionSchema) do
       if row.key == id then return row.description end
     end
@@ -1124,6 +1319,7 @@ return function(mod)
   }
   local OPTION_CATEGORY_BY_KEY = {
     theme = "appearance", density = "appearance", layoutStyle = "appearance",
+    uiScale = "appearance", fontScale = "appearance", dialogueTextScale = "appearance",
     panelOpacity = "appearance", foregroundOpacity = "appearance",
     minimalUi = "appearance", hideOriginalUi = "appearance",
     startMenuShortcut = "navigation", startMenuModMenus = "navigation",
@@ -1235,7 +1431,7 @@ return function(mod)
     end
     if not pendingPress(input, "select") then return end
     local row = state.optionRows[state.cursor]
-    local description = row and (row.description or optionDescription(row.id))
+    local description = row and (optionDescription(row.id) or row.description)
     if not description or description == "" then return end
     state._gen1OptionDescription = {
       title = row.label or row.id,
@@ -1925,25 +2121,45 @@ return function(mod)
       minWidth or 1, maxWidth or widest + theme.spacing.lg * 2)
   end
 
+  local function densityFactor()
+    local density = option("density", "auto")
+    return density == "compact" and 0.88
+      or density == "comfortable" and 1.12 or 1
+  end
+
+  local function minimumRowHeight(theme)
+    local body = font(fontCache, theme.typography.body)
+    local caption = font(fontCache, theme.typography.caption)
+    local textMinimum = math.max(body:getHeight(), caption:getHeight())
+      + theme.spacing.sm * 1.6
+    return math.max(theme.density.rowHeight * densityFactor(), textMinimum)
+  end
+
+  local function themeMetric(theme, name, fallback)
+    local metrics = theme.metrics or {}
+    return metrics[name] or fallback
+  end
+
   local function layoutFor(viewport, theme, kind, rows, title, footerText)
     rows = rows or {}
     local rowCount = #rows
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing or {}
-    local density = option("density", "auto")
-    local scale = density == "compact" and 0.88 or density == "comfortable" and 1.12 or 1
+    local scale = densityFactor()
     local landscape = w > h * 1.2
     local desktopFloat = worldVisibleLayout(viewport)
     -- Touch controls can consume a large fraction of a phone's short
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.
     local gutter = (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale
-    local header = safeText(title) ~= "" and ((theme.typography.title or 24) +
+    local titleHeight = font(fontCache, theme.typography.title):getHeight()
+    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local header = safeText(title) ~= "" and (titleHeight +
       (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale)
       or (spacing.md or 13) * scale
     local footer = (landscape and (spacing.sm or 9) or (spacing.lg or 18)) * scale
-      + (theme.typography.caption or 13)
-    local rowHeight = (theme.density.rowHeight or 54) * scale
+      + captionHeight
+    local rowHeight = minimumRowHeight(theme)
     local panelMax = theme.density.panelMax or 780
     if landscape then
       -- Keep content-sized panels compact, but leave enough room for long
@@ -1954,13 +2170,34 @@ return function(mod)
       local fitHeight = (h - gutter * 2 - header - footer) / rowCount
       -- Keep text comfortably legible, but do not reserve desktop-sized rows
       -- when the touch-safe landscape viewport is short.
-      local minLandscapeRow = landscape and 30 or 34
-      rowHeight = math.min(rowHeight, math.max(minLandscapeRow * scale, fitHeight))
+      local minLandscapeRow = font(fontCache, theme.typography.body):getHeight()
+        + (spacing.sm or 9) * 1.6
+      rowHeight = math.min(rowHeight, math.max(minLandscapeRow, fitHeight))
     end
     local minPanelW = landscape and 220 or 250
     local measuredW = contentWidthFor(theme, rows, title, footerText,
       minPanelW, panelMax)
     local panelW = math.min(w - gutter * 2, measuredW)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local rowTextWidth = math.max(1, panelW - spacing.lg * 2)
+    local wrapRows = false
+    for _, row in ipairs(rows) do
+      if type(row) == "table" and not row.header and not row.category then
+        local labelWidth = bodyFont:getWidth(safeText(row.label))
+        local valueWidth = bodyFont:getWidth(safeText(row.value))
+        local valueColumn = valueWidth > 0 and math.min(valueWidth,
+          math.max(1, rowTextWidth * 0.52)) or 0
+        if labelWidth + valueColumn + (valueColumn > 0 and spacing.md or 0)
+            > rowTextWidth then
+          wrapRows = true
+          break
+        end
+      end
+    end
+    if wrapRows then
+      rowHeight = math.max(rowHeight,
+        bodyFont:getHeight() * 2 + spacing.sm * 2)
+    end
     local navigationMenu = kind == "menu" or kind == "box_root"
     local sidePanel = desktopFloat and landscape and navigationMenu and rowCount > 0
     if navigationMenu or kind == "choice" or kind == "quantity" then
@@ -1977,10 +2214,11 @@ return function(mod)
       local preferredSideW = clamp(w * 0.30, 220, 460)
       panelW = math.min(w - gutter * 2, math.max(panelW, preferredSideW))
       gutter = spacing.lg or 18
-      header = safeText(title) ~= "" and ((theme.typography.title or 24)
+      header = safeText(title) ~= "" and (titleHeight
         + (spacing.md or 13)) or (spacing.md or 13)
-      footer = (spacing.sm or 9) + (theme.typography.caption or 13)
-      rowHeight = math.min(rowHeight, math.max(30 * scale,
+      footer = (spacing.sm or 9) + captionHeight
+      rowHeight = math.min(rowHeight, math.max(
+        font(fontCache, theme.typography.body):getHeight() + (spacing.sm or 9) * 1.6,
         (h - gutter * 2 - header - footer) / math.max(1, rowCount)))
     end
     panelW = math.max(1, panelW)
@@ -1994,6 +2232,7 @@ return function(mod)
       y = y + (h - panelH) / 2,
       w = panelW, h = panelH, rowHeight = rowHeight,
       header = header, footer = footer, visible = visible,
+      wrapRows = wrapRows,
       safeX = x, safeY = y, safeW = w, safeH = h,
       radius = theme.radii and theme.radii.md or 16,
       sidePanel = sidePanel,
@@ -2004,7 +2243,8 @@ return function(mod)
     if safeText(title) == "" then return end
     local colors = theme.colors
     setColor(colors.accent)
-    love.graphics.rectangle("fill", layout.x, layout.y, layout.w, 4,
+    love.graphics.rectangle("fill", layout.x, layout.y, layout.w,
+      themeMetric(theme, "border", 4),
       layout.radius, layout.radius, 0, 0)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     setColor(colors.text)
@@ -2015,6 +2255,25 @@ return function(mod)
 
   local function drawRows(theme, layout, rows, selected, scroll, game)
     local colors = theme.colors
+    if layout.horizontalChoice then
+      local gap = theme.spacing.sm
+      local width = math.max(1, (layout.w - theme.spacing.lg * 2
+        - gap * math.max(0, #rows - 1)) / math.max(1, #rows))
+      local bodyFont = font(fontCache, theme.typography.body)
+      for index, row in ipairs(rows) do
+        local rx = layout.x + theme.spacing.lg + (index - 1) * (width + gap)
+        local ry = layout.y + layout.header
+        setColor(index == selected and colors.selected or colors.surfaceRaised)
+        love.graphics.rectangle("fill", rx, ry, width, layout.rowHeight - 4,
+          theme.radii.sm or 8)
+        setColor(index == selected and colors.text or colors.textMuted)
+        love.graphics.setFont(bodyFont)
+        local label = truncate(safeText(row.label), width)
+        love.graphics.print(label, rx + (width - bodyFont:getWidth(label)) / 2,
+          ry + (layout.rowHeight - bodyFont:getHeight()) / 2)
+      end
+      return
+    end
     love.graphics.setFont(font(fontCache, theme.typography.body))
     for slot = 1, layout.visible do
       local index = scroll + slot
@@ -2060,7 +2319,8 @@ return function(mod)
         -- typography, not their position in the live row array.
         setColor(colors.divider)
         love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-          ry + layout.rowHeight - 2, layout.w - theme.spacing.lg * 2, 1)
+          ry + layout.rowHeight - themeMetric(theme, "divider", 1),
+          layout.w - theme.spacing.lg * 2, themeMetric(theme, "divider", 1))
       else
         setColor(row.enabled == false and colors.textMuted or colors.text)
       end
@@ -2086,10 +2346,11 @@ return function(mod)
       end
       local label = safeText(row.label)
       local value = safeText(row.value)
+      local bodyFont = font(fontCache, theme.typography.body)
       local textAvail = math.max(1, layout.x + layout.w - theme.spacing.lg - textX)
       local gap = theme.spacing.md
-      local labelWidth = love.graphics.getFont():getWidth(label)
-      local valueWidth = value ~= "" and love.graphics.getFont():getWidth(value) or 0
+      local labelWidth = bodyFont:getWidth(label)
+      local valueWidth = value ~= "" and bodyFont:getWidth(value) or 0
       -- Preserve the complete value whenever the measured panel can hold it.
       -- Only fall back to a bounded right column when label + value cannot
       -- coexist; this prevents short panels from clipping values such as
@@ -2102,13 +2363,26 @@ return function(mod)
       end
       local leftWidth = textAvail - (valueWidth > 0 and valueWidth + gap or 0)
       if not row.header and not row.category then
-        love.graphics.print(truncate(label, math.max(20, leftWidth)),
-          textX, ry + (layout.rowHeight -
-            love.graphics.getFont():getHeight()) / 2)
-        if value ~= "" then
-          love.graphics.print(truncate(value, valueWidth),
-            layout.x + layout.w - theme.spacing.lg - valueWidth,
-            ry + (layout.rowHeight - love.graphics.getFont():getHeight()) / 2)
+        local labelLines = { truncate(label, math.max(20, leftWidth)) }
+        local valueLines = value ~= "" and { truncate(value, valueWidth) } or {}
+        if layout.wrapRows then
+          labelLines = wrappedLines(label, math.max(1, leftWidth), bodyFont)
+          valueLines = value ~= "" and wrappedLines(value, math.max(1, valueWidth), bodyFont) or {}
+        end
+        local lineCount = math.max(#labelLines, #valueLines)
+        local blockHeight = lineCount * bodyFont:getHeight()
+          + math.max(0, lineCount - 1) * theme.spacing.xs
+        local textY = ry + (layout.rowHeight - blockHeight) / 2
+        love.graphics.setFont(bodyFont)
+        for lineIndex, line in ipairs(labelLines) do
+          love.graphics.print(line, textX,
+            textY + (lineIndex - 1) * (bodyFont:getHeight() + theme.spacing.xs))
+        end
+        for lineIndex, line in ipairs(valueLines) do
+          local lineWidth = bodyFont:getWidth(line)
+          love.graphics.print(line,
+            layout.x + layout.w - theme.spacing.lg - lineWidth,
+            textY + (lineIndex - 1) * (bodyFont:getHeight() + theme.spacing.xs))
         end
       end
       if row.marker then
@@ -2118,8 +2392,9 @@ return function(mod)
       end
       if index < #rows then
         setColor(colors.divider)
-        love.graphics.rectangle("fill", layout.x + theme.spacing.lg, ry + layout.rowHeight - 2,
-          layout.w - theme.spacing.lg * 2, 1)
+        love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
+          ry + layout.rowHeight - themeMetric(theme, "divider", 1),
+          layout.w - theme.spacing.lg * 2, themeMetric(theme, "divider", 1))
       end
     end
     if scroll > 0 then
@@ -2184,14 +2459,27 @@ return function(mod)
   local function wrappedDialogueLines(state, body, maxWidth)
     local lines = {}
     for _, source in ipairs(dialogueLines(state)) do
-      for _, line in ipairs(wrappedLines(source, maxWidth)) do
+      for _, line in ipairs(wrappedLines(source, maxWidth, body)) do
         lines[#lines + 1] = line
       end
     end
     return lines
   end
 
-  local function dialogueRect(viewport, theme, state)
+  local function modalReserveHeight(game, theme, kind, state, viewport)
+    local rows, _, _, title = rowsFor(game, state, kind)
+    local rowCount = math.max(1, math.min(#(rows or {}), 6))
+    local x, y, w, h = presenterRect(viewport)
+    if kind == "choice" and w > h * 1.2 then rowCount = 1 end
+    local titleHeight = font(fontCache, theme.typography.title):getHeight()
+    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local header = safeText(title) ~= "" and (titleHeight + theme.spacing.md)
+      or theme.spacing.md
+    local footer = captionHeight + theme.spacing.md
+    return header + footer + rowCount * minimumRowHeight(theme)
+  end
+
+  local function dialogueRect(viewport, theme, state, game, reserveKind, reserveState)
     local x, y, w, h = presenterRect(viewport)
     local landscape = w > h * 1.2
     local gutter = theme.spacing.lg
@@ -2200,7 +2488,9 @@ return function(mod)
     for _, line in ipairs(dialogueLines(state) or {}) do
       widest = math.max(widest, body:getWidth(safeText(line)))
     end
-    local maxWidth = landscape and math.min(760, w * 0.70) or math.min(620, w - gutter * 2)
+    local uiScale = theme.scale and theme.scale.ui or 1
+    local maxWidth = landscape and math.min(760 * uiScale, w * 0.70)
+      or math.min(620 * uiScale, w - gutter * 2)
     local minWidth = math.min(landscape and 280 or 260, maxWidth)
     local width = clamp(widest + gutter * 2, minWidth, maxWidth)
     -- TextBox pages in the released engine normally expose two visible lines.
@@ -2210,20 +2500,28 @@ return function(mod)
     local available = math.max(1, width - gutter * 2)
     local desiredLines = #wrappedDialogueLines(state, body, available)
     desiredLines = clamp(math.max(2, desiredLines), 2, 5)
-    local height = math.max(112,
+    local height = math.max((theme.metrics and theme.metrics.dialogueMinHeight)
+        or (112 * uiScale),
       lineGap * desiredLines + theme.spacing.lg * 2
         + theme.typography.caption + theme.spacing.md)
+    if reserveKind then
+      local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
+      local availableHeight = h - gutter * 2 - reserve - theme.spacing.sm
+      height = math.min(height, math.max(1, availableHeight))
+    end
     height = math.min(height, h - gutter * 2)
     return x + (w - width) / 2, y + h - height - gutter, width, height
   end
 
-  local function drawDialogue(state, viewport, theme)
-    local px, py, panelW, panelH = dialogueRect(viewport, theme, state)
+  local function drawDialogue(state, viewport, theme, game, reserveKind, reserveState)
+    local px, py, panelW, panelH = dialogueRect(viewport, theme, state, game,
+      reserveKind, reserveState)
     local spacing, colors = theme.spacing, theme.colors
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     setColor(colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW, 4,
+    love.graphics.rectangle("fill", px, py, panelW,
+      themeMetric(theme, "border", 4),
       theme.radii.md, theme.radii.md, 0, 0)
 
     local body = font(fontCache, theme.typography.body)
@@ -2261,26 +2559,44 @@ return function(mod)
     return { x = px, y = py, w = panelW, h = panelH }
   end
 
-  local function drawModalRows(game, state, kind, viewport, theme, underKind)
+  local function drawModalRows(game, state, kind, viewport, theme, underKind,
+      underState)
     local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
     local landscape = w > h * 1.2
-    local rowHeight = math.max(40, math.min(theme.density.rowHeight, 50))
-    local header = safeText(title) ~= "" and (theme.typography.title + spacing.md)
+    local rowHeight = minimumRowHeight(theme)
+    local titleHeight = font(fontCache, theme.typography.title):getHeight()
+    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local header = safeText(title) ~= "" and (titleHeight + spacing.md)
       or spacing.md
-    local footer = theme.typography.caption + spacing.md
-    local visible = math.min(#rows, landscape and 7 or 6)
+    local footer = captionHeight + spacing.md
     local maxPanelW = landscape and math.min(w * 0.70, 520) or math.min(w - spacing.lg * 2, 520)
     local panelW = math.min(w - spacing.lg * 2,
       contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
+    local horizontalChoice = kind == "choice" and landscape
+    if horizontalChoice then
+      local choiceFont = font(fontCache, theme.typography.body)
+      local desiredWidth = spacing.lg * 2 + spacing.sm * math.max(0, #rows - 1)
+      for _, row in ipairs(rows) do
+        desiredWidth = desiredWidth + choiceFont:getWidth(safeText(row.label))
+          + spacing.sm * 2
+      end
+      panelW = math.min(w - spacing.lg * 2, math.max(panelW, desiredWidth))
+    end
+    local choiceRowCount = horizontalChoice and 1 or 2
+    local availableRows = math.max(1, math.floor(
+      (h - spacing.lg * 2 - header - footer) / rowHeight))
+    local visible = math.min(#rows, horizontalChoice and choiceRowCount
+      or (landscape and 7 or 6), availableRows)
+    visible = math.max(1, visible)
     local panelH = header + footer + visible * rowHeight
     panelH = math.min(panelH, h - spacing.lg * 2)
     local px = x + (w - panelW) / 2
     local py = y + (h - panelH) / 2
     if underKind == "text" then
-      local dx, dy, dw = dialogueRect(viewport, theme)
+      local dx, dy, dw = dialogueRect(viewport, theme, underState, game)
       px = dx + dw - panelW
       py = math.max(y + spacing.lg, dy - panelH - spacing.sm)
     elseif underKind then
@@ -2291,6 +2607,7 @@ return function(mod)
       x = px, y = py, w = panelW, h = panelH,
       rowHeight = rowHeight, header = header, footer = footer,
       visible = visible, radius = theme.radii.md, sidePanel = false,
+      horizontalChoice = horizontalChoice,
     }
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -2303,7 +2620,8 @@ return function(mod)
     drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
-      py + panelH - footer, panelW - spacing.lg * 2, 1)
+      py + panelH - footer, panelW - spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
     local hint = footerText or (kind == "choice" and "A  choose   B  no"
       or kind == "quantity" and "UP/DOWN  amount   A  confirm   B  cancel"
@@ -2362,7 +2680,7 @@ return function(mod)
     if not overlay then return end
     drawPresenterBackdrop(theme, viewport)
     local lines = overlay.lines or {}
-    local lineHeight = theme.typography.body + 8
+    local lineHeight = theme.typography.body + theme.spacing.sm
     local modalW = math.min(layout.w * 0.84, 620)
     local modalH = math.min(layout.h * 0.72,
       theme.spacing.lg * 2 + lineHeight * (#lines +
@@ -2373,7 +2691,8 @@ return function(mod)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
     setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", mx, my, modalW, 4,
+    love.graphics.rectangle("fill", mx, my, modalW,
+      themeMetric(theme, "border", 4),
       theme.radii.lg or 20, theme.radii.lg or 20, 0, 0)
     love.graphics.setFont(font(fontCache, theme.typography.body))
     for i, line in ipairs(lines) do
@@ -2387,7 +2706,8 @@ return function(mod)
       setColor(index == 1 and theme.colors.accent or theme.colors.textMuted)
       love.graphics.print("YES", mx + theme.spacing.lg, footerY)
       setColor(index == 2 and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print("NO", mx + theme.spacing.lg + 72, footerY)
+      love.graphics.print("NO", mx + theme.spacing.lg + theme.spacing.xl * 2.75,
+        footerY)
     else
       setColor(theme.colors.textMuted)
       love.graphics.print("A / B  CLOSE", mx + theme.spacing.lg, footerY)
@@ -2426,7 +2746,8 @@ return function(mod)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
     setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", mx, my, modalW, 4,
+    love.graphics.rectangle("fill", mx, my, modalW,
+      themeMetric(theme, "border", 4),
       theme.radii.lg or 20, theme.radii.lg or 20, 0, 0)
     love.graphics.setFont(titleFont)
     setColor(theme.colors.text)
@@ -2440,7 +2761,8 @@ return function(mod)
     end
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", mx + spacing.lg,
-      my + modalH - footerH, modalW - spacing.lg * 2, 1)
+      my + modalH - footerH, modalW - spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
     love.graphics.print("SELECT / A / B  CLOSE", mx + spacing.lg,
       my + modalH - footerH + spacing.xs)
@@ -2453,9 +2775,9 @@ return function(mod)
     -- The manager has a tab strip and (for detail/apply views) a status
     -- subtitle in addition to the normal title. Reserve that line before
     -- calculating how many rows fit so portrait layouts never overlap text.
-    local headerExtra = state.screen == "list" and 20
-      or state.screen == "detail" and 20
-      or state.screen == "apply" and 20 or 0
+    local headerExtra = state.screen == "list" and (theme.spacing.md + theme.spacing.xs)
+      or state.screen == "detail" and (theme.spacing.md + theme.spacing.xs)
+      or state.screen == "apply" and (theme.spacing.md + theme.spacing.xs) or 0
     if headerExtra > 0 then
       layout.header = layout.header + headerExtra
       layout.visible = math.max(1, math.floor((layout.h - layout.header -
@@ -2479,7 +2801,8 @@ return function(mod)
     drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
+      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
     local footer = state.notice
     if not footer and state.screen == "list" then
@@ -3095,7 +3418,7 @@ return function(mod)
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
     local compactH = headerH + footerH + math.min(#rows, 6) *
-      math.min(theme.density.rowHeight, 54) + spacing.lg * 2
+      minimumRowHeight(theme) + spacing.lg * 2
     local richH = w > h * 1.20 and 520 or 640
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
@@ -3108,8 +3431,9 @@ return function(mod)
     local listY = contentY + (detailH > 0 and detailH + spacing.sm or 0)
     local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
     local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
-    local rowHeight = math.min(theme.density.rowHeight,
-      math.max(38, listH / math.max(1, #rows)))
+    local rowHeight = math.max(minimumRowHeight(theme),
+      math.min(theme.density.rowHeight,
+        math.max(38, listH / math.max(1, #rows))))
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     local scroll = clamp((state.scroll or 0), 0, math.max(0, #rows - visible))
     if selected <= scroll then scroll = selected - 1 end
@@ -3194,7 +3518,7 @@ return function(mod)
         footer, math.min(250, w - gutter * 2), math.min(760, w - gutter * 2)))
     end
     local compactH = theme.typography.title + theme.typography.caption
-      + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
+      + math.min(#rows, 6) * minimumRowHeight(theme)
       + spacing.lg * 3
     local richH = w > h * 1.20 and 520 or 640
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
@@ -3212,7 +3536,7 @@ return function(mod)
     local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
     local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
     local selected = clamp(state.index or 1, 1, math.max(1, #mons))
-    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     local scroll = clamp(state.scroll or 0, 0, math.max(0, #rows - visible))
     if selected <= scroll then scroll = selected - 1 end
@@ -3280,7 +3604,7 @@ return function(mod)
     local listW = landscape and (panelW - previewW - spacing.sm) or panelW
     local listY = landscape and (py + headerH) or (py + headerH + previewH + spacing.sm)
     local listH = math.max(1, py + panelH - footerH - listY)
-    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -3393,7 +3717,7 @@ return function(mod)
         math.min(760, w - gutter * 2)))
     end
     local compactBagH = theme.typography.title + theme.typography.caption
-      + math.min(#rows, 7) * math.min(theme.density.rowHeight, 54)
+      + math.min(#rows, 7) * minimumRowHeight(theme)
       + spacing.lg * 3
     local panelH = math.min(h - gutter * 2,
       minimalBag and compactBagH or ((w > h * 1.05) and 520 or 640))
@@ -3411,7 +3735,7 @@ return function(mod)
     local listY = (landscape or minimal) and (py + headerH)
       or (py + headerH + detailH + spacing.sm)
     local listH = math.max(1, py + panelH - footerH - listY)
-    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -3533,7 +3857,7 @@ return function(mod)
         math.min(760, w - gutter * 2)))
     end
     local compactContextH = theme.typography.title + theme.typography.caption * 2
-      + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
+      + math.min(#rows, 6) * minimumRowHeight(theme)
       + spacing.lg * 4
     local panelH = math.min(h - gutter * 2,
       minimalContext and compactContextH or ((w > h * 1.10) and 520 or 640))
@@ -3548,7 +3872,7 @@ return function(mod)
     local listW = panelW - detailW - (detailW > 0 and spacing.sm or 0)
     local listY = py + headerH + (detailH > 0 and detailH + spacing.sm or 0)
     local listH = math.max(1, py + panelH - messageH - listY)
-    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -4352,22 +4676,28 @@ return function(mod)
     drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
+      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
     drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
-      layout.y + layout.h - layout.footer + 8,
+      layout.y + layout.h - layout.footer + theme.spacing.sm,
       layout.w - theme.spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function drawModern(game, state, kind, viewport, theme, asModal, underKind)
+  local function drawModern(game, state, kind, viewport, theme, asModal, underKind,
+      underState, overKind, overState)
     if not presenterEnabled(kind) then return end
+    if kind == "text" or kind == "choice" or kind == "quantity"
+        or (asModal and underKind == "text") then
+      theme = dialogueTheme(theme)
+    end
     if kind == "text" then
-      drawDialogue(state, viewport, theme)
+      drawDialogue(state, viewport, theme, game, overKind, overState)
       return
     end
     if asModal or kind == "choice" or kind == "quantity" then
-      drawModalRows(game, state, kind, viewport, theme, underKind)
+      drawModalRows(game, state, kind, viewport, theme, underKind, underState)
       return
     end
     if kind == "battle" then
@@ -4464,13 +4794,17 @@ return function(mod)
   end
 
   local function drawModernStack(game, layers, viewport)
-    local theme = responsiveTheme(currentTheme(), viewport)
+    local theme = responsiveTheme(currentTheme(), viewport, responsiveThemeCache)
     love.graphics.push("all")
     love.graphics.origin()
     for index, layer in ipairs(layers) do
       local underKind = index > 1 and layers[index - 1].kind or nil
+      local underState = index > 1 and layers[index - 1].state or nil
+      local overKind = index < #layers and layers[index + 1].kind or nil
+      local overState = index < #layers and layers[index + 1].state or nil
       drawModern(game, layer.state, layer.kind, viewport, theme,
-        index > 1 and isModalLayer(layer.kind), underKind)
+        index > 1 and isModalLayer(layer.kind), underKind, underState,
+        overKind, overState)
     end
     love.graphics.pop()
   end

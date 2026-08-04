@@ -2,6 +2,19 @@
 
 Last updated: 2026-08-04
 
+## Implementation status
+
+The v0.7.0 implementation ships the independent UI, font, and dialogue scale
+settings described below. Effective themes are cached by authored theme,
+density, scale values, opacity, and viewport class; fonts are cached by
+effective pixel size. Generic menu rows measure live labels and values before
+layout, grow to a readable two-line minimum when the content cannot coexist in
+one row, and dialogue wraps the currently revealed text without changing the
+typewriter cursor. Rich presenters consume the same scaled typography,
+spacing, density, and metric tokens. The remaining acceptance work is
+released-game screenshot QA across every rich presenter, theme, and opacity
+combination.
+
 This milestone adds independent interface and text sizing without changing
 the original menu state, cursor behavior, callbacks, or game logic. It is the
 recommended next implementation slice after the v0.6.2 floating-screen fix.
@@ -55,6 +68,10 @@ and leaves input hints or borders at the wrong size.
    independent from theme, opacity, layout style, and Minimal UI.
 6. Document the scale tokens in the public theme API so external themes remain
    compatible and do not need to hard-code one font size.
+
+The shared scaled theme and minimum-row resolver described in steps 1–6 ship
+in v0.7.0. Rich-screen screenshot QA and any screen-specific polish remain
+follow-up work rather than a change to the scaling contract.
 
 ## Compatibility and performance
 

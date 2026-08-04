@@ -53,9 +53,11 @@ than their live semantic contract.
 - **P1 — daily menus:** Trainer Card, richer Party/Bag/Shop/PC, Pokédex list,
   Bill's-PC lists, adaptive floating layouts, compact/minimal sizing, and
   independent opacity controls are shipped; Controls and stabilization remain.
-- **P1.5 — readability:** independent UI/font/dialogue scaling, accessible
-  scale ranges, measured reflow, and scaled-theme compatibility. See
-  [`READABILITY_SCALING_PLAN.md`](READABILITY_SCALING_PLAN.md).
+- **P1.5 — readability (v0.7.0 shipped):** independent UI/font/dialogue
+  scaling, accessible scale ranges, measured generic-row reflow, cached
+  scaled-theme compatibility, and long-word dialogue wrapping. See
+  [`READABILITY_SCALING_PLAN.md`](READABILITY_SCALING_PLAN.md) for the
+  implementation contract and remaining visual QA.
 - **P2 — spatial/editing screens:** Naming, Town Map/Fly/AREA, Move Learn,
   PicBox, reports, and the third-party adapter API.
 - **P3 — title/online/special:** title family, Link/Tournament, and adapters for
@@ -168,8 +170,8 @@ Each new surface needs:
    nearest-neighbor filtering.
 7. At least one relevant third-party mod compatibility pass.
 
-The next implementation slice should focus on UI/font/dialogue scaling and its
-responsive reflow, settings category polish, then Move Learn, PicBox, Naming,
-Town Map/Fly/AREA, and title ContinueInfo. First complete released-game QA for
+The next implementation slice should focus on minimal UI sizing and settings
+category polish, then Move Learn, PicBox, Naming, Town Map/Fly/AREA, and title
+ContinueInfo. First complete released-game QA for
 the v0.5.0 dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC stack;
 any unmodeled branch must keep the classic UI.

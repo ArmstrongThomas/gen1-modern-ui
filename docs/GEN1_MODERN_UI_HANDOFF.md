@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.6.8 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.7.0 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -46,7 +46,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.6.8. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.7.0. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -95,7 +95,7 @@ that file and appends the generated archive checksum.
 8. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.6.8 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.7.0 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -251,11 +251,15 @@ return function(mod)
 end
 ```
 
-Themes may override semantic colors, typography sizes, spacing, radii, and
-density. The built-in presenter executes no theme drawing callbacks and ships
-no ROM-derived art. Built-in and third-party themes share one live options
-list; re-registering a namespaced ID refreshes its name and tokens without
-adding a duplicate choice.
+Themes may override semantic colors, typography sizes, spacing, radii, density,
+and presentation metrics. v0.7.0 also exports `scaleTokens` and
+`getScaleTokens()`. `uiScale` adjusts geometry tokens before measurement;
+`fontScale` adjusts typography and cached font sizes; and
+`dialogueTextScale` derives a larger text theme for dialogue, choices,
+quantities, and confirmation prompts. The built-in presenter executes no theme
+drawing callbacks and ships no ROM-derived art. Built-in and third-party
+themes share one live options list; re-registering a namespaced ID refreshes
+its name and tokens without adding a duplicate choice.
 
 ## Responsive behavior
 
@@ -266,7 +270,9 @@ adding a duplicate choice.
   mobile, while `full` restores a backdrop-first presentation.
 - Panels size themselves from live content, window dimensions, and theme
   density. Short menus shrink to their widest visible label/value plus padding;
-  longer menus grow only until scrolling is needed.
+  longer menus grow only until scrolling is needed. UI and font scale are
+  resolved before these measurements; larger fonts raise row minimums and
+  long generic rows can reflow to two measured lines.
 - Minimal UI removes optional detail regions before measuring, so hidden
   previews do not leave blank columns or oversized panels.
 - Compact landscape panels generally cap at about 60--70% of the viewport;
@@ -353,9 +359,8 @@ for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
 
 ## Next milestones
 
-- Implement the independent UI/font/dialogue scaling milestone in
-  `docs/READABILITY_SCALING_PLAN.md`, starting with dialogue and generic menu
-  measurement before applying it to richer presenters.
+- Polish minimal UI sizing and reduce remaining unnecessary empty space after
+  the v0.7.0 scaling pass.
 - Exercise the new dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag,
   Shop, and Player-PC
   presenters in the released game with installed UI/category mods and retain

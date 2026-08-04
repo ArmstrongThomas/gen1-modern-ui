@@ -6,7 +6,7 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.6.8 uses four released hooks plus a narrowly scoped class wrapper:
+Version 0.7.0 uses four released hooks plus a narrowly scoped class wrapper:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -174,6 +174,23 @@ the same as the released TextBox.
 `foregroundOpacity`, which controls text, borders, dividers, and accents. Both
 are percentage values from 0 to 100 and multiply the authored theme alpha.
 
+The readability controls are applied before measurement and layout:
+
+- `uiScale` accepts 75% through 150% in 5% steps and scales spacing, row
+  rhythm, icons, radii, borders, panel limits, and control-hint spacing.
+- `fontScale` accepts 80% through 200% in 5% steps and scales the cached title,
+  body, caption, value, and hint fonts.
+- `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
+  derives a cached text theme for live dialogue, choices, quantities, and
+  confirmation prompts.
+
+Larger fonts raise measured row minimums and can promote generic rows to a
+two-line layout. Dialogue wraps the currently revealed glyph prefix, so a
+scale change never advances or rewrites the TextBox typewriter state. Images
+remain aspect-fit and nearest-neighbor filtered. A dependent theme can inspect
+`mod.exports.scaleTokens` or call `mod.exports.getScaleTokens()`; its authored
+typography, spacing, density, and `metrics` tokens are scaled consistently.
+
 Rows are rebuilt from live state during each HUD pass. Preserve descriptor
 identity and unknown fields in any data you add, and use stable `id` fields for
 your own bookkeeping. Generic rows can optionally provide `image`, `icon`,
@@ -260,8 +277,11 @@ end
 ```
 
 Theme specs are merged with the built-in defaults. Supported token groups are
-semantic colors, typography sizes, spacing, corner radii, and density. The
-presenter uses data only; theme mods cannot provide drawing callbacks.
+semantic colors, typography sizes, spacing, corner radii, density, and
+presentation `metrics` (`border`, `divider`, `icon`, and
+`dialogueMinHeight`). The presenter uses data only; theme mods cannot provide
+drawing callbacks. All numeric geometry tokens are adjusted by `uiScale`
+before the presenter measures content; typography tokens use `fontScale`.
 
 The built-in choice order is Gen1 Modern (`default`), Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. Built-in IDs
@@ -278,6 +298,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.6.8 targets released game
+- Do not assume a custom engine build: version 0.7.0 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.8 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.7.0 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -45,6 +45,10 @@ when the listing is enabled there.
   callbacks remain engine-owned.
 - Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
   transparent panels readable without fading borders or labels.
+- Independent **UI SCALE** (75%–150%), **FONT SCALE** (80%–200%), and
+  **DIALOGUE TEXT SCALE** (inherit–200%) controls measure content at the
+  selected size before laying out panels. Long generic rows and dialogue
+  reflow without changing controller/keyboard ownership.
 - **START MOD MENUS** groups rows appended by other mods and this mod's **UI
   SETTINGS** beneath one **MOD MENUS** entry by default, keeping a busy Start
   menu readable while preserving each mod's live callback. Highlight a row in
@@ -86,7 +90,8 @@ when the listing is enabled there.
 - Content-sized option rows reserve enough width for long values and
   localized labels before falling back to safe, non-overlapping truncation.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
-  styles, plus density controls and a public data-only theme API.
+  styles, plus density controls, cached scale metrics, and a public data-only
+  theme API with scale tokens.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
 - Link Cable, Online Match, and Tournament screens use the modern presenter
   while LinkState keeps ownership of networking and input. Host/code entry
@@ -146,8 +151,9 @@ See [the handoff document](docs/GEN1_MODERN_UI_HANDOFF.md) for the compatibility
 contract, layout rules, testing notes, and release checklist.
 The [screen roadmap](docs/SCREEN_ROADMAP.md) tracks every audited built-in and
 installed-mod UI surface, its detection contract, priority, and fallback plan.
-The [readability and scaling plan](docs/READABILITY_SCALING_PLAN.md) defines
-the next UI/font/dialogue sizing milestone and its mobile reflow requirements.
+The [readability and scaling plan](docs/READABILITY_SCALING_PLAN.md) documents
+the shipped UI/font/dialogue sizing contract and its remaining mobile reflow
+QA requirements.
 The [input and interoperability audit](docs/INPUT_AND_INTEROP_AUDIT.md)
 documents the current engine pointer seams, safe direct-navigation rules, and
 the adapter plan for category bags and other replacement UIs.
@@ -185,7 +191,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.8.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.0.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -201,7 +207,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.6.8`) and push that commit to `main`. Each release includes a commit-based
+`0.7.0`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds
