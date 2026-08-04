@@ -142,6 +142,17 @@ function love.load()
       return 1
     end,
   } }
+  check(type(hooks["ui.start_menu.items"]) == "function",
+    "start-menu hook registered")
+  local shortcutItems = hooks["ui.start_menu.items"](
+    function(_, items) return items end, game,
+    { { label = "SAVE" }, { label = "OPTION" } })
+  local shortcutFound = false
+  for _, item in ipairs(shortcutItems) do
+    if item.id == "gen1_modern_ui.options" then shortcutFound = true break end
+  end
+  check(#shortcutItems == 3 and shortcutFound,
+    "Start menu exposes the direct UI settings shortcut")
   local zones = {}
   local returnedZones = hooks["render.zones"](
     function(_, value) return value end, game, zones)
@@ -399,8 +410,8 @@ function love.load()
     "desktop floating option off restores the themed backdrop")
   values.desktopFloating = true
   local mobileBag = renderHud({ bag }, "bag_portrait", portraitViewport)
-  check(pixelAlpha(mobileBag, 0, 0) > 0,
-    "mobile presenter retains the full-screen themed backdrop")
+  check(pixelAlpha(mobileBag, 0, 0) == 0,
+    "adaptive mobile presenter leaves the world area transparent")
   bag.items = { { label = "TM01", right = "x1", value = "TM_TEST" } }
   renderHud({ bag }, "bag_tm_value")
   bag.items = { { label = "CARD KEY", right = "x1", value = "KEY_TEST" } }
@@ -423,8 +434,8 @@ function love.load()
     "desktop start menu floats at the right with outside breathing room")
   local mobileMenu = renderHud({ startMenu }, "start_menu_mobile_landscape",
     mobileLandscapeViewport)
-  check(pixelAlpha(mobileMenu, 0, 0) > 0,
-    "mobile landscape start menu keeps the non-floating layout")
+  check(pixelAlpha(mobileMenu, 0, 0) == 0,
+    "adaptive mobile landscape start menu leaves the world area transparent")
   renderHud({ title, titleMenu }, "title_main_menu")
 
   local dex = setmetatable({ screenId = "PokedexMenu", title = "POKéDEX",

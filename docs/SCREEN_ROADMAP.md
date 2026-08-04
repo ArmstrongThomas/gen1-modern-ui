@@ -7,6 +7,10 @@ screens found in the currently installed mod set. It describes intended visual
 coverage only. Original states continue to own input, callbacks, timing, and
 gameplay behavior.
 
+The v0.6 layout pass adds content-sized floating panels across supported
+screens. Minimal mode removes optional regions before sizing, so a short list
+does not inherit the empty space of a rich preview layout.
+
 Pointer feasibility, direct-navigation rules, and the installed category-bag
 audit are recorded in
 [`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md).
@@ -27,12 +31,12 @@ errors, and capture prompts keep the classic UI. Version 0.3.0 implemented the
 first conservative guard: only one modern-owned UI layer (plus the overworld)
 may be suppressed; nested layers and `state.capture` retain vanilla context.
 Version 0.4.0 also rejects unknown instance-level `draw` replacements, with an
-explicit exception for the audited Modern Bag wrapper. Version 0.5.0 ships the
+explicit exception for the audited Modern Bag wrapper. Version 0.6.0 ships the
 stack-aware chain: every visible drawing state must have an enabled presenter,
 known modals render bottom-up above their modern parent, and any unknown layer
 retains the complete classic slice. It also rejects unknown class-level draw
 overrides and admits only the audited Modern Bag, Useful Dex, and Gen 3 Box
-structural adapters. The current 0.5.0 work also audits the released Bill's-PC
+structural adapters. The current v0.6.0 work also audits the released Bill's-PC
 root/child contract and the title Menu: Bill lists require verified full-stack
 ancestry, while the ordinary title Menu is suppressed independently so its
 shared title-art canvas is preserved.
@@ -47,7 +51,8 @@ than their live semantic contract.
   primitives, custom-draw detection, and failure fallback are shipped. Adapter
   error containment and optional developer logging remain.
 - **P1 — daily menus:** Trainer Card, richer Party/Bag/Shop/PC, Pokédex list,
-  and Bill's-PC lists are shipped; Controls and stabilization remain.
+  Bill's-PC lists, adaptive floating layouts, compact/minimal sizing, and
+  independent opacity controls are shipped; Controls and stabilization remain.
 - **P2 — spatial/editing screens:** Naming, Town Map/Fly/AREA, Move Learn,
   PicBox, reports, and the third-party adapter API.
 - **P3 — title/online/special:** title family, Link/Tournament, and adapters for

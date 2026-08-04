@@ -61,11 +61,12 @@ above the live virtual controls when they are visible; the game viewport and
 input coordinates are never changed.
 
 The presenter marks viewports with visible virtual controls before layout.
-With `desktopFloating` enabled, non-mobile viewports without that marker leave
-the area outside modern cards transparent; the Start Menu docks to an inset
-right-side card. Android/iOS and touch-visible viewports retain the larger
-centered/full-backdrop presentation. This changes only HUD drawing, never the
-engine viewport or input coordinates.
+`layoutStyle=auto` is the default and leaves the area outside content-sized
+cards transparent on desktop and mobile; the Start Menu docks to a compact
+card and richer screens grow only when their live content requires it.
+`layoutStyle=floating` forces this world-visible behavior, while
+`layoutStyle=full` restores the backdrop-first presentation. This changes only
+HUD drawing, never the engine viewport or input coordinates.
 
 The suppression guard is deliberately conservative. If **HIDE ORIGINAL UI**
 is off, any visible drawing state lacks a supported/enabled presenter, a custom
@@ -134,7 +135,12 @@ The current presenter recognizes these released classes or screen IDs:
 
 The `minimalUi` option does not change these models. It selects a lower-detail
 presentation that keeps the same live rows, selection, prompts, and callbacks
-while omitting optional preview/detail panes.
+while omitting optional preview/detail panes, then measures the remaining
+content again so hidden regions do not leave empty columns or oversized cards.
+
+`panelOpacity` controls backdrop and filled-surface alpha independently from
+`foregroundOpacity`, which controls text, borders, dividers, and accents. Both
+are percentage values from 0 to 100 and multiply the authored theme alpha.
 
 Rows are rebuilt from live state during each HUD pass. Preserve descriptor
 identity and unknown fields in any data you add, and use stable `id` fields for
@@ -160,7 +166,8 @@ row or card.
 
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
-toggle is independent from the `desktopFloating`, `dialogueUi`, generic
+toggle is independent from the `layoutStyle`, `panelOpacity`,
+`foregroundOpacity`, `startMenuShortcut`, `dialogueUi`, generic
 `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by
 the mod options.
 

@@ -222,7 +222,9 @@ end
 
 local function titleFor(Strings, state, kind)
   local names = {
-    StartMenu = "MENU",
+    -- The game context already makes the Start menu obvious. Keeping this
+    -- empty lets the compact floating layout begin with its first action row.
+    StartMenu = "",
     BagMenu = "ITEMS",
     ShopMenu = "SHOP",
     PlayerPC = "ITEM STORAGE",
@@ -237,6 +239,10 @@ local function titleFor(Strings, state, kind)
     title = ({ menu = "MENU", list = "LIST", choice = "CHOOSE",
                quantity = "QUANTITY", options = "OPTIONS",
                party = "POKéMON", summary = "SUMMARY" })[kind]
+  end
+  if kind == "choice" or (kind == "menu" and not (state and state.title)
+      and not (state and names[state.screenId])) then
+    title = ""
   end
   return Strings(title or "MENU")
 end
@@ -599,7 +605,20 @@ return function(mod)
   end
 
   local function currentTheme()
-    return themes[option("theme", "default")] or themes.default
+    local base = themes[option("theme", "default")] or themes.default
+    local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
+    local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
+    local theme = copy(base)
+    theme.colors = copy(base.colors)
+    for _, key in ipairs({ "backdrop", "surface", "surfaceRaised", "selected" }) do
+      local color = theme.colors[key]
+      if color then color[4] = (color[4] or 1) * panelOpacity end
+    end
+    for _, key in ipairs({ "text", "textMuted", "onAccent", "accent", "divider" }) do
+      local color = theme.colors[key]
+      if color then color[4] = (color[4] or 1) * foregroundOpacity end
+    end
+    return theme
   end
 
   local function registerTheme(spec)
@@ -641,7 +660,16 @@ return function(mod)
     -- its responsive layout is finished.  Keeping the option visible makes
     -- the WIP status explicit without disrupting the game's native battle UI.
     { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false },
+    { key = "layoutStyle", label = "LAYOUT STYLE", type = "choice",
+      choices = { { "ADAPTIVE", "auto" }, { "FLOATING", "floating" },
+                  { "FULL SCREEN", "full" } }, default = "auto" },
+    { key = "panelOpacity", label = "PANEL OPACITY", type = "number",
+      min = 0, max = 100, step = 5, default = 100 },
+    { key = "foregroundOpacity", label = "TEXT / LINE OPACITY", type = "number",
+      min = 0, max = 100, step = 5, default = 100 },
+    -- Retained as a migration field for saves created by v0.5.0.
     { key = "desktopFloating", label = "DESKTOP FLOATING UI", type = "toggle", default = true },
+    { key = "startMenuShortcut", label = "START UI SETTINGS", type = "toggle", default = true },
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false },
     { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true },
     { key = "menuUi", label = "MENU UI", type = "toggle", default = true },
@@ -650,14 +678,18 @@ return function(mod)
     { key = "spriteAnimation", label = "SPRITE ANIMATION", type = "toggle", default = true },
   })
 
+  local function layoutStyle(viewport)
+    local selected = option("layoutStyle", nil)
+    if selected == "full" or selected == "floating" then return selected end
+    -- Migrate the old boolean only when a user explicitly disabled it. The
+    -- new adaptive default is floating on every device, including phones.
+    if (selected == nil or selected == "auto")
+        and option("desktopFloating", true) == false then return "full" end
+    return "floating"
+  end
+
   local function floatingDesktop(viewport)
-    if option("desktopFloating", true) == false
-        or (viewport and viewport._gen1TouchVisible) then return false end
-    if love and love.system and type(love.system.getOS) == "function" then
-      local ok, osName = pcall(love.system.getOS)
-      if ok and (osName == "Android" or osName == "iOS") then return false end
-    end
-    return true
+    return layoutStyle(viewport) == "floating"
   end
 
   local function drawPresenterBackdrop(theme, viewport)
@@ -694,6 +726,47 @@ return function(mod)
   -- over the overworld.
   local overworldClass = optionalClass("src.world.OverworldController")
   local overworldDraw = overworldClass and rawget(overworldClass, "draw")
+
+  local function openModernOptions(game)
+    if not (game and mod.ui and type(mod.ui.push) == "function") then return end
+    local manager = mod.ui.push(game, "ManagerState")
+    if not manager or type(manager.openOptions) ~= "function" then return manager end
+    local manifest = manager.byId and manager.byId[MOD_ID]
+    if not manifest and game.mods and type(game.mods.status) == "function" then
+      local ok, status = pcall(game.mods.status, game.mods)
+      for _, candidate in ipairs(ok and status and status.available or {}) do
+        if candidate.id == MOD_ID then manifest = candidate break end
+      end
+    end
+    if manifest then pcall(manager.openOptions, manager, manifest) end
+    return manager
+  end
+
+  -- The shortcut is additive and anchored on a stable label. It remains a
+  -- normal Start-menu row, so other mods' rows and the existing Back path are
+  -- untouched. Older clients without ManagerState/openOptions simply open the
+  -- ordinary manager and retain full compatibility.
+  mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
+    local out = next(game, items)
+    if type(out) ~= "table" or option("startMenuShortcut", true) == false then
+      return out
+    end
+    for _, item in ipairs(out) do
+      if type(item) == "table" and item.id == "gen1_modern_ui.options" then
+        return out
+      end
+    end
+    local shortcut = {
+      id = "gen1_modern_ui.options",
+      label = Strings("UI SETTINGS"),
+      onSelect = function() openModernOptions(game) end,
+    }
+    if mod.ui and type(mod.ui.insertBefore) == "function" then
+      return mod.ui.insertBefore(out, "OPTION", shortcut)
+    end
+    table.insert(out, 1, shortcut)
+    return out
+  end, 90)
 
   local isBoxRoot
   local function boxPokemonList(state)
@@ -1128,7 +1201,28 @@ return function(mod)
     return rows, selected, scroll, title
   end
 
-  local function layoutFor(viewport, theme, kind, rowCount)
+  local function contentWidthFor(theme, rows, title, footer, minWidth, maxWidth)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local titleFont = font(fontCache, theme.typography.title)
+    local widest = math.max(titleFont:getWidth(safeText(title)),
+      bodyFont:getWidth(safeText(footer)))
+    for _, row in ipairs(rows or {}) do
+      if type(row) == "table" and not row.header then
+        local label = bodyFont:getWidth(safeText(row.label))
+        local value = bodyFont:getWidth(safeText(row.value))
+        -- Leave room for an optional icon and a small value column without
+        -- forcing every short menu to inherit the width of a rich screen.
+        widest = math.max(widest, label + (value > 0 and value + theme.spacing.md or 0)
+          + (row.image and 46 or 0))
+      end
+    end
+    return clamp(widest + theme.spacing.lg * 2 + theme.spacing.md,
+      minWidth or 1, maxWidth or widest + theme.spacing.lg * 2)
+  end
+
+  local function layoutFor(viewport, theme, kind, rows, title, footerText)
+    rows = rows or {}
+    local rowCount = #rows
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing or {}
     local density = option("density", "auto")
@@ -1139,8 +1233,9 @@ return function(mod)
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.
     local gutter = (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale
-    local header = (theme.typography.title or 24) +
-      (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale
+    local header = safeText(title) ~= "" and ((theme.typography.title or 24) +
+      (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale)
+      or (spacing.md or 13) * scale
     local footer = (landscape and (spacing.sm or 9) or (spacing.lg or 18)) * scale
       + (theme.typography.caption or 13)
     local rowHeight = (theme.density.rowHeight or 54) * scale
@@ -1155,7 +1250,10 @@ return function(mod)
       local minLandscapeRow = landscape and 30 or 34
       rowHeight = math.min(rowHeight, math.max(minLandscapeRow * scale, fitHeight))
     end
-    local panelW = math.min(w - gutter * 2, panelMax)
+    local minPanelW = landscape and 220 or 250
+    local measuredW = contentWidthFor(theme, rows, title, footerText,
+      minPanelW, panelMax)
+    local panelW = math.min(w - gutter * 2, measuredW)
     local navigationMenu = kind == "menu" or kind == "box_root"
     local sidePanel = desktopFloat and landscape and navigationMenu and rowCount > 0
     if navigationMenu or kind == "choice" or kind == "quantity" then
@@ -1163,15 +1261,16 @@ return function(mod)
       -- landscape, not as banners stretched across the whole phone. Longer
       -- list/options screens keep the wider panel calculated from the theme
       -- max.
-      panelW = math.min(panelW, (w > h * 1.2) and 720 or 560)
+      panelW = math.min(panelW, (w > h * 1.2) and w * 0.70 or 560)
     end
     if sidePanel then
       -- The ordinary in-game menu is navigational chrome, not a modal data
       -- screen. On wide windows keep it narrow and dock it to the edge so the
       -- world remains visible instead of dimming behind a centered card.
-      panelW = clamp(w * 0.30, 240, 360)
+      panelW = math.min(panelW, clamp(w * 0.30, 220, 360))
       gutter = spacing.lg or 18
-      header = (theme.typography.title or 24) + (spacing.md or 13)
+      header = safeText(title) ~= "" and ((theme.typography.title or 24)
+        + (spacing.md or 13)) or (spacing.md or 13)
       footer = (spacing.sm or 9) + (theme.typography.caption or 13)
       rowHeight = math.min(rowHeight, math.max(30 * scale,
         (h - gutter * 2 - header - footer) / math.max(1, rowCount)))
@@ -1180,10 +1279,6 @@ return function(mod)
     local visible = math.max(1, math.floor((h - gutter * 2 - header - footer) / rowHeight))
     visible = math.min(visible, math.max(1, rowCount))
     local contentH = header + footer + visible * rowHeight
-    -- Reserve one additional row-height in landscape for wrapped labels,
-    -- secondary values, and the extra move/metadata line used by Dex screens.
-    -- This applies to every generic menu rather than special-casing one mod.
-    if landscape then contentH = contentH + rowHeight end
     local panelH = math.min(h - gutter * 2, contentH)
     panelH = math.max(1, panelH)
     return {
@@ -1198,6 +1293,7 @@ return function(mod)
   end
 
   local function drawHeader(theme, layout, title)
+    if safeText(title) == "" then return end
     local colors = theme.colors
     setColor(colors.accent)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, 4,
@@ -1345,13 +1441,18 @@ return function(mod)
     return lines
   end
 
-  local function dialogueRect(viewport, theme)
+  local function dialogueRect(viewport, theme, state)
     local x, y, w, h = presenterRect(viewport)
     local landscape = w > h * 1.2
     local gutter = theme.spacing.lg
-    local width = math.min(w - gutter * 2,
-      landscape and math.min(760, w * 0.64) or 620)
     local body = font(fontCache, theme.typography.body)
+    local widest = 0
+    for _, line in ipairs(dialogueLines(state) or {}) do
+      widest = math.max(widest, body:getWidth(safeText(line)))
+    end
+    local maxWidth = landscape and math.min(760, w * 0.70) or math.min(620, w - gutter * 2)
+    local minWidth = math.min(landscape and 280 or 260, maxWidth)
+    local width = clamp(widest + gutter * 2, minWidth, maxWidth)
     local height = math.max(104,
       body:getHeight() * 2 + theme.spacing.lg * 2 + theme.typography.caption + 12)
     height = math.min(height, h - gutter * 2)
@@ -1359,7 +1460,7 @@ return function(mod)
   end
 
   local function drawDialogue(state, viewport, theme)
-    local px, py, panelW, panelH = dialogueRect(viewport, theme)
+    local px, py, panelW, panelH = dialogueRect(viewport, theme, state)
     local spacing, colors = theme.spacing, theme.colors
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
@@ -1414,11 +1515,13 @@ return function(mod)
     local spacing = theme.spacing
     local landscape = w > h * 1.2
     local rowHeight = math.max(40, math.min(theme.density.rowHeight, 50))
-    local header = theme.typography.title + spacing.md
+    local header = safeText(title) ~= "" and (theme.typography.title + spacing.md)
+      or spacing.md
     local footer = theme.typography.caption + spacing.md
     local visible = math.min(#rows, landscape and 7 or 6)
+    local maxPanelW = landscape and math.min(w * 0.70, 520) or math.min(w - spacing.lg * 2, 520)
     local panelW = math.min(w - spacing.lg * 2,
-      landscape and math.min(390, w * 0.36) or 440)
+      contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
     local panelH = header + footer + visible * rowHeight
     panelH = math.min(panelH, h - spacing.lg * 2)
     local px = x + (w - panelW) / 2
@@ -1540,7 +1643,8 @@ return function(mod)
 
   local function drawManager(game, state, viewport, theme)
     local rows, selected, scroll, title = managerRowsFor(game, state)
-    local layout = layoutFor(viewport, theme, "mod_manager", #rows)
+    local layout = layoutFor(viewport, theme, "mod_manager", rows, title,
+      state.notice)
     -- The manager has a tab strip and (for detail/apply views) a status
     -- subtitle in addition to the normal title. Reserve that line before
     -- calculating how many rows fit so portrait layouts never overlap text.
@@ -1607,7 +1711,8 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       theme.density.panelMax or 780)
-    local panelH = math.min(h - gutter * 2, 520)
+    local panelH = math.min(h - gutter * 2,
+      (w > h * 1.20) and 430 or 560)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local compact = panelH < 380
     local mon = state.mon or {}
@@ -1836,7 +1941,8 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 860))
-    local panelH = math.max(1, h - gutter * 2)
+    local panelH = math.min(h - gutter * 2,
+      (w > h * 1.15) and 500 or 640)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.15
 
@@ -2150,15 +2256,18 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 980))
-    local panelH = math.max(1, h - gutter * 2)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local party = state.party or (game.save and game.save.party) or {}
     local rows = monDisplayRows(game, party, state)
     local selected = clamp(state.index or 1, 1, math.max(1, #party))
     local minimal = option("minimalUi", false) == true
-    local landscape = panelW > panelH * 1.15
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
+    local compactH = headerH + footerH + math.min(#rows, 6) *
+      math.min(theme.density.rowHeight, 54) + spacing.lg * 2
+    local richH = w > h * 1.20 and 520 or 640
+    local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.15
     local contentY = py + headerH
     local contentH = math.max(1, panelH - headerH - footerH)
     local detailW = not minimal and landscape and math.min(panelW * 0.48, 470) or 0
@@ -2246,9 +2355,13 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 980))
-    local panelH = math.max(1, h - gutter * 2)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local minimal = option("minimalUi", false) == true
+    local compactH = theme.typography.title + theme.typography.caption
+      + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
+      + spacing.lg * 3
+    local richH = w > h * 1.20 and 520 or 640
+    local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     if minimal then
       for _, row in ipairs(rows) do row.source = nil end
     end
@@ -2317,7 +2430,8 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 920))
-    local panelH = math.max(1, h - gutter * 2)
+    local panelH = math.min(h - gutter * 2,
+      (w > h * 1.05) and 520 or 680)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.05
     local headerH = theme.typography.title + spacing.lg
@@ -2435,10 +2549,15 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 900))
-    local panelH = math.max(1, h - gutter * 2)
+    local minimalBag = option("minimalUi", false) == true
+    local compactBagH = theme.typography.title + theme.typography.caption
+      + math.min(#rows, 7) * math.min(theme.density.rowHeight, 54)
+      + spacing.lg * 3
+    local panelH = math.min(h - gutter * 2,
+      minimalBag and compactBagH or ((w > h * 1.05) and 520 or 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.05
-    local minimal = option("minimalUi", false) == true
+    local minimal = minimalBag
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
     local detailW = minimal and 0
@@ -2565,12 +2684,17 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 900))
-    local panelH = math.max(1, h - gutter * 2)
+    local minimalContext = option("minimalUi", false) == true
+    local compactContextH = theme.typography.title + theme.typography.caption * 2
+      + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
+      + spacing.lg * 4
+    local panelH = math.min(h - gutter * 2,
+      minimalContext and compactContextH or ((w > h * 1.10) and 520 or 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.10
     local headerH = theme.typography.title + spacing.lg
     local messageH = math.max(72, theme.typography.caption * 2 + spacing.lg * 2)
-    local minimal = option("minimalUi", false) == true
+    local minimal = minimalContext
     local detailW = not minimal and landscape and math.min(panelW * 0.34, 300) or 0
     local detailH = not minimal and not landscape
       and math.min(148, panelH * 0.25) or 0
@@ -2689,7 +2813,10 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       theme.density.panelMax or 780)
-    local panelH = math.max(1, h - gutter * 2)
+    -- The grid itself is the content. Keep a compact square-cell frame
+    -- instead of reserving the entire viewport around a 5x4 or 3x2 grid.
+    local panelH = math.min(h - gutter * 2,
+      (w > h * 1.20) and 470 or 620)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local mode = state.mode == "party" and "party" or "box"
     local cols, gridRows = mode == "box" and 5 or 3, mode == "box" and 4 or 2
@@ -2829,7 +2956,8 @@ return function(mod)
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       theme.density.panelMax or 780)
-    local panelH = math.max(1, h - gutter * 2)
+    local panelH = math.min(h - gutter * 2,
+      (w > h * 1.10) and 520 or 700)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local def = state.def or (state.vanilla and state.vanilla.def) or {}
     local page = state.view or "data"
@@ -3278,7 +3406,7 @@ return function(mod)
     end
     local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
     if not rows then return end
-    local layout = layoutFor(viewport, theme, kind, #rows)
+    local layout = layoutFor(viewport, theme, kind, rows, title, footerText)
     scroll = clamp(scroll, 0, math.max(0, #rows - layout.visible))
     selected = clamp(selected, 1, math.max(1, #rows))
     if selected <= scroll then scroll = selected - 1 end

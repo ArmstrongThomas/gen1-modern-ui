@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.5.0 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.0 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -34,10 +34,15 @@ when the listing is enabled there.
 
 ## Highlights
 
-- Responsive portrait and landscape menus with full safe-window layouts.
-- Desktop-only floating panels keep the world visible, with the Start Menu
-  inset at the right edge; mobile retains its larger centered/full-backdrop
-  layouts. **DESKTOP FLOATING UI** can restore the previous desktop backdrop.
+- Responsive portrait and landscape menus with content-sized safe-window
+  layouts. Compact panels shrink to their visible labels instead of reserving
+  large empty regions, including when **MINIMAL UI** is enabled.
+- Adaptive floating panels keep the world visible on desktop and mobile. Use
+  **LAYOUT STYLE** to choose Adaptive, Floating, or Full Screen presentation.
+- Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
+  transparent panels readable without fading borders or labels.
+- **START UI SETTINGS** adds a direct Start-menu shortcut to this mod's
+  options, enabled by default.
 - Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
   clears the UI canvas when a supported modern presenter safely owns the whole
   visible UI layer; nested or custom prompts retain their classic context.
@@ -54,7 +59,7 @@ when the listing is enabled there.
 - Bag and Shop details show the base purchase value and half-price sell value,
   including TM move/type/PP/value data; Trainer Card includes the five-digit ID.
 - **MINIMAL UI** keeps the modern shell and live controls while removing
-  optional detail/preview panes for a closer-to-original information density.
+  optional detail/preview panes and recomputing a genuinely compact layout.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
   styles, plus density controls and a public data-only theme API.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
@@ -131,7 +136,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.5.0.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.0.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -147,7 +152,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.5.1`) and push that commit to `main`. Each release includes a commit-based
+`0.6.1`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

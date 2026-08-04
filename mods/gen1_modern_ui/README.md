@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.5.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.6.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -56,7 +56,7 @@ custom engine checkout or a patched binary.
 
 ### Dialogue and modal stacks
 
-Version 0.5.0 presents ordinary `TextBox` dialogue and attached `Menu`,
+Version 0.6.0 presents ordinary `TextBox` dialogue and attached `Menu`,
 `ChoiceBox`, and `QuantityBox` layers as one composition. The text presenter
 reconstructs only the glyphs already revealed by the live typewriter state;
 the original state still owns reveal speed, waiting, advancement, sounds, and
@@ -157,7 +157,9 @@ clearly remain unsellable.
 control hints while removing optional Pokédex/Bag/Shop preview panes. Party
 retains its compact Pokémon icons and essential level/HP/status data; Bill's-PC
 lists use original-style text rows. Both omit the large selected-Pokémon detail
-pane. The setting affects only presentation and does not alter state,
+pane. The panel is measured again after those regions are removed, so short
+lists do not leave large blank columns or full-height cards. The setting
+affects only presentation and does not alter state,
 callbacks, menus, or save data.
 
 ### Mobile layout
@@ -173,18 +175,20 @@ touch-control
 layout is respected because the inset is measured from the live control
 positions rather than hard-coded screen coordinates.
 
-### Desktop floating layout
+### Adaptive floating layout
 
-**DESKTOP FLOATING UI** defaults on. On Windows, macOS, and Linux without
-visible virtual controls, modern panels leave the surrounding HUD layer
+**LAYOUT STYLE** defaults to **ADAPTIVE**. On Windows, macOS, Linux, and
+supported mobile layouts, modern panels leave the surrounding HUD layer
 transparent so the independently rendered world remains visible. The Start
-Menu becomes a compact card inset from the right, top, and bottom edges;
-larger data screens remain centered but keep their own outer breathing room.
-Nested choices and quantities float relative to their parent.
+Menu becomes a compact content-sized card; larger data screens grow only when
+their live content needs the space. Nested choices and quantities float
+relative to their parent.
 
-Android/iOS and any desktop session currently showing virtual controls keep
-the mobile presentation instead. Turning **DESKTOP FLOATING UI** off restores
-the full themed backdrop on desktop without changing input or suppression.
+Choose **FLOATING** to force world-visible panels or **FULL SCREEN** to restore
+the backdrop-first presentation. **PANEL OPACITY** controls filled surfaces,
+while **TEXT / LINE OPACITY** independently controls labels, borders, dividers,
+and accents. The old **DESKTOP FLOATING UI** setting is retained only to
+migrate existing saves.
 
 ### Battle presentation
 
