@@ -437,6 +437,26 @@ function love.load()
   local desktopBag = renderHud({ bag }, "bag")
   check(pixelAlpha(desktopBag, 0, 0) == 0,
     "desktop floating presenter leaves the world area transparent")
+
+  -- Rich/static screens share one backdrop policy. Explicit FLOATING and the
+  -- default ADAPTIVE mode leave the world pass visible; FULL SCREEN is the
+  -- opt-in themed blackout presentation. The new setting also wins over the
+  -- retained legacy boolean.
+  values.layoutStyle = "floating"
+  values.desktopFloating = false
+  local explicitFloatingBag = renderHud({ bag }, nil)
+  check(pixelAlpha(explicitFloatingBag, 0, 0) == 0,
+    "explicit FLOATING keeps the world visible")
+  values.layoutStyle = "full"
+  local explicitFullBag = renderHud({ bag }, nil)
+  check(pixelAlpha(explicitFullBag, 0, 0) > 0,
+    "explicit FULL SCREEN paints the themed backdrop")
+  values.layoutStyle = "auto"
+  values.desktopFloating = true
+  local adaptiveBag = renderHud({ bag }, nil)
+  check(pixelAlpha(adaptiveBag, 0, 0) == 0,
+    "ADAPTIVE defaults to a world-visible presenter")
+
   values.desktopFloating = false
   local backedDesktopBag = renderHud({ bag }, nil)
   check(pixelAlpha(backedDesktopBag, 0, 0) > 0,
@@ -485,6 +505,15 @@ function love.load()
     index = 1, party = game.save.party }, { __index = partyClass })
   renderHud({ party }, "party_rich")
   renderHud({ party }, "party_rich_portrait", portraitViewport)
+  values.layoutStyle = "floating"
+  local floatingParty = renderHud({ party }, nil)
+  check(pixelAlpha(floatingParty, 0, 0) == 0,
+    "FLOATING keeps the world visible behind the Party screen")
+  values.layoutStyle = "full"
+  local fullParty = renderHud({ party }, nil)
+  check(pixelAlpha(fullParty, 0, 0) > 0,
+    "FULL SCREEN backs the Party screen with the themed backdrop")
+  values.layoutStyle = "auto"
   values.minimalUi = true
   renderHud({ party }, "party_minimal")
   values.minimalUi = false

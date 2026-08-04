@@ -39,6 +39,9 @@ when the listing is enabled there.
   large empty regions, including when **MINIMAL UI** is enabled.
 - Adaptive floating panels keep the world visible on desktop and mobile. Use
   **LAYOUT STYLE** to choose Adaptive, Floating, or Full Screen presentation.
+  Adaptive and Floating keep the world rendered behind Party, Pokédex, Trainer
+  Card, PC, and other rich screens; Full Screen is the explicit themed-backdrop
+  mode.
 - Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
   transparent panels readable without fading borders or labels.
 - **START UI SETTINGS** adds a direct Start-menu shortcut to this mod's

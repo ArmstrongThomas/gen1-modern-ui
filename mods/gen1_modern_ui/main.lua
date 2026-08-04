@@ -698,6 +698,14 @@ return function(mod)
   }
   mod.options:define(optionSchema)
 
+  -- Resolve the presentation policy once per draw path.  The policy is
+  -- deliberately independent from the classic UI suppression switch: hiding
+  -- the old canvas must never imply that the world should be hidden too.
+  --
+  -- ADAPTIVE is the compatibility-friendly default. Supported presenters
+  -- remain world-visible just like FLOATING on new installs; FULL SCREEN is
+  -- the explicit opt-in for a themed backdrop behind the panel. The old
+  -- boolean can still preserve a previous FULL treatment during migration.
   local function layoutStyle(viewport)
     local selected = option("layoutStyle", nil)
     if selected == "full" or selected == "floating" then return selected end
@@ -708,12 +716,16 @@ return function(mod)
     return "floating"
   end
 
-  local function floatingDesktop(viewport)
-    return layoutStyle(viewport) == "floating"
+  local function worldVisibleLayout(viewport)
+    return layoutStyle(viewport) ~= "full"
   end
 
   local function drawPresenterBackdrop(theme, viewport)
-    if floatingDesktop(viewport) then return false end
+    -- Every rich presenter (Party, PC, Trainer Card, Pokédex, Bag, and
+    -- third-party adapters) comes through this helper.  Keeping the decision
+    -- here prevents one screen from accidentally blacking out the world when
+    -- the user selected FLOATING or ADAPTIVE.
+    if worldVisibleLayout(viewport) then return false end
     local x, y, w, h = fullViewportRect(viewport)
     setBackdrop(theme)
     love.graphics.rectangle("fill", x, y, w, h)
@@ -1351,7 +1363,7 @@ return function(mod)
     local density = option("density", "auto")
     local scale = density == "compact" and 0.88 or density == "comfortable" and 1.12 or 1
     local landscape = w > h * 1.2
-    local desktopFloat = floatingDesktop(viewport)
+    local desktopFloat = worldVisibleLayout(viewport)
     -- Touch controls can consume a large fraction of a phone's short
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.

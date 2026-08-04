@@ -64,9 +64,15 @@ The presenter marks viewports with visible virtual controls before layout.
 `layoutStyle=auto` is the default and leaves the area outside content-sized
 cards transparent on desktop and mobile; the Start Menu docks to a compact
 card and richer screens grow only when their live content requires it.
-`layoutStyle=floating` forces this world-visible behavior, while
-`layoutStyle=full` restores the backdrop-first presentation. This changes only
-HUD drawing, never the engine viewport or input coordinates.
+`layoutStyle=floating` forces this world-visible behavior for every supported
+presenter, including full-card screens such as Party, Trainer Card, Pokédex,
+and PC. `layoutStyle=full` is the explicit backdrop-first presentation: it
+paints the themed backdrop before drawing that same card. The old
+`desktopFloating=false` value is retained only as a migration path for saves
+that predate `layoutStyle`; explicit FLOATING always wins, while an older
+save whose adaptive setting is still paired with `desktopFloating=false`
+keeps its previous full treatment until that legacy toggle is enabled. This
+changes only HUD drawing, never the engine viewport or input coordinates.
 
 The suppression guard is deliberately conservative. If **HIDE ORIGINAL UI**
 is off, any visible drawing state lacks a supported/enabled presenter, a custom

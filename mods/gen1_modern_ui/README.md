@@ -105,6 +105,22 @@ a transparent classic UI canvas while suppression is enabled. Disable **HIDE
 ORIGINAL UI** when combining with an incompatible compositor, or coordinate
 hook priorities so both mods see the canvas state they expect.
 
+### Layout style and world visibility
+
+**LAYOUT STYLE** controls the presentation behind every supported modern
+screen:
+
+- **ADAPTIVE** (default) uses world-visible cards on new installs and keeps
+  content-sized panels compact on desktop and mobile.
+- **FLOATING** always leaves the rendered world visible around Party,
+  Pokédex, Trainer Card, PC, Bag, and other rich presenters.
+- **FULL SCREEN** paints the selected theme's backdrop before drawing the same
+  presenter, preserving the classic blacked-out presentation when desired.
+
+The old **DESKTOP FLOATING UI** option is retained only for migration. An
+older save with that value disabled may keep ADAPTIVE in full treatment until
+the legacy option is enabled; choosing FLOATING explicitly always wins.
+
 ### Images
 
 Rows may opt into artwork with an `image`, `icon`, `thumbnail`, `sprite`, or
