@@ -45,6 +45,10 @@ when the listing is enabled there.
   callbacks remain engine-owned.
 - Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
   transparent panels readable without fading borders or labels.
+- Theme-driven ornamental panel framing is available through **UI FRAME STYLE**:
+  authored theme frames, pixel corners, soft rounded borders, or a plain fallback.
+  Frame geometry scales with the active UI size and applies consistently to
+  menus, rich screens, dialogue, and nested cards.
 - Independent **UI SCALE** (AUTO or 75%–150%), **FONT SCALE** (AUTO or
   80%–200%), and **DIALOGUE TEXT SCALE** (inherit–200%) controls measure
   content at the selected size before laying out panels. AUTO responds to the
@@ -109,7 +113,8 @@ when the listing is enabled there.
   previews.
 - Dialogue panels size to the live text window: normal two-line messages stay
   compact, while longer supplied page models can expand up to five wrapped
-  lines plus a readable prompt.
+  lines. Typewriter dialogue keeps a stable panel footprint without adding a
+  speed-up button blurb while text is flowing.
   UI SETTINGS is organized into expandable Appearance, Navigation, Presenters,
   and Advanced categories instead of one long list.
 - Useful Dex and Gen 3 Box presenters with square grids and animated authored

@@ -116,13 +116,19 @@ function love.load()
   check(type(installer) == "function", "entry must return an installer")
   installer(mod)
 
-  local themeRow
+  local themeRow, frameStyleRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
-      if row.key == "theme" then themeRow = row break end
+      if row.key == "theme" then themeRow = row end
+      if row.key == "frameStyle" then frameStyleRow = row end
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
+  check(frameStyleRow and #frameStyleRow.choices == 4
+      and frameStyleRow.choices[1][2] == "theme"
+      and frameStyleRow.choices[4][2] == "plain"
+      and frameStyleRow.default == "theme",
+    "frame style exposes theme, pixel, soft, and plain treatments")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -666,6 +672,21 @@ function love.load()
     local _, _, _, a = canvas:newImageData():getPixel(x, y)
     return a
   end
+  local function alphaBounds(canvas)
+    local image = canvas:newImageData()
+    local minX, minY, maxX, maxY
+    for y = 0, image:getHeight() - 1 do
+      for x = 0, image:getWidth() - 1 do
+        local _, _, _, alpha = image:getPixel(x, y)
+        if alpha > 0 then
+          minX, minY = math.min(minX or x, x), math.min(minY or y, y)
+          maxX, maxY = math.max(maxX or x, x), math.max(maxY or y, y)
+        end
+      end
+    end
+    if not minX then return nil end
+    return { x = minX, y = minY, w = maxX - minX + 1, h = maxY - minY + 1 }
+  end
   bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
   bag.footer = "¥1234"
   local savedPage = textBox.pages
@@ -700,10 +721,20 @@ function love.load()
   local savedDialoguePageIndex, savedDialogueLineIndex = textBox.pageIndex, textBox.lineIndex
   textBox.pages = {{ "Short dialogue should not inherit a tall chrome-only card." }}
   textBox.pageIndex, textBox.lineIndex = 1, 1
-  textBox.charIndex, textBox.done, textBox.choice = #textBox.pages[1][1], true, nil
   values.uiScale, values.fontScale = "150", "100"
+  textBox.charIndex, textBox.done, textBox.choice = 8, false, nil
+  local typingDialogue = renderHud({ overworld, textBox },
+    "dialogue_typing_no_speed_hint", largeDesktopViewport)
+  textBox.charIndex, textBox.done, textBox.choice = #textBox.pages[1][1], true, nil
   local dialogueSized = renderHud({ overworld, textBox },
     "dialogue_content_sized", largeDesktopViewport)
+  local readyDialogue = renderHud({ overworld, textBox },
+    "dialogue_ready_no_button_hint", largeDesktopViewport)
+  local typingBounds, readyBounds = alphaBounds(typingDialogue), alphaBounds(readyDialogue)
+  check(typingBounds and readyBounds and typingBounds.x == readyBounds.x
+      and typingBounds.y == readyBounds.y and typingBounds.w == readyBounds.w
+      and typingBounds.h == readyBounds.h,
+    "dialogue panel footprint stays stable through typewriter reveal")
   check(pixelAlpha(dialogueSized, 800, 800) == 0,
     "short dialogue uses a content-sized card")
   textBox.pages, textBox.charIndex = savedPage, savedCharIndex
@@ -718,6 +749,11 @@ function love.load()
     renderHud({ bag }, "theme_full_" .. themeChoice[2]:gsub(":", "_"), mobileLandscapeViewport)
   end
   values.theme = "default"
+  for _, style in ipairs({ "theme", "pixel", "soft", "plain" }) do
+    values.frameStyle = style
+    renderHud({ bag }, "frame_" .. style, mobileLandscapeViewport)
+  end
+  values.frameStyle = "theme"
   local opaqueBag = setmetatable({ screenId = "BagMenu", items = {}, index = 1,
     isOpaque = true }, { __index = listClass })
   game.stack.states = { overworld, opaqueBag }

@@ -29,6 +29,8 @@ local DEFAULT_THEME = {
   typography = { title = 24, body = 17, caption = 13 },
   spacing = { xs = 5, sm = 9, md = 13, lg = 18, xl = 26 },
   radii = { sm = 8, md = 16, lg = 22 },
+  frame = { style = "pixel", width = 3, corner = 12, inset = 2,
+    step = 4, shadow = 2 },
   density = { rowHeight = 54, panelMax = 780 },
   -- Metrics are presentation tokens rather than engine pixels.  The
   -- effective UI scale resolver below adjusts these before any presenter
@@ -544,6 +546,7 @@ local function scaledTheme(theme, uiScale, fontScale, cache)
   out.typography = copy(theme.typography)
   out.spacing = copy(theme.spacing)
   out.radii = copy(theme.radii)
+  out.frame = copy(theme.frame or {})
   out.density = copy(theme.density)
   out.metrics = copy(theme.metrics or {})
   for name, value in pairs(out.typography) do
@@ -554,6 +557,9 @@ local function scaledTheme(theme, uiScale, fontScale, cache)
   end
   for name, value in pairs(out.radii) do
     if type(value) == "number" then out.radii[name] = value * uiScale end
+  end
+  for name, value in pairs(out.frame) do
+    if type(value) == "number" then out.frame[name] = value * uiScale end
   end
   if type(out.density.rowHeight) == "number" then
     out.density.rowHeight = out.density.rowHeight * uiScale
@@ -583,11 +589,15 @@ local function responsiveTheme(theme, viewport, cache)
   out.typography = copy(theme.typography)
   out.spacing = copy(theme.spacing)
   out.radii = copy(theme.radii)
+  out.frame = copy(theme.frame or {})
   out.density = copy(theme.density)
   out.metrics = copy(theme.metrics or {})
   for key, value in pairs(out.typography) do out.typography[key] = value * scale end
   for key, value in pairs(out.spacing) do out.spacing[key] = value * scale end
   for key, value in pairs(out.radii) do out.radii[key] = value * scale end
+  for key, value in pairs(out.frame) do
+    if type(value) == "number" then out.frame[key] = value * scale end
+  end
   out.density.rowHeight = out.density.rowHeight * scale
   for key, value in pairs(out.metrics) do out.metrics[key] = value * scale end
   if cache then
@@ -870,10 +880,12 @@ return function(mod)
     local uiScale = uiPercent / 100
     local fontScale = fontPercent / 100
     local density = safeText(option("density", "auto"))
+    local frameStyle = safeText(option("frameStyle", "theme"))
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
-    local key = ("%.3f:%.3f:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
+    local key = ("%.3f:%.3f:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
       uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
+      frameStyle,
       panelOpacity, foregroundOpacity)
     local bucket = themePresentationCache[base]
     if not bucket then
@@ -886,6 +898,12 @@ return function(mod)
     theme = copy(theme)
     theme.scale = copy(theme.scale or {})
     theme.scale.auto = uiAuto or fontAuto
+    theme.frame = copy(theme.frame or {})
+    if frameStyle == "pixel" or frameStyle == "soft" then
+      theme.frame.style = frameStyle
+    elseif frameStyle == "plain" then
+      theme.frame.style = "none"
+    end
     theme.colors = copy(base.colors)
     for _, key in ipairs({ "backdrop", "surface", "surfaceRaised", "selected" }) do
       local color = theme.colors[key]
@@ -982,6 +1000,10 @@ return function(mod)
     { key = "theme", label = "UI THEME", type = "choice",
       description = "Choose the color, contrast, and panel style used by the modern interface.",
       choices = themeChoices, default = "default" },
+    { key = "frameStyle", label = "UI FRAME STYLE", type = "choice",
+      description = "Choose the panel border treatment. THEME uses the active theme's authored frame.",
+      choices = { { "THEME", "theme" }, { "PIXEL", "pixel" },
+                  { "SOFT", "soft" }, { "PLAIN", "plain" } }, default = "theme" },
     { key = "density", label = "UI DENSITY", type = "choice",
       description = "Adjust the spacing and row height used by modern panels.",
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
@@ -1453,7 +1475,7 @@ return function(mod)
       description = "Compatibility and reset controls." },
   }
   local OPTION_CATEGORY_BY_KEY = {
-    theme = "appearance", density = "appearance", layoutStyle = "appearance",
+    theme = "appearance", frameStyle = "appearance", density = "appearance", layoutStyle = "appearance",
     uiScale = "appearance", fontScale = "appearance", dialogueTextScale = "appearance",
     panelOpacity = "appearance", foregroundOpacity = "appearance",
     minimalUi = "appearance", hideOriginalUi = "appearance",
@@ -2422,7 +2444,54 @@ return function(mod)
     }
   end
 
+  local function drawPanelFrame(theme, x, y, w, h, radius)
+    local frame = theme.frame or {}
+    local style = frame.style or "pixel"
+    if style == "none" then return end
+    local colors = theme.colors
+    local width = math.max(1, tonumber(frame.width) or
+      themeMetric(theme, "border", 3))
+    local inset = math.max(0, tonumber(frame.inset) or 0)
+    local shadow = math.max(0, tonumber(frame.shadow) or 0)
+    local lineRadius = style == "soft" and (radius or theme.radii.md) or 0
+    local fx, fy = x + inset, y + inset
+    local fw, fh = math.max(1, w - inset * 2), math.max(1, h - inset * 2)
+    local frameColor = colors.frame or colors.accent
+    local shadowColor = colors.frameShadow or colors.divider
+
+    if shadow > 0 then
+      setColor(shadowColor)
+      love.graphics.setLineWidth(width)
+      love.graphics.rectangle("line", fx + shadow, fy + shadow,
+        math.max(1, fw), math.max(1, fh), lineRadius)
+    end
+    setColor(frameColor)
+    love.graphics.setLineWidth(width)
+    love.graphics.rectangle("line", fx, fy, fw, fh, lineRadius)
+    love.graphics.setLineWidth(1)
+
+    if style ~= "pixel" then return end
+    local step = math.max(width * 2, tonumber(frame.step) or width * 2)
+    local mark = math.max(width, math.min(tonumber(frame.corner) or step,
+      math.min(fw, fh) / 4))
+    local notch = math.min(mark * 0.58, step)
+    local function corner(cx, cy, sx, sy)
+      love.graphics.rectangle("fill", cx, cy, mark, width)
+      love.graphics.rectangle("fill", cx, cy, width, mark)
+      love.graphics.rectangle("fill", cx + sx * notch,
+        cy + sy * notch, width, width)
+    end
+    corner(fx - width * 0.5, fy - width * 0.5, 1, 1)
+    corner(fx + fw - mark + width * 0.5, fy - width * 0.5, -1, 1)
+    corner(fx - width * 0.5, fy + fh - mark + width * 0.5, 1, -1)
+    corner(fx + fw - mark + width * 0.5,
+      fy + fh - mark + width * 0.5, -1, -1)
+  end
+
   local function drawHeader(theme, layout, title)
+    if layout.h then
+      drawPanelFrame(theme, layout.x, layout.y, layout.w, layout.h, layout.radius)
+    end
     if safeText(title) == "" then return end
     local colors = theme.colors
     setColor(colors.accent)
@@ -2646,6 +2715,22 @@ return function(mod)
     return lines
   end
 
+  local function completeDialogueLines(state)
+    local pages = state and state.pages
+    local page = type(pages) == "table" and pages[state.pageIndex or 1]
+    if type(page) ~= "table" then return { "" } end
+    local current = clamp(state.lineIndex or 1, 1, math.max(1, #page))
+    local shownCount = type(state.shown) == "table" and #state.shown or 1
+    shownCount = clamp(shownCount, 1, 5)
+    local first = math.max(1, current - shownCount + 1)
+    local lines = {}
+    for index = first, current do
+      lines[#lines + 1] = safeText(page[index])
+    end
+    if #lines == 0 then lines[1] = "" end
+    return lines
+  end
+
   local function wrappedDialogueLines(state, body, maxWidth)
     local lines = {}
     for _, source in ipairs(dialogueLines(state)) do
@@ -2654,16 +2739,6 @@ return function(mod)
       end
     end
     return lines
-  end
-
-  local function dialogueHint(state)
-    local ready = state.waiting or (state.done and not state.choice
-      and not state.auto and not state.stay)
-    if ready then return "A / B  continue" end
-    if state.done and state.choice then return nil end
-    if state.done and state.auto then return "Please wait" end
-    if not (state.done and state.stay) then return "Hold A / B  speed up" end
-    return nil
   end
 
   local function modalHint(kind, footerText)
@@ -2695,8 +2770,8 @@ return function(mod)
     local gutter = theme.spacing.lg
     local body = font(fontCache, theme.typography.body)
     local widest = 0
-    for _, line in ipairs(dialogueLines(state) or {}) do
-      widest = math.max(widest, body:getWidth(safeText(line)))
+    for _, line in ipairs(completeDialogueLines(state) or {}) do
+      widest = math.max(widest, body:getWidth(line))
     end
     local uiScale = theme.scale and theme.scale.ui or 1
     local maxWidth = landscape and math.min(760 * uiScale, w * 0.70)
@@ -2708,16 +2783,16 @@ return function(mod)
     -- every message; longer page models can still grow up to five lines.
     local lineGap = body:getHeight() + theme.spacing.xs
     local available = math.max(1, width - gutter * 2)
-    local desiredLines = #wrappedDialogueLines(state, body, available)
+    local desiredLines = 0
+    for _, line in ipairs(completeDialogueLines(state)) do
+      desiredLines = desiredLines + #wrappedLines(line, available, body)
+    end
     desiredLines = clamp(math.max(2, desiredLines), 2, 5)
-    local dialogueFooter = shouldDrawHint(dialogueHint(state))
-      and theme.typography.caption + theme.spacing.md or 0
     -- Keep the card large enough for the revealed text and footer, but do not
     -- let a chrome-only minimum create a tall empty box when UI SCALE is high
     -- and FONT SCALE is intentionally smaller.
     local contentHeight = lineGap * desiredLines + theme.spacing.lg * 2
-      + dialogueFooter
-    local minimumHeight = lineGap * 2 + theme.spacing.lg * 2 + dialogueFooter
+    local minimumHeight = lineGap * 2 + theme.spacing.lg * 2
     local height = math.max(minimumHeight, contentHeight)
     if reserveKind then
       local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
@@ -2734,6 +2809,7 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
     setColor(colors.accent)
     love.graphics.rectangle("fill", px, py, panelW,
       themeMetric(theme, "border", 4),
@@ -2744,9 +2820,7 @@ return function(mod)
     local available = panelW - spacing.lg * 2
     local lines = wrappedDialogueLines(state, body, available)
     local lineGap = body:getHeight() + spacing.xs
-    local hint = dialogueHint(state)
-    local footerH = shouldDrawHint(hint) and theme.typography.caption + spacing.md or 0
-    local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2 - footerH) / lineGap))
+    local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2) / lineGap))
     while #lines > maxLines do table.remove(lines, 1) end
     local textY = py + spacing.lg
     setColor(colors.text)
@@ -2756,12 +2830,6 @@ return function(mod)
 
     local ready = state.waiting or (state.done and not state.choice
       and not state.auto and not state.stay)
-    setColor(colors.textMuted)
-    if shouldDrawHint(hint) then
-      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
-        py + panelH - spacing.md - theme.typography.caption,
-        panelW - spacing.lg * 2)
-    end
     if ready and not state.choice then
       setColor(colors.accent)
       love.graphics.print("v", px + panelW - spacing.lg - 8,
@@ -3104,6 +3172,7 @@ return function(mod)
     love.graphics.setFont(bodyFont)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)
@@ -3347,7 +3416,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    local headerLayout = { x = px, y = py, w = panelW,
+    local headerLayout = { x = px, y = py, w = panelW, h = panelH,
       radius = theme.radii.md }
     drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
 
@@ -3716,7 +3785,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
       partyTitle)
     local listLayout = { x = listX, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
@@ -3757,7 +3826,7 @@ return function(mod)
       local ax, ay = px + (panelW - actionW) / 2, py + (panelH - actionH) / 2
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", ax, ay, actionW, actionH, theme.radii.md)
-      drawHeader(theme, { x = ax, y = ay, w = actionW, radius = theme.radii.md },
+      drawHeader(theme, { x = ax, y = ay, w = actionW, h = actionH, radius = theme.radii.md },
         Strings("POKéMON ACTIONS"))
       local actionVisible = math.max(1, math.min(#actionRows,
         math.floor((actionH - actionHeader) / actionRowH)))
@@ -3820,7 +3889,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
       boxTitle)
     local save = game.save or {}
     local box = save.boxes and save.boxes[save.currentBox or 1] or {}
@@ -3899,7 +3968,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     local previewX = landscape and (px + panelW - previewW) or px
     local previewY = py + headerH
@@ -4105,7 +4174,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     if detailW > 0 and detailH > 0 then
       wrapFittedText = true
@@ -4310,7 +4379,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     if kind == "shop_list" and type(state.money) == "function" then
       local ok, money = pcall(state.money)
@@ -4457,6 +4526,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)
@@ -4626,6 +4696,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)
@@ -4965,6 +5036,7 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)

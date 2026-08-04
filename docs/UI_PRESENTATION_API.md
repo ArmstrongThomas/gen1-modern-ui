@@ -201,6 +201,10 @@ The readability controls are applied before measurement and layout:
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
   confirmation prompts.
+- `frameStyle` accepts `THEME`, `PIXEL`, `SOFT`, and `PLAIN`. `THEME` uses the
+  active theme's authored frame tokens; the other values select a built-in
+  ornamental treatment or disable the frame. Dialogue keeps its content-sized
+  footprint stable while text is typing and does not display a speed-up hint.
 
 Larger fonts raise measured row minimums and can promote generic rows to a
 two-line layout. Dialogue wraps the currently revealed glyph prefix, so a
@@ -297,11 +301,27 @@ end
 ```
 
 Theme specs are merged with the built-in defaults. Supported token groups are
-semantic colors, typography sizes, spacing, corner radii, density, and
-presentation `metrics` (`border`, `divider`, `icon`, and
-`dialogueMinHeight`). The presenter uses data only; theme mods cannot provide
-drawing callbacks. All numeric geometry tokens are adjusted by `uiScale`
-before the presenter measures content; typography tokens use `fontScale`.
+semantic colors, typography sizes, spacing, corner radii, density, ornamental
+`frame` geometry, and presentation `metrics` (`border`, `divider`, `icon`, and
+`dialogueMinHeight`). A frame can be authored with `style` (`pixel`, `soft`, or
+`none`), `width`, `corner`, `inset`, `step`, and `shadow`; all numeric frame
+tokens are scaled with the active UI size. The presenter uses data only; theme
+mods cannot provide drawing callbacks. All other numeric geometry tokens are
+adjusted by `uiScale` before the presenter measures content; typography tokens
+use `fontScale`.
+
+For example:
+
+```lua
+frame = {
+  style = "pixel",
+  width = 3,
+  corner = 12,
+  inset = 2,
+  step = 4,
+  shadow = 2,
+},
+```
 
 The built-in choice order is Gen1 Modern (`default`), Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. Built-in IDs

@@ -282,8 +282,12 @@ return function(mod)
 end
 ```
 
-Themes may override semantic colors, typography sizes, spacing, radii, and
-density. Drawing callbacks are intentionally not part of the theme contract.
+Themes may override semantic colors, typography sizes, spacing, radii, density,
+and the ornamental `frame` group. Frame tokens include `style` (`pixel`, `soft`,
+or `none`), `width`, `corner`, `inset`, `step`, and `shadow`; numeric frame
+geometry follows UI scaling. The **UI FRAME STYLE** option can select the theme's
+frame, a built-in pixel or soft treatment, or a plain panel. Drawing callbacks
+are intentionally not part of the theme contract.
 
 The built-in options expose the selected theme and row density in the mod
 options menu. Theme IDs other than `default` must be namespaced with the

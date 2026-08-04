@@ -252,13 +252,20 @@ end
 ```
 
 Themes may override semantic colors, typography sizes, spacing, radii, density,
-and presentation metrics. v0.7.3 also exports `scaleTokens` and
+ornamental `frame` geometry, and presentation metrics. A frame can use
+`style = "pixel"`, `"soft"`, or `"none"` together with `width`, `corner`,
+`inset`, `step`, and `shadow` values. The **UI FRAME STYLE** option can select
+the authored theme treatment, a built-in pixel/soft treatment, or a plain panel.
+All numeric frame geometry follows the active UI scale. v0.7.3 also exports
+`scaleTokens` and
 `getScaleTokens(viewport)`. `uiScale` accepts a manual value or `AUTO`, which resolves
 from the safe window viewport, and adjusts geometry tokens before measurement;
 `fontScale` accepts the same responsive `AUTO` mode and adjusts typography and
 cached font sizes; and
 `dialogueTextScale` derives a larger text theme for dialogue, choices,
-quantities, and confirmation prompts. The built-in presenter executes no theme
+quantities, and confirmation prompts. Dialogue panels omit the typewriter
+speed-up hint and reserve no changing hint strip while text flows, keeping their
+content-sized footprint stable. The built-in presenter executes no theme
 drawing callbacks and ships no ROM-derived art. Built-in and third-party
 themes share one live options list; re-registering a namespaced ID refreshes
 its name and tokens without adding a duplicate choice.
