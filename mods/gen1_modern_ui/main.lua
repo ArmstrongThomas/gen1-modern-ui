@@ -175,7 +175,15 @@ end
 
 local function safeText(value)
   if value == nil then return "" end
-  return tostring(value)
+  local text = tostring(value)
+  -- The released game's display data uses UTF-8 for the Gen1 gender signs,
+  -- but the default LÖVE font used by this overlay may not contain those
+  -- glyphs. Keep the names readable in the visual-only layer instead of
+  -- emitting a tofu box; the extra space also keeps the fallback distinct
+  -- from the species name itself.
+  text = text:gsub("\226\153\130", " M")
+  text = text:gsub("\226\153\128", " F")
+  return text
 end
 
 -- Images are optional presentation metadata.  A menu author may provide an
@@ -271,12 +279,27 @@ local function font(cache, size)
   return cache[key]
 end
 
+local function removeLastTextCharacter(text)
+  local index = #text
+  while index > 0 do
+    local byte = text:byte(index)
+    -- UTF-8 continuation bytes begin 10xxxxxx. Stop at the lead byte so a
+    -- truncation never hands LÖVE an incomplete multi-byte character.
+    if byte < 128 or byte >= 192 then
+      return text:sub(1, index - 1)
+    end
+    index = index - 1
+  end
+  return ""
+end
+
 local function truncate(text, maxWidth)
   text = safeText(text)
+  maxWidth = math.max(1, tonumber(maxWidth) or 1)
   if love.graphics.getFont():getWidth(text) <= maxWidth then return text end
   local suffix = "..."
   while #text > 0 and love.graphics.getFont():getWidth(text .. suffix) > maxWidth do
-    text = text:sub(1, -2)
+    text = removeLastTextCharacter(text)
   end
   return text .. suffix
 end
@@ -2880,7 +2903,8 @@ return function(mod)
     local compact = panelH < 380
     local mon = summaryPokemon(state) or {}
     local def = pokemonDefinition(game, mon.species)
-    local name = mon.nickname or (def and def.name) or mon.species or "POKéMON"
+    local name = safeText(mon.nickname or (def and def.name)
+      or mon.species or "POKéMON")
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
       or theme.typography.title)
     local bodyFont = font(fontCache, compact and theme.typography.body * 0.86

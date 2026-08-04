@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.7.1 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.7.2 is a standalone, visual-only overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -46,7 +46,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.7.1. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.7.2. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -95,7 +95,7 @@ that file and appends the generated archive checksum.
 8. Theme tokens are merged with the built-in defaults. The presenter owns only
    drawing; the game continues to own input, state transitions, and callbacks.
 
-Version 0.7.1 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.7.2 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -252,7 +252,7 @@ end
 ```
 
 Themes may override semantic colors, typography sizes, spacing, radii, density,
-and presentation metrics. v0.7.1 also exports `scaleTokens` and
+and presentation metrics. v0.7.2 also exports `scaleTokens` and
 `getScaleTokens()`. `uiScale` adjusts geometry tokens before measurement;
 `fontScale` adjusts typography and cached font sizes; and
 `dialogueTextScale` derives a larger text theme for dialogue, choices,
@@ -360,7 +360,7 @@ for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
 ## Next milestones
 
 - Polish minimal UI sizing and reduce remaining unnecessary empty space after
-  the v0.7.1 scaling pass.
+  the v0.7.2 scaling pass.
 - Exercise the new dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag,
   Shop, and Player-PC
   presenters in the released game with installed UI/category mods and retain

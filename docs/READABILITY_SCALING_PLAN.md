@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Implementation status
 
-The v0.7.1 implementation ships the independent UI, font, and dialogue scale
+The v0.7.2 implementation ships the independent UI, font, and dialogue scale
 settings described below. Effective themes are cached by authored theme,
 density, scale values, opacity, and viewport class; fonts are cached by
 effective pixel size. Generic menu rows measure live labels and values before
@@ -73,9 +73,10 @@ and leaves input hints or borders at the wrong size.
    compatible and do not need to hard-code one font size.
 
 The shared scaled theme and minimum-row resolver described in steps 1–6 ship
-in v0.7.0. The v0.7.1 follow-up makes rich-screen height budgets scale-aware
-and adds a large-desktop shop regression check; released-game screenshot QA
-and any screen-specific polish remain follow-up work.
+in v0.7.0. The v0.7.1 follow-up made rich-screen height budgets scale-aware;
+the v0.7.2 follow-up hardens UTF-8 name rendering and adds Nidoran gender-name
+regression coverage. Released-game screenshot QA and any screen-specific
+polish remain follow-up work.
 
 ## Compatibility and performance
 

@@ -815,6 +815,27 @@ function love.load()
   values.minimalUi = true
   renderHud({ party }, "party_minimal")
   values.minimalUi = false
+  game.data.pokemon.NIDORAN_M = { id = "NIDORAN_M",
+    name = "NIDORAN\226\153\130", types = { "POISON" },
+    baseStats = { hp = 46, attack = 57, defense = 40, speed = 50, special = 40 } }
+  game.data.pokemon.NIDORAN_F = { id = "NIDORAN_F",
+    name = "NIDORAN\226\153\128", types = { "POISON" },
+    baseStats = { hp = 55, attack = 47, defense = 52, speed = 41, special = 40 } }
+  local genderParty = setmetatable({ screenId = "PartyMenu", game = game,
+    index = 1, party = {
+      { species = "NIDORAN_M", level = 5, hp = 20,
+        moves = { { id = "TEST_MOVE", pp = 30 } } },
+      { species = "NIDORAN_F", level = 5, hp = 21,
+        moves = { { id = "TEST_MOVE", pp = 30 } } },
+    } }, { __index = partyClass })
+  renderHud({ genderParty }, "party_nidoran_male")
+  genderParty.index = 2
+  renderHud({ genderParty }, "party_nidoran_female")
+  values.uiScale, values.fontScale = "150", "200"
+  renderHud({ genderParty }, "party_nidoran_female_portrait", portraitViewport)
+  genderParty.index = 1
+  renderHud({ genderParty }, "party_nidoran_male_portrait", portraitViewport)
+  values.uiScale, values.fontScale = "100", "100"
   party.submenu = true
   party.subIndex = 9
   party.subItems = {
