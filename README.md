@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.7.2 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.7.3 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -45,10 +45,15 @@ when the listing is enabled there.
   callbacks remain engine-owned.
 - Independent **PANEL OPACITY** and **TEXT / LINE OPACITY** controls make
   transparent panels readable without fading borders or labels.
-- Independent **UI SCALE** (75%–150%), **FONT SCALE** (80%–200%), and
-  **DIALOGUE TEXT SCALE** (inherit–200%) controls measure content at the
-  selected size before laying out panels. Long generic rows and dialogue
-  reflow without changing controller/keyboard ownership.
+- Independent **UI SCALE** (AUTO or 75%–150%), **FONT SCALE** (AUTO or
+  80%–200%), and **DIALOGUE TEXT SCALE** (inherit–200%) controls measure
+  content at the selected size before laying out panels. AUTO responds to the
+  safe window dimensions. Long generic rows and dialogue reflow without
+  changing controller/keyboard ownership.
+- Rich Party, Pokédex, Bag, Shop, and item-detail panels now fit their visible
+  rows and detail content instead of reserving a full-height readability card;
+  detail columns wrap localized names, move data, prices, and descriptions
+  before using a bounded fallback for labels that cannot reflow.
 - **START MOD MENUS** groups rows appended by other mods and this mod's **UI
   SETTINGS** beneath one **MOD MENUS** entry by default, keeping a busy Start
   menu readable while preserving each mod's live callback. Highlight a row in
@@ -70,7 +75,8 @@ when the listing is enabled there.
   future mod settings screens keep their custom options readable at high
   resolution without replacing their callbacks or input ownership.
 - Stack-aware dialogue, YES/NO, quantity, and action cards that preserve the
-  game's typewriter timing and callback/input ownership.
+  game's typewriter timing and callback/input ownership. Nested prompts use a
+  consistent centered, dimmed treatment over their active parent screen.
 - The in-game Start menu and title-screen main menu use the same floating
   desktop presentation; title art is preserved independently and the native
   title menu is suppressed without clearing the shared artwork canvas. While
@@ -191,7 +197,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.2.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.3.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -207,7 +213,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.7.2`) and push that commit to `main`. Each release includes a commit-based
+`0.7.3`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Implementation status
 
-The v0.7.2 implementation ships the independent UI, font, and dialogue scale
+The v0.7.3 implementation ships the independent UI, font, and dialogue scale
 settings described below. Effective themes are cached by authored theme,
 density, scale values, opacity, and viewport class; fonts are cached by
 effective pixel size. Generic menu rows measure live labels and values before
@@ -22,6 +22,10 @@ the original menu state, cursor behavior, callbacks, or game logic. It is the
 recommended next implementation slice after the v0.6.2 floating-screen fix.
 
 ## Proposed settings
+
+Both scale controls also accept `AUTO`. It resolves a bounded five-percent
+value from the safe window dimensions at render time, using both dimensions in
+landscape and the limiting width in portrait.
 
 - **UI SCALE** — 75% to 150%, 5% steps, default 100%. Scales panel padding,
   row height, icons, borders, radii, and control-hint spacing.
@@ -52,7 +56,7 @@ and leaves input hints or borders at the wrong size.
 - When content cannot fit, prefer wrapping, scrolling, paging, or a narrower
   detail pane before truncating essential values.
 - Compact floating panels remain content-sized; rich panels use scale-aware
-  height budgets and remain clamped to the safe viewport.
+  width and height budgets and remain clamped to the safe viewport.
 - Full Screen uses the same scaled content rules over its themed backdrop.
 - Portrait and landscape layouts may choose different row counts, but must
   preserve the live cursor, scroll, and callbacks.
@@ -74,8 +78,11 @@ and leaves input hints or borders at the wrong size.
 
 The shared scaled theme and minimum-row resolver described in steps 1–6 ship
 in v0.7.0. The v0.7.1 follow-up made rich-screen height budgets scale-aware;
-the v0.7.2 follow-up hardens UTF-8 name rendering and adds Nidoran gender-name
-regression coverage. Released-game screenshot QA and any screen-specific
+the v0.7.2 follow-up hardened UTF-8 name rendering and added Nidoran gender-name
+regression coverage. The v0.7.3 follow-up makes minimal and rich presenter
+width budgets scale-aware so larger text is not clipped by reference-width
+ceilings, standardizes nested modal placement, and adds responsive AUTO values
+for UI and font scale. Released-game screenshot QA and any screen-specific
 polish remain follow-up work.
 
 ## Compatibility and performance

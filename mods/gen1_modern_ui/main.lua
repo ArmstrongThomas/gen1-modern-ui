@@ -293,15 +293,28 @@ local function removeLastTextCharacter(text)
   return ""
 end
 
-local function truncate(text, maxWidth)
+local function truncate(text, maxWidth, textFont)
   text = safeText(text)
   maxWidth = math.max(1, tonumber(maxWidth) or 1)
-  if love.graphics.getFont():getWidth(text) <= maxWidth then return text end
+  textFont = textFont or love.graphics.getFont()
+  if textFont:getWidth(text) <= maxWidth then return text end
   local suffix = "..."
-  while #text > 0 and love.graphics.getFont():getWidth(text .. suffix) > maxWidth do
+  while #text > 0 and textFont:getWidth(text .. suffix) > maxWidth do
     text = removeLastTextCharacter(text)
   end
   return text .. suffix
+end
+
+local wrapFittedText = false
+
+local function drawFittedText(text, x, y, maxWidth, textFont)
+  textFont = textFont or love.graphics.getFont()
+  love.graphics.setFont(textFont)
+  if wrapFittedText then
+    love.graphics.printf(safeText(text), x, y, math.max(1, maxWidth), "left")
+    return
+  end
+  love.graphics.print(truncate(text, maxWidth, textFont), x, y)
 end
 
 local utf8TextLibrary
@@ -364,6 +377,17 @@ local function wrappedLines(text, maxWidth, textFont)
   return lines
 end
 
+local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
+  textFont = textFont or love.graphics.getFont()
+  lineGap = lineGap or (textFont:getHeight() + 2)
+  local lines = wrappedLines(text, maxWidth, textFont)
+  love.graphics.setFont(textFont)
+  for index, line in ipairs(lines) do
+    love.graphics.print(line, x, y + (index - 1) * lineGap)
+  end
+  return y + #lines * lineGap, #lines
+end
+
 local function viewportRect(viewport)
   if viewport and viewport.safe then
     local safe = viewport.safe
@@ -383,6 +407,29 @@ local function viewportRect(viewport)
   local w = viewport and viewport.width or love.graphics.getWidth()
   local h = viewport and viewport.height or love.graphics.getHeight()
   return 0, 0, math.max(1, w), math.max(1, h)
+end
+
+-- AUTO keeps the authored scale controls responsive to the usable window while
+-- retaining the same bounded, five-percent increments as the manual choices.
+-- Landscape sizing uses both dimensions so an ultrawide window cannot grow
+-- panels based on width alone; portrait sizing keys off width because that is
+-- the limiting dimension for readable phone UI.
+local function autoScalePercent(viewport, minimum, maximum)
+  local _, _, width, height = viewportRect(viewport)
+  local ratio
+  if height > width * 1.2 then
+    ratio = width / 400
+  else
+    ratio = math.min(width / 640, height / 360)
+  end
+  return normalizedPercent(ratio * 100, 100, minimum, maximum)
+end
+
+local function resolvedScalePercent(value, viewport, minimum, maximum)
+  if safeText(value):lower() == "auto" then
+    return autoScalePercent(viewport, minimum, maximum), true
+  end
+  return normalizedPercent(value, 100, minimum, maximum), false
 end
 
 -- The engine draws the virtual controls after render.hud.  On a phone that
@@ -523,6 +570,9 @@ local function scaledTheme(theme, uiScale, fontScale, cache)
 end
 
 local function responsiveTheme(theme, viewport, cache)
+  -- AUTO already incorporates the current viewport. Applying the legacy
+  -- portrait boost again would scale that responsive value twice.
+  if theme.scale and theme.scale.auto then return theme end
   local _, _, w, h = viewportRect(viewport)
   if not (h > w * 1.55 and w <= 720) then return theme end
   local scale = clamp(w / 460, 1.16, 1.28)
@@ -775,15 +825,56 @@ return function(mod)
     love.graphics.print(truncate(text, maxWidth), x, y)
   end
 
-  local function currentTheme()
+  local function hintHasExtraControls(value)
+    local text = safeText(value):upper()
+    -- "A select" is an action label, not the physical SELECT button. Leave
+    -- standalone SELECT/START tokens intact so pages with extra controls
+    -- still advertise them.
+    text = text:gsub("%f[%a]A%f[%A]%s+SELECT%f[%A]", "")
+    text = text:gsub("%f[%a]A%f[%A]%s+START%f[%A]", "")
+    local function hasWord(word)
+      return text:match("%f[%a]" .. word .. "%f[%A]") ~= nil
+    end
+    return hasWord("SELECT") or hasWord("START") or hasWord("ARROWS")
+      or text:find("D%-PAD") ~= nil
+      or text:find("L/R", 1, true) ~= nil
+      or hasWord("LEFT") or hasWord("RIGHT")
+      or hasWord("UP") or hasWord("DOWN")
+  end
+
+  local function hintIsBasicButtonText(value)
+    local text = safeText(value)
+    return text:match("%f[%a]A%f[%A]") ~= nil
+      or text:match("%f[%a]B%f[%A]") ~= nil
+  end
+
+  local function shouldDrawHint(value)
+    local text = safeText(value)
+    if text == "" then return false end
+    if not hintIsBasicButtonText(text) then return true end
+    return hintHasExtraControls(text)
+  end
+
+  local function drawHintIfUseful(theme, value, x, y, maxWidth)
+    if not shouldDrawHint(value) then return false end
+    drawHint(theme, value, x, y, maxWidth)
+    return true
+  end
+
+  local function currentTheme(viewport)
     local base = themes[option("theme", "default")] or themes.default
-    local uiScale = normalizedPercent(option("uiScale", 100), 100, 75, 150) / 100
-    local fontScale = normalizedPercent(option("fontScale", 100), 100, 80, 200) / 100
+    local uiPercent, uiAuto = resolvedScalePercent(option("uiScale", 100),
+      viewport, 75, 150)
+    local fontPercent, fontAuto = resolvedScalePercent(option("fontScale", 100),
+      viewport, 80, 200)
+    local uiScale = uiPercent / 100
+    local fontScale = fontPercent / 100
     local density = safeText(option("density", "auto"))
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
-    local key = ("%.3f:%.3f:%s:%.3f:%.3f"):format(uiScale, fontScale,
-      density, panelOpacity, foregroundOpacity)
+    local key = ("%.3f:%.3f:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
+      uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
+      panelOpacity, foregroundOpacity)
     local bucket = themePresentationCache[base]
     if not bucket then
       bucket = {}
@@ -793,6 +884,8 @@ return function(mod)
 
     local theme = scaledTheme(base, uiScale, fontScale, themeScaleCache)
     theme = copy(theme)
+    theme.scale = copy(theme.scale or {})
+    theme.scale.auto = uiAuto or fontAuto
     theme.colors = copy(base.colors)
     for _, key in ipairs({ "backdrop", "surface", "surfaceRaised", "selected" }) do
       local color = theme.colors[key]
@@ -863,17 +956,22 @@ return function(mod)
       fontMin = 0.80, fontMax = 2.00, fontStep = 0.05,
       dialogueMin = 1.10, dialogueMax = 2.00, dialogueStep = 0.05,
     },
-    getScaleTokens = function()
+    getScaleTokens = function(viewport)
+      local uiPercent = resolvedScalePercent(option("uiScale", 100),
+        viewport, 75, 150)
+      local fontPercent = resolvedScalePercent(option("fontScale", 100),
+        viewport, 80, 200)
       return {
-        uiScale = normalizedPercent(option("uiScale", 100), 100, 75, 150) / 100,
-        fontScale = normalizedPercent(option("fontScale", 100), 100, 80, 200) / 100,
+        uiScale = uiPercent / 100,
+        fontScale = fontPercent / 100,
         dialogueTextScale = dialogueMultiplier(),
       }
     end,
   }
 
-  local function percentChoices(minimum, maximum)
+  local function percentChoices(minimum, maximum, includeAuto)
     local choices = {}
+    if includeAuto then choices[#choices + 1] = { "AUTO", "auto" } end
     for percent = minimum, maximum, 5 do
       choices[#choices + 1] = { percent .. "%", tostring(percent) }
     end
@@ -889,11 +987,11 @@ return function(mod)
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
     { key = "uiScale", label = "UI SCALE", type = "choice",
-      description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 150%.",
-      choices = percentChoices(75, 150), default = "100" },
+      description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 150%, or choose AUTO for responsive window sizing.",
+      choices = percentChoices(75, 150, true), default = "100" },
     { key = "fontScale", label = "FONT SCALE", type = "choice",
-      description = "Scale title, body, caption, value, and hint text from 80% to 200%.",
-      choices = percentChoices(80, 200), default = "100" },
+      description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
+      choices = percentChoices(80, 200, true), default = "100" },
     { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
       description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
       choices = { { "INHERIT", "inherit" }, { "110%", "110" },
@@ -982,6 +1080,14 @@ return function(mod)
     setBackdrop(theme)
     love.graphics.rectangle("fill", x, y, w, h)
     return true
+  end
+
+  local function drawModalScrim(theme, viewport)
+    local x, y, w, h = presenterRect(viewport)
+    -- Nested prompts are still composited over their live parent, but the
+    -- parent/world should read as context rather than a second active card.
+    setColor({ 0, 0, 0, 0.24 })
+    love.graphics.rectangle("fill", x, y, w, h)
   end
 
   local menuClass = mod.ui and mod.ui.Menu
@@ -1307,12 +1413,18 @@ return function(mod)
       return "Restore every Gen1 Modern UI setting to its default value."
     end
     if id == "uiScale" then
-      return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %d%%."):format(
-        normalizedPercent(option("uiScale", 100), 100, 75, 150))
+      local percent, auto = resolvedScalePercent(option("uiScale", 100),
+        nil, 75, 150)
+      local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
+      return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %s."):format(
+        label)
     end
     if id == "fontScale" then
-      return ("Scale readable interface text before measuring and laying out content. Current effective size: %d%%."):format(
-        normalizedPercent(option("fontScale", 100), 100, 80, 200))
+      local percent, auto = resolvedScalePercent(option("fontScale", 100),
+        nil, 80, 200)
+      local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
+      return ("Scale readable interface text before measuring and laying out content. Current effective size: %s."):format(
+        label)
     end
     if id == "dialogueTextScale" then
       local value = option("dialogueTextScale", "inherit")
@@ -2184,17 +2296,30 @@ return function(mod)
     return metrics[name] or fallback
   end
 
+  local function readabilityScale(theme)
+    local scale = theme.scale or {}
+    return math.max(tonumber(scale.ui) or 1, tonumber(scale.font) or 1)
+  end
+
+  local function scaledPanelWidth(theme, baseWidth)
+    return baseWidth * readabilityScale(theme)
+  end
+
+  local function panelMaxWidth(theme, fallback)
+    local density = theme.density or {}
+    local uiScale = tonumber(theme.scale and theme.scale.ui) or 1
+    local authoredMax = (tonumber(density.panelMax) or fallback) / uiScale
+    return scaledPanelWidth(theme, math.max(authoredMax, fallback))
+  end
+
   -- Rich presenters historically used fixed height ceilings. That worked at
   -- the reference viewport, but it made larger UI/font scales consume more
   -- rows without giving the screen any additional vertical room. Scale the
   -- ceiling with the largest readability control, then let each presenter
   -- clamp it to the safe viewport below.
   local function scaledPanelHeight(theme, landscape, landscapeBase, portraitBase)
-    local scale = theme.scale or {}
-    local readabilityScale = math.max(tonumber(scale.ui) or 1,
-      tonumber(scale.font) or 1)
     local base = landscape and landscapeBase or portraitBase
-    return base * readabilityScale
+    return base * readabilityScale(theme)
   end
 
   local function layoutFor(viewport, theme, kind, rows, title, footerText)
@@ -2217,7 +2342,7 @@ return function(mod)
     local footer = (landscape and (spacing.sm or 9) or (spacing.lg or 18)) * scale
       + captionHeight
     local rowHeight = minimumRowHeight(theme)
-    local panelMax = theme.density.panelMax or 780
+    local panelMax = panelMaxWidth(theme, 780)
     if landscape then
       -- Keep content-sized panels compact, but leave enough room for long
       -- localized labels and option values before truncating them.
@@ -2262,7 +2387,8 @@ return function(mod)
       -- landscape, not as banners stretched across the whole phone. Longer
       -- list/options screens keep the wider panel calculated from the theme
       -- max.
-      panelW = math.min(panelW, (w > h * 1.2) and w * 0.70 or 560)
+      panelW = math.min(panelW, (w > h * 1.2) and w * 0.70
+        or scaledPanelWidth(theme, 560))
     end
     if sidePanel then
       -- The ordinary in-game menu is navigational chrome, not a modal data
@@ -2343,16 +2469,23 @@ return function(mod)
           layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
           theme.radii.sm or 8)
         setColor(index == selected and colors.text or colors.accent)
-        love.graphics.setFont(font(fontCache, theme.typography.body))
-        love.graphics.print(safeText(row.label), layout.x + theme.spacing.lg,
-          ry + (layout.rowHeight - love.graphics.getFont():getHeight()) / 2)
+        local categoryFont = font(fontCache, theme.typography.body)
+        local valueFont = font(fontCache, theme.typography.caption)
         local value = optionValue(game, row)
+        local valueWidth = value ~= "" and valueFont:getWidth(value) or 0
+        local labelWidth = math.max(20, layout.w - theme.spacing.lg * 2
+          - (valueWidth > 0 and valueWidth + theme.spacing.md or 0))
+        love.graphics.setFont(categoryFont)
+        love.graphics.print(truncate(row.label, labelWidth, categoryFont),
+          layout.x + theme.spacing.lg,
+          ry + (layout.rowHeight - categoryFont:getHeight()) / 2)
         if value ~= "" then
-          local valueFont = font(fontCache, theme.typography.caption)
           love.graphics.setFont(valueFont)
           setColor(index == selected and colors.text or colors.textMuted)
-          love.graphics.print(value, layout.x + layout.w - theme.spacing.lg
-            - valueFont:getWidth(value), ry + (layout.rowHeight - valueFont:getHeight()) / 2)
+          love.graphics.print(truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont),
+            layout.x + layout.w - theme.spacing.lg - valueFont:getWidth(
+              truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont)),
+            ry + (layout.rowHeight - valueFont:getHeight()) / 2)
         end
       elseif row.header then
         setColor(colors.textMuted)
@@ -2523,8 +2656,27 @@ return function(mod)
     return lines
   end
 
+  local function dialogueHint(state)
+    local ready = state.waiting or (state.done and not state.choice
+      and not state.auto and not state.stay)
+    if ready then return "A / B  continue" end
+    if state.done and state.choice then return nil end
+    if state.done and state.auto then return "Please wait" end
+    if not (state.done and state.stay) then return "Hold A / B  speed up" end
+    return nil
+  end
+
+  local function modalHint(kind, footerText)
+    if safeText(footerText) ~= "" then return footerText end
+    if kind == "choice" then return nil end
+    if kind == "quantity" then
+      return "UP/DOWN  amount   A  confirm   B  cancel"
+    end
+    return "A  select   B  back"
+  end
+
   local function modalReserveHeight(game, theme, kind, state, viewport)
-    local rows, _, _, title = rowsFor(game, state, kind)
+    local rows, _, _, title, footerText = rowsFor(game, state, kind)
     local rowCount = math.max(1, math.min(#(rows or {}), 6))
     local x, y, w, h = presenterRect(viewport)
     if kind == "choice" and w > h * 1.2 then rowCount = 1 end
@@ -2532,7 +2684,8 @@ return function(mod)
     local captionHeight = font(fontCache, theme.typography.caption):getHeight()
     local header = safeText(title) ~= "" and (titleHeight + theme.spacing.md)
       or theme.spacing.md
-    local footer = captionHeight + theme.spacing.md
+    local footer = shouldDrawHint(modalHint(kind, footerText))
+      and captionHeight + theme.spacing.md or 0
     return header + footer + rowCount * minimumRowHeight(theme)
   end
 
@@ -2557,10 +2710,15 @@ return function(mod)
     local available = math.max(1, width - gutter * 2)
     local desiredLines = #wrappedDialogueLines(state, body, available)
     desiredLines = clamp(math.max(2, desiredLines), 2, 5)
-    local height = math.max((theme.metrics and theme.metrics.dialogueMinHeight)
-        or (112 * uiScale),
-      lineGap * desiredLines + theme.spacing.lg * 2
-        + theme.typography.caption + theme.spacing.md)
+    local dialogueFooter = shouldDrawHint(dialogueHint(state))
+      and theme.typography.caption + theme.spacing.md or 0
+    -- Keep the card large enough for the revealed text and footer, but do not
+    -- let a chrome-only minimum create a tall empty box when UI SCALE is high
+    -- and FONT SCALE is intentionally smaller.
+    local contentHeight = lineGap * desiredLines + theme.spacing.lg * 2
+      + dialogueFooter
+    local minimumHeight = lineGap * 2 + theme.spacing.lg * 2 + dialogueFooter
+    local height = math.max(minimumHeight, contentHeight)
     if reserveKind then
       local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
       local availableHeight = h - gutter * 2 - reserve - theme.spacing.sm
@@ -2586,7 +2744,8 @@ return function(mod)
     local available = panelW - spacing.lg * 2
     local lines = wrappedDialogueLines(state, body, available)
     local lineGap = body:getHeight() + spacing.xs
-    local footerH = theme.typography.caption + spacing.md
+    local hint = dialogueHint(state)
+    local footerH = shouldDrawHint(hint) and theme.typography.caption + spacing.md or 0
     local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2 - footerH) / lineGap))
     while #lines > maxLines do table.remove(lines, 1) end
     local textY = py + spacing.lg
@@ -2598,20 +2757,15 @@ return function(mod)
     local ready = state.waiting or (state.done and not state.choice
       and not state.auto and not state.stay)
     setColor(colors.textMuted)
-    local hint
-    if ready then hint = "A / B  continue"
-    elseif state.done and state.choice then hint = "Choose an option"
-    elseif state.done and state.auto then hint = "Please wait"
-    elseif not (state.done and state.stay) then hint = "Hold A / B  speed up" end
-    if hint then
-      drawHint(theme, Strings(hint), px + spacing.lg,
+    if shouldDrawHint(hint) then
+      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - spacing.md - theme.typography.caption,
         panelW - spacing.lg * 2)
     end
     if ready and not state.choice then
       setColor(colors.accent)
       love.graphics.print("v", px + panelW - spacing.lg - 8,
-        py + panelH - spacing.md - theme.typography.caption)
+        py + panelH - spacing.md - body:getHeight())
     end
     return { x = px, y = py, w = panelW, h = panelH }
   end
@@ -2628,7 +2782,8 @@ return function(mod)
     local captionHeight = font(fontCache, theme.typography.caption):getHeight()
     local header = safeText(title) ~= "" and (titleHeight + spacing.md)
       or spacing.md
-    local footer = captionHeight + spacing.md
+    local hint = modalHint(kind, footerText)
+    local footer = shouldDrawHint(hint) and captionHeight + spacing.md or 0
     local maxPanelW = landscape and math.min(w * 0.70, 520) or math.min(w - spacing.lg * 2, 520)
     local panelW = math.min(w - spacing.lg * 2,
       contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
@@ -2656,9 +2811,6 @@ return function(mod)
       local dx, dy, dw = dialogueRect(viewport, theme, underState, game)
       px = dx + dw - panelW
       py = math.max(y + spacing.lg, dy - panelH - spacing.sm)
-    elseif underKind then
-      px = x + w - panelW - spacing.lg
-      py = y + spacing.lg * 2
     end
     local layout = {
       x = px, y = py, w = panelW, h = panelH,
@@ -2675,16 +2827,15 @@ return function(mod)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     drawHeader(theme, layout, title)
     drawRows(theme, layout, rows, selected, scroll, game)
-    setColor(theme.colors.divider)
-    love.graphics.rectangle("fill", px + spacing.lg,
-      py + panelH - footer, panelW - spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
-    setColor(theme.colors.textMuted)
-    local hint = footerText or (kind == "choice" and "A  choose   B  no"
-      or kind == "quantity" and "UP/DOWN  amount   A  confirm   B  cancel"
-      or "A  select   B  back")
-    drawHint(theme, Strings(hint), px + spacing.lg,
-      py + panelH - footer + spacing.xs, panelW - spacing.lg * 2)
+    if footer > 0 then
+      setColor(theme.colors.divider)
+      love.graphics.rectangle("fill", px + spacing.lg,
+        py + panelH - footer, panelW - spacing.lg * 2,
+        themeMetric(theme, "divider", 1))
+      setColor(theme.colors.textMuted)
+      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+        py + panelH - footer + spacing.xs, panelW - spacing.lg * 2)
+    end
   end
 
   local function drawManagerTabs(theme, layout, state)
@@ -2736,6 +2887,7 @@ return function(mod)
     local overlay = state.overlay
     if not overlay then return end
     drawPresenterBackdrop(theme, viewport)
+    drawModalScrim(theme, viewport)
     local lines = overlay.lines or {}
     local lineHeight = theme.typography.body + theme.spacing.sm
     local modalW = math.min(layout.w * 0.84, 620)
@@ -2767,7 +2919,8 @@ return function(mod)
         footerY)
     else
       setColor(theme.colors.textMuted)
-      love.graphics.print("A / B  CLOSE", mx + theme.spacing.lg, footerY)
+      drawHintIfUseful(theme, "A / B  CLOSE", mx + theme.spacing.lg, footerY,
+        modalW - theme.spacing.lg * 2)
     end
   end
 
@@ -2775,6 +2928,7 @@ return function(mod)
     local help = state._gen1OptionDescription
     if not help then return end
     drawPresenterBackdrop(theme, viewport)
+    drawModalScrim(theme, viewport)
     local spacing = theme.spacing
     local body = font(fontCache, theme.typography.body)
     local titleFont = font(fontCache, theme.typography.title * 0.82)
@@ -2821,8 +2975,8 @@ return function(mod)
       my + modalH - footerH, modalW - spacing.lg * 2,
       themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
-    love.graphics.print("SELECT / A / B  CLOSE", mx + spacing.lg,
-      my + modalH - footerH + spacing.xs)
+    drawHintIfUseful(theme, "SELECT / A / B  CLOSE", mx + spacing.lg,
+      my + modalH - footerH + spacing.xs, modalW - spacing.lg * 2)
   end
 
   local function drawManager(game, state, viewport, theme)
@@ -2881,7 +3035,7 @@ return function(mod)
     elseif not footer then
       footer = "A  choose   B  back"
     end
-    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
     drawManagerOverlay(theme, layout, state, viewport)
@@ -2896,15 +3050,21 @@ return function(mod)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      theme.density.panelMax or 780)
-    local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.20, 430, 560))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local compact = panelH < 380
+      panelMaxWidth(theme, 780))
+    -- Summary pages are data cards, not canvases. Keep their width near the
+    -- amount of information they display so a large UI scale does not turn a
+    -- six-row stat page into a huge empty rectangle.
     local mon = summaryPokemon(state) or {}
     local def = pokemonDefinition(game, mon.species)
     local name = safeText(mon.nickname or (def and def.name)
       or mon.species or "POKéMON")
+    local summarySprite = state.page ~= 2
+      and spriteFor(game, mon, nil, "summary") or nil
+    local page = state.page == 2 and "MOVES / EXPERIENCE" or
+      "STATUS / TRAINER DATA"
+    panelW = math.min(panelW, scaledPanelWidth(theme,
+      state.page == 2 and 680 or 640))
+    local compact = panelW < 620
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
       or theme.typography.title)
     local bodyFont = font(fontCache, compact and theme.typography.body * 0.86
@@ -2913,6 +3073,29 @@ return function(mod)
     local titleH = titleFont:getHeight()
     local lineGap = compact and (bodyFont:getHeight() + spacing.xs)
       or (spacing.lg + 10)
+    local bodyLine = bodyFont:getHeight() + spacing.xs
+    local titleOffset = spacing.md + titleH + spacing.xs
+    local pageOffset = titleOffset
+    local levelOffset = pageOffset + bodyFont:getHeight() + spacing.xs
+    local hpOffset = levelOffset + lineGap
+    local statusOffset = hpOffset + lineGap
+    local contentBottom
+    if state.page == 2 then
+      local moveGap = compact and bodyLine or 28
+      contentBottom = statusOffset + lineGap * 2 + bodyFont:getHeight()
+        + moveGap * 3 + bodyFont:getHeight()
+    else
+      local spriteSize = compact and math.min(112, panelW * 0.24) or 150
+      local spriteBottom = summarySprite
+        and (statusOffset + lineGap * 2 + spacing.sm + spriteSize)
+        or (statusOffset + lineGap)
+      local statGap = compact and bodyLine or 28
+      local statsBottom = pageOffset + statGap * 5 + bodyFont:getHeight()
+      contentBottom = math.max(spriteBottom, statsBottom)
+    end
+    local panelH = math.min(h - gutter * 2,
+      contentBottom + spacing.lg + captionFont:getHeight() + spacing.md)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local pageY = py + spacing.md + titleH + spacing.xs
     local levelY = pageY + bodyFont:getHeight() + spacing.xs
     local hpY = levelY + lineGap
@@ -2925,28 +3108,31 @@ return function(mod)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print(name, px + spacing.lg, py + spacing.md)
+    drawFittedText(name, px + spacing.lg, py + spacing.md,
+      panelW - spacing.lg * 2, titleFont)
     love.graphics.setFont(bodyFont)
     local level = mon.level and ("LEVEL %d"):format(mon.level) or ""
     local hp = mon.stats and mon.stats.hp and ("HP  %d / %d"):format(mon.hp or 0, mon.stats.hp) or ""
     local status = mon.status or "OK"
-    local page = state.page == 2 and "MOVES / EXPERIENCE" or "STATUS / TRAINER DATA"
     if panelW < 620 and state.page ~= 2 then page = "STATUS" end
     setColor(theme.colors.textMuted)
-    love.graphics.print(page, px + spacing.lg, pageY)
+    drawFittedText(page, px + spacing.lg, pageY,
+      panelW - spacing.lg * 2, bodyFont)
     setColor(theme.colors.text)
-    love.graphics.print(level, px + spacing.lg, levelY)
-    love.graphics.print(hp, px + spacing.lg, hpY)
-    love.graphics.print(("STATUS  %s"):format(status), px + spacing.lg, statusY)
+    drawFittedText(level, px + spacing.lg, levelY,
+      panelW - spacing.lg * 2, bodyFont)
+    drawFittedText(hp, px + spacing.lg, hpY,
+      panelW - spacing.lg * 2, bodyFont)
+    drawFittedText(("STATUS  %s"):format(status), px + spacing.lg, statusY,
+      panelW - spacing.lg * 2, bodyFont)
     if state.page ~= 2 then
-      local sprite = spriteFor(game, mon, nil, "summary")
+      local sprite = summarySprite
       if sprite then
         local iw, ih = imageMetrics(sprite)
         if iw and ih then
           local spriteSize = compact and math.min(112, panelW * 0.24) or 150
           local spriteX = px + spacing.lg
-          local spriteY = compact and (statusY + lineGap * 2 + spacing.sm)
-            or (py + spacing.lg + 208)
+          local spriteY = statusY + lineGap * 2 + spacing.sm
           local scale = math.min(spriteSize / iw, spriteSize / ih)
           setColor({ 1, 1, 1, 1 })
           drawImage(sprite, spriteX + (spriteSize - iw * scale) / 2,
@@ -2955,12 +3141,14 @@ return function(mod)
       end
     end
     if state.page == 2 then
-      love.graphics.print(("EXP  %s"):format(safeText(mon.exp)), px + spacing.lg,
-        statusY + lineGap)
+      drawFittedText(("EXP  %s"):format(safeText(mon.exp)), px + spacing.lg,
+        statusY + lineGap, panelW - spacing.lg * 2, bodyFont)
       local moves = mon.moves or {}
       local moveX = px + spacing.lg
       local moveY = statusY + lineGap * 2
       local moveGap = compact and (bodyFont:getHeight() + spacing.xs) or 28
+      local ppX = px + panelW - spacing.lg - bodyFont:getWidth("PP 00/00")
+      local moveMax = math.max(24, ppX - spacing.sm - moveX)
       for i = 1, 4 do
         local move = moves[i]
         local moveDef = move and game.data and game.data.moves and game.data.moves[move.id]
@@ -2971,10 +3159,10 @@ return function(mod)
           pp = ("%d/%d"):format(move.pp or 0, maxPP)
         end
         setColor(theme.colors.text)
-        love.graphics.print(truncate(moveName, panelW * 0.42), moveX,
-          moveY + (i - 1) * moveGap)
+        drawFittedText(moveName, moveX, moveY + (i - 1) * moveGap,
+          moveMax, bodyFont)
         setColor(theme.colors.textMuted)
-        love.graphics.print(("PP %s"):format(pp), px + panelW - spacing.lg - 90,
+        love.graphics.print(("PP %s"):format(pp), ppX,
           moveY + (i - 1) * moveGap)
       end
     else
@@ -2995,17 +3183,19 @@ return function(mod)
       }
       for i, item in ipairs(statRows) do
         setColor(theme.colors.textMuted)
-        love.graphics.print(item[1], infoX, statY + (i - 1) * statGap)
+        drawFittedText(item[1], infoX, statY + (i - 1) * statGap,
+          math.max(24, px + panelW - spacing.lg - infoX), bodyFont)
         setColor(theme.colors.text)
         local value = safeText(item[2])
         local valueX = infoX + bodyFont:getWidth(item[1]) + spacing.sm
-        love.graphics.print(truncate(value, panelW * 0.40), valueX,
-          statY + (i - 1) * statGap)
+        drawFittedText(value, valueX, statY + (i - 1) * statGap,
+          math.max(24, px + panelW - spacing.lg - valueX), bodyFont)
       end
     end
     setColor(theme.colors.textMuted)
     love.graphics.setFont(captionFont)
-    love.graphics.print("A / B  continue", px + spacing.lg, py + panelH - spacing.lg - 14)
+    drawHintIfUseful(theme, "A / B  continue", px + spacing.lg,
+      py + panelH - spacing.lg - 14, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
@@ -3146,7 +3336,7 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 860))
+      panelMaxWidth(theme, 860))
     local panelH = math.min(h - gutter * 2,
       scaledPanelHeight(theme, w > h * 1.15, 500, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
@@ -3290,7 +3480,7 @@ return function(mod)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
     setColor(colors.textMuted)
-    drawHint(theme, Strings("A / B  back"), px + spacing.lg,
+    drawHintIfUseful(theme, Strings("A / B  back"), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -3405,9 +3595,9 @@ return function(mod)
     local level = mon.level and ("Lv %d"):format(mon.level) or ""
     local types = {}
     for _, value in ipairs(def.types or {}) do types[#types + 1] = displayType(value) end
-    love.graphics.print(truncate(table.concat({ level, speciesName or "",
-      table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoW),
-      infoX, y + spacing.md + titleFont:getHeight() + spacing.xs)
+    drawFittedText(table.concat({ level, speciesName or "",
+      table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoX,
+      y + spacing.md + titleFont:getHeight() + spacing.xs, infoW, captionFont)
     local stats = displayStats(game, mon, context == "box")
     local maxHP = stats.hp
     local shownHP = math.min(tonumber(mon.hp) or maxHP or 0,
@@ -3416,8 +3606,9 @@ return function(mod)
       local barY = y + spacing.md + titleFont:getHeight()
         + captionFont:getHeight() + spacing.md
       drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
-      love.graphics.print(("HP %d/%d%s"):format(shownHP, maxHP,
-        mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12)
+      drawFittedText(("HP %d/%d%s"):format(shownHP, maxHP,
+        mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12,
+        infoW, captionFont)
     end
 
     local lowerY = y + math.max(artSize + spacing.md * 2,
@@ -3431,7 +3622,12 @@ return function(mod)
       ("SPC %s"):format(safeText(stats.special or "—")),
     }
     setColor(colors.textMuted)
-    love.graphics.print(table.concat(statText, "   "), x + spacing.md, lowerY)
+    local statWidth = math.max(20, (w - spacing.md * 2 - spacing.sm * 3) / 4)
+    for index, value in ipairs(statText) do
+      drawFittedText(value,
+        x + spacing.md + (index - 1) * (statWidth + spacing.sm), lowerY,
+        statWidth, bodyFont)
+    end
     local movesY = lowerY + bodyFont:getHeight() + spacing.sm
     local moves = mon.moves or {}
     local available = math.max(1, math.floor((lowerH - bodyFont:getHeight() - spacing.sm)
@@ -3444,10 +3640,17 @@ return function(mod)
       local pp = move and moveDef and ("PP %d/%d"):format(move.pp or 0,
         maxMovePP(move, moveDef)) or ""
       setColor(colors.text)
-      love.graphics.print(truncate(moveName, w * 0.58), x + spacing.md,
-        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs))
       setColor(colors.textMuted)
-      love.graphics.print(pp, x + w - spacing.md - bodyFont:getWidth(pp),
+      local ppWidth = bodyFont:getWidth(pp)
+      local moveX = x + spacing.md
+      local moveMax = math.max(20, x + w - spacing.md - ppWidth
+        - spacing.sm - moveX)
+      setColor(colors.text)
+      drawFittedText(moveName, moveX,
+        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs),
+        moveMax, bodyFont)
+      setColor(colors.textMuted)
+      love.graphics.print(pp, x + w - spacing.md - ppWidth,
         movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs))
     end
     if #moves == 0 then
@@ -3467,29 +3670,40 @@ return function(mod)
     local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
       or Strings("POKéMON  %d", #party)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 980))
+      panelMaxWidth(theme, 980))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
     if minimal then
       local footer = Strings("A  choose   B  back")
       panelW = math.min(panelW, contentWidthFor(theme, rows, partyTitle,
-        footer, math.min(250, w - gutter * 2), math.min(680, w - gutter * 2)))
+        footer, math.min(250, w - gutter * 2),
+        math.min(scaledPanelWidth(theme, 680), w - gutter * 2)))
     end
+    local landscape = w > h * 1.20
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
-    local compactH = headerH + footerH + math.min(#rows, 6) *
-      minimumRowHeight(theme) + spacing.lg * 2
-    local richH = scaledPanelHeight(theme, w > h * 1.20, 520, 640)
+    local rowHeight = minimumRowHeight(theme)
+    local desiredRows = math.max(1, math.min(#rows, 6))
+    local desiredListH = desiredRows * rowHeight
+    local detailBody = font(fontCache, theme.typography.body)
+    local detailMinH = math.max(220,
+      170 + detailBody:getHeight() * 5 + spacing.sm * 5)
+    local desiredContentH = minimal and desiredListH
+      or landscape and math.max(desiredListH, detailMinH)
+      or detailMinH + spacing.sm + desiredListH
+    local compactH = headerH + footerH + desiredListH + spacing.lg * 2
+    local richH = headerH + footerH + desiredContentH
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local landscape = panelW > panelH * 1.15
     local contentY = py + headerH
     local contentH = math.max(1, panelH - headerH - footerH)
     local detailW = not minimal and landscape and math.min(panelW * 0.48, 470) or 0
-    local detailH = not minimal and not landscape and math.min(contentH * 0.40, 300) or 0
+    local detailH = not minimal and not landscape
+      and math.min(detailMinH, math.max(1, contentH - spacing.sm - rowHeight)) or 0
     local listX = px
     local listY = contentY + (detailH > 0 and detailH + spacing.sm or 0)
     local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
     local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
-    local rowHeight = math.max(minimumRowHeight(theme),
+    rowHeight = math.max(minimumRowHeight(theme),
       math.min(theme.density.rowHeight,
         math.max(38, listH / math.max(1, #rows))))
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
@@ -3523,13 +3737,14 @@ return function(mod)
       local ok, result = pcall(state.bottomMessage, state)
       if ok then footer = result end
     end
-    drawHint(theme, footer or Strings("A  choose   B  back"), px + spacing.lg,
+    drawHintIfUseful(theme, footer or Strings("A  choose   B  back"), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
 
     -- PartyMenu owns its injected action list internally rather than pushing
     -- another state. Draw those exact live rows as a visual modal; callbacks,
     -- selection, and cancellation remain with PartyMenu.
     if state.submenu and type(state.subItems) == "table" then
+      drawModalScrim(theme, viewport)
       local actionRows = {}
       for _, item in ipairs(state.subItems) do
         actionRows[#actionRows + 1] = { label = item.label or "", source = item }
@@ -3568,12 +3783,13 @@ return function(mod)
     local minimal = option("minimalUi", false) == true
     local boxTitle = state.title or Strings("PC BOX")
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 980))
+      panelMaxWidth(theme, 980))
     if minimal then
       local footer = action == "RELEASE" and "A  release    B  back"
         or Strings("A  %s / stats    B  back", (action or "choose"):lower())
       panelW = math.min(panelW, contentWidthFor(theme, rows, boxTitle,
-        footer, math.min(250, w - gutter * 2), math.min(760, w - gutter * 2)))
+        footer, math.min(250, w - gutter * 2),
+        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
     end
     local compactH = theme.typography.title + theme.typography.caption
       + math.min(#rows, 6) * minimumRowHeight(theme)
@@ -3635,7 +3851,7 @@ return function(mod)
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
     local hint = action == "RELEASE" and "A  release    B  back"
       or Strings("A  %s / stats    B  back", (action or "choose"):lower())
-    drawHint(theme, hint,
+    drawHintIfUseful(theme, hint,
       px + spacing.lg, py + panelH - footerH + spacing.xs,
       panelW - spacing.lg * 2)
     love.graphics.pop()
@@ -3648,21 +3864,30 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 920))
-    local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.05, 520, 680))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local landscape = panelW > panelH * 1.05
+      panelMaxWidth(theme, 920))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
+    local landscape = w > h * 1.05
     local headerH = theme.typography.title + spacing.lg
     local footerH = landscape and (theme.typography.caption + spacing.lg)
       or (theme.typography.caption * 2 + spacing.lg + spacing.xs)
+    local rowHeight = minimumRowHeight(theme)
+    local desiredRows = math.max(1, math.min(#rows, 6))
+    local desiredListH = desiredRows * rowHeight
+    local previewBody = font(fontCache, theme.typography.body)
+    local previewCaption = font(fontCache, theme.typography.caption)
+    local desiredPreviewH = math.max(190,
+      previewBody:getHeight() + previewCaption:getHeight() * 3
+        + spacing.lg * 4 + 110)
+    local desiredContentH = landscape and math.max(desiredListH, desiredPreviewH)
+      or desiredPreviewH + spacing.sm + desiredListH
+    local panelH = math.min(h - gutter * 2,
+      headerH + footerH + desiredContentH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local previewW = landscape and math.min(panelW * 0.38, 330) or panelW
-    local previewH = landscape and (panelH - headerH - footerH)
-      or math.min(128, panelH * 0.26)
+    local previewH = landscape and desiredContentH or desiredPreviewH
     local listW = landscape and (panelW - previewW - spacing.sm) or panelW
     local listY = landscape and (py + headerH) or (py + headerH + previewH + spacing.sm)
     local listH = math.max(1, py + panelH - footerH - listY)
-    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -3697,23 +3922,27 @@ return function(mod)
       local infoY = landscape and (artY + artSize + spacing.sm) or (previewY + spacing.md)
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.text)
-      love.graphics.print(truncate(def.name or species,
-        previewX + previewW - spacing.lg - infoX), infoX, infoY)
+      drawFittedText(def.name or species, infoX, infoY,
+        previewX + previewW - spacing.lg - infoX, bodyFont)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(colors.textMuted)
       local digits = tonumber(game.data and game.data.constants
         and game.data.constants.dexDigits) or 3
       digits = clamp(math.floor(digits), 1, 8)
       local number = def.dex and ("No. %0" .. digits .. "d"):format(def.dex) or ""
-      love.graphics.print(number, infoX, infoY + theme.typography.body + spacing.xs)
+      drawFittedText(number, infoX, infoY + theme.typography.body + spacing.xs,
+        previewX + previewW - spacing.lg - infoX, previewCaption)
       local types = def.types or {}
       local typeNames = {}
       for _, value in ipairs(types) do typeNames[#typeNames + 1] = displayType(value) end
-      love.graphics.print(table.concat(typeNames, " / "), infoX,
-        infoY + theme.typography.body + theme.typography.caption + spacing.sm)
+      drawFittedText(table.concat(typeNames, " / "), infoX,
+        infoY + theme.typography.body + theme.typography.caption + spacing.sm,
+        previewX + previewW - spacing.lg - infoX, previewCaption)
       setColor(colors.accent)
-      love.graphics.print(source.ball and Strings("OWNED") or Strings("SEEN"),
-        infoX, infoY + theme.typography.body + theme.typography.caption * 2 + spacing.md)
+      drawFittedText(source.ball and Strings("OWNED") or Strings("SEEN"),
+        infoX, infoY + theme.typography.body + theme.typography.caption * 2
+          + spacing.md, previewX + previewW - spacing.lg - infoX,
+        previewCaption)
     else
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.textMuted)
@@ -3736,14 +3965,14 @@ return function(mod)
       .. "A  options   B  back"
     if landscape then
       if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
-      drawHint(theme, Strings(hint), px + spacing.lg,
+      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     else
       if footerText and footerText ~= "" then
-        drawHint(theme, footerText, px + spacing.lg,
+        drawHintIfUseful(theme, footerText, px + spacing.lg,
           py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
       end
-      drawHint(theme, Strings(hint), px + spacing.lg,
+      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - footerH + spacing.xs + theme.typography.caption + spacing.xs,
         panelW - spacing.lg * 2)
     end
@@ -3767,34 +3996,104 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 900))
+      panelMaxWidth(theme, 900))
     local minimalBag = option("minimalUi", false) == true
+    local landscape = w > h * 1.05
     if minimalBag then
       panelW = math.min(panelW, contentWidthFor(theme, rows, title,
         footerText or "A  use   B  back", math.min(250, w - gutter * 2),
-        math.min(760, w - gutter * 2)))
+        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
+    else
+      local listBudget = contentWidthFor(theme, rows, title,
+        footerText or "A  use   B  back", math.min(300, w - gutter * 2),
+        math.min(scaledPanelWidth(theme, 560), w - gutter * 2))
+      local detailBudget = landscape
+        and math.min(scaledPanelWidth(theme, 360), w - gutter * 2) or 0
+      panelW = math.min(panelW, listBudget + detailBudget
+        + (detailBudget > 0 and spacing.sm or 0))
     end
-    local compactBagH = theme.typography.title + theme.typography.caption
-      + math.min(#rows, 7) * minimumRowHeight(theme)
-      + spacing.lg * 3
-    local panelH = math.min(h - gutter * 2,
-      minimalBag and compactBagH
-        or scaledPanelHeight(theme, w > h * 1.05, 520, 640))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local landscape = panelW > panelH * 1.05
-    local minimal = minimalBag
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
-    local detailW = minimal and 0
-      or landscape and math.min(panelW * 0.38, 320) or panelW
+    local rowHeight = minimumRowHeight(theme)
+    local desiredRows = math.max(1, math.min(#rows, 7))
+    local desiredListH = desiredRows * rowHeight
+    local detailMinH = math.max(160,
+      theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
+    local detailW = minimalBag and 0
+      or landscape and math.min(panelW * 0.44, scaledPanelWidth(theme, 360))
+      or panelW
+    local previewSelected = clamp(selected or 1, 1, math.max(1, #rows))
+    local previewRow = selectedListRow(rows, previewSelected)
+    local previewSource = previewRow and previewRow.source
+    local previewItemId = previewSource and previewSource.value
+    local previewDef = previewItemId and game.data and game.data.items
+      and game.data.items[previewItemId]
+    local previewIcon = imageFor(imageCandidate(previewSource)
+      or imageCandidate(previewDef))
+    local previewIconSize = previewIcon and 64 or 0
+    local previewCardW = detailW > 0 and detailW or panelW
+    local previewInfoW = math.max(24, previewCardW - spacing.lg * 2
+      - (previewIconSize > 0 and previewIconSize + spacing.md or 0))
+    local detailBodyFont = font(fontCache, theme.typography.body)
+    local detailFont = font(fontCache, theme.typography.caption)
+    local detailLineGap = detailFont:getHeight() + spacing.xs
+    local detailTitleLines = #wrappedLines(previewRow and previewRow.label
+      or Strings("ITEM"), previewInfoW, detailBodyFont)
+    local detailLines = 0
+    local function countDetail(text)
+      if text and text ~= "" then
+        detailLines = detailLines + #wrappedLines(text, previewInfoW, detailFont)
+      end
+    end
+    if previewSource and previewSource.machineMoveName then
+      countDetail(previewSource.machineMoveName)
+      if previewDef and previewDef.machine then
+        local move = game.data.moves and game.data.moves[previewDef.machine.move]
+        if move then
+          countDetail(Strings("TYPE %s   PP %s", move.type or "â€”", move.pp or "â€”"))
+        end
+      end
+      countDetail(itemValueText(previewItemId, previewDef))
+    elseif previewDef and previewDef.machine then
+      local move = game.data.moves and game.data.moves[previewDef.machine.move]
+      countDetail(Strings("%s  %s", previewDef.machine.kind or "TM",
+        move and move.name or previewDef.machine.move))
+      if move then
+        countDetail(Strings("TYPE %s   PP %s", move.type or "â€”", move.pp or "â€”"))
+      end
+      countDetail(itemValueText(previewItemId, previewDef))
+    elseif previewDef then
+      if previewDef.keyItem then
+        countDetail(Strings("KEY ITEM"))
+        countDetail(itemValueText(previewItemId, previewDef))
+      else
+        countDetail(itemValueText(previewItemId, previewDef) or Strings("ITEM"))
+      end
+      countDetail(previewDef.description or previewDef.desc or previewDef.effectText)
+    else
+      countDetail(Strings("Select an item."))
+    end
+    if detailLines > 0 then
+      detailMinH = math.max(detailMinH,
+        spacing.md + detailTitleLines * detailBodyFont:getHeight() + spacing.sm
+          + detailLines * detailLineGap + spacing.md)
+    end
+    local desiredContentH = minimalBag and desiredListH
+      or landscape and math.max(desiredListH, detailMinH)
+      or detailMinH + spacing.sm + desiredListH
+    local compactBagH = headerH + footerH + desiredListH + spacing.lg * 2
+    local panelH = math.min(h - gutter * 2,
+      minimalBag and compactBagH or headerH + footerH + desiredContentH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local minimal = minimalBag
     local detailH = minimal and 0
       or landscape and (panelH - headerH - footerH)
-      or math.min(148, panelH * 0.28)
+      or math.min(detailMinH, math.max(1, panelH - headerH - footerH
+        - spacing.sm - rowHeight))
     local listW = landscape and (panelW - detailW - spacing.sm) or panelW
     local listY = (landscape or minimal) and (py + headerH)
       or (py + headerH + detailH + spacing.sm)
     local listH = math.max(1, py + panelH - footerH - listY)
-    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -3809,6 +4108,7 @@ return function(mod)
     drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
 
     if detailW > 0 and detailH > 0 then
+      wrapFittedText = true
       local detailX = landscape and (px + panelW - detailW) or px
       local detailY = py + headerH
       setColor(colors.surfaceRaised)
@@ -3828,60 +4128,69 @@ return function(mod)
       end
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.text)
-      love.graphics.print(truncate(itemName,
-        detailX + detailW - spacing.lg - infoX), infoX, detailY + spacing.md)
+      local titleBottom = drawWrappedText(itemName, infoX, detailY + spacing.md,
+        detailX + detailW - spacing.lg - infoX,
+        font(fontCache, theme.typography.body), theme.typography.body + spacing.xs)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
-      local infoY = detailY + spacing.md + theme.typography.body + spacing.sm
+      local infoY = titleBottom + spacing.sm
+      local detailFont = love.graphics.getFont()
+      local detailMax = math.max(24, detailX + detailW - spacing.lg - infoX)
       setColor(colors.textMuted)
       if source and source.machineMoveName then
-      love.graphics.print(safeText(source.machineMoveName), infoX, infoY)
+      infoY = drawWrappedText(source.machineMoveName, infoX, infoY, detailMax,
+        detailFont, theme.typography.caption + spacing.xs)
       if def and def.machine then
         local move = game.data.moves and game.data.moves[def.machine.move]
         if move then
-          love.graphics.print(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
-            infoX, infoY + theme.typography.caption + spacing.xs)
+          drawFittedText(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
+            infoX, infoY + theme.typography.caption + spacing.xs,
+            detailMax, detailFont)
         end
       end
       local value = itemValueText(itemId, def)
       if value then
-        love.graphics.print(value, infoX,
-          infoY + (theme.typography.caption + spacing.xs) * 2)
+        drawFittedText(value, infoX,
+          infoY + (theme.typography.caption + spacing.xs) * 2,
+          detailMax, detailFont)
       end
     elseif def and def.machine then
       local move = game.data.moves and game.data.moves[def.machine.move]
-      love.graphics.print(Strings("%s  %s", def.machine.kind or "TM",
-        move and move.name or def.machine.move), infoX, infoY)
+      drawFittedText(Strings("%s  %s", def.machine.kind or "TM",
+        move and move.name or def.machine.move), infoX, infoY, detailMax,
+        detailFont)
       if move then
-        love.graphics.print(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
-          infoX, infoY + theme.typography.caption + spacing.xs)
+        drawFittedText(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
+          infoX, infoY + theme.typography.caption + spacing.xs,
+          detailMax, detailFont)
       end
       local value = itemValueText(itemId, def)
       if value then
-        love.graphics.print(value, infoX,
-          infoY + (theme.typography.caption + spacing.xs) * 2)
+        drawFittedText(value, infoX,
+          infoY + (theme.typography.caption + spacing.xs) * 2,
+          detailMax, detailFont)
       end
     elseif def then
       local descriptionY = infoY + theme.typography.caption + spacing.xs
       if def.keyItem then
-        love.graphics.print(Strings("KEY ITEM"), infoX, infoY)
+        drawFittedText(Strings("KEY ITEM"), infoX, infoY, detailMax, detailFont)
         local value = itemValueText(itemId, def)
         if value then
-          love.graphics.print(value, infoX, descriptionY)
+          drawFittedText(value, infoX, descriptionY, detailMax, detailFont)
           descriptionY = descriptionY + theme.typography.caption + spacing.xs
         end
       else
-        love.graphics.print(itemValueText(itemId, def) or Strings("ITEM"),
-          infoX, infoY)
+        drawFittedText(itemValueText(itemId, def) or Strings("ITEM"),
+          infoX, infoY, detailMax, detailFont)
       end
       local description = def.description or def.desc or def.effectText
       if description then
-        love.graphics.print(truncate(description,
-          detailX + detailW - spacing.lg - infoX), infoX, descriptionY)
+        drawFittedText(description, infoX, descriptionY, detailMax, detailFont)
       end
       else
-        love.graphics.print(Strings("Select an item."), infoX, infoY)
+        drawFittedText(Strings("Select an item."), infoX, infoY, detailMax, detailFont)
       end
     end
+    wrapFittedText = false
 
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
@@ -3896,7 +4205,7 @@ return function(mod)
       and "LEFT/RIGHT  pocket   A  use   B  back"
       or "A  use   SELECT  move   B  back"
     if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
-    drawHint(theme, Strings(hint), px + spacing.lg,
+    drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -3908,31 +4217,88 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 900))
+      panelMaxWidth(theme, 900))
     local minimalContext = option("minimalUi", false) == true
+    local landscape = w > h * 1.10
     if minimalContext then
       panelW = math.min(panelW, contentWidthFor(theme, rows, title,
         footerText or "A  choose   B  back", math.min(250, w - gutter * 2),
-        math.min(760, w - gutter * 2)))
+        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
+    else
+      local listBudget = contentWidthFor(theme, rows, title,
+        footerText or "A  choose   B  back", math.min(300, w - gutter * 2),
+        math.min(scaledPanelWidth(theme, 560), w - gutter * 2))
+      local detailBudget = landscape
+        and math.min(scaledPanelWidth(theme, 360), w - gutter * 2) or 0
+      panelW = math.min(panelW, listBudget + detailBudget
+        + (detailBudget > 0 and spacing.sm or 0))
     end
-    local compactContextH = theme.typography.title + theme.typography.caption * 2
-      + math.min(#rows, 6) * minimumRowHeight(theme)
-      + spacing.lg * 4
-    local panelH = math.min(h - gutter * 2,
-      minimalContext and compactContextH
-        or scaledPanelHeight(theme, w > h * 1.10, 520, 640))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local landscape = panelW > panelH * 1.10
     local headerH = theme.typography.title + spacing.lg
     local messageH = math.max(72, theme.typography.caption * 2 + spacing.lg * 2)
+    local rowHeight = minimumRowHeight(theme)
+    local desiredRows = math.max(1, math.min(#rows, 8))
+    local desiredListH = desiredRows * rowHeight
+    local detailMinH = math.max(150,
+      theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
+    local detailW = not minimalContext and landscape
+      and math.min(panelW * 0.44, scaledPanelWidth(theme, 360)) or 0
+    local previewSelected = clamp(selected or 1, 1, math.max(1, #rows))
+    local previewRow = selectedListRow(rows, previewSelected)
+    local previewSource = previewRow and previewRow.source
+    local previewItemId = previewSource
+      and type(previewSource.value) == "string" and previewSource.value or nil
+    local previewDef = previewItemId and game.data and game.data.items
+      and game.data.items[previewItemId]
+    local previewIcon = imageFor(imageCandidate(previewSource)
+      or imageCandidate(previewDef))
+    local previewIconSize = previewIcon and 56 or 0
+    local previewCardW = detailW > 0 and detailW or panelW
+    local previewInfoW = math.max(24, previewCardW - spacing.lg * 2
+      - (previewIconSize > 0 and previewIconSize + spacing.md or 0))
+    local detailTitleFont = font(fontCache, theme.typography.body)
+    local detailTitleLines = #wrappedLines(
+      previewRow and previewRow.label or Strings("ITEM"), previewInfoW,
+      detailTitleFont)
+    local detailFont = font(fontCache, theme.typography.caption)
+    local detailLineGap = detailFont:getHeight() + spacing.xs
+    local detailLines = 0
+    local function countDetail(text)
+      if text and text ~= "" then
+        detailLines = detailLines + #wrappedLines(text, previewInfoW, detailFont)
+      end
+    end
+    if previewSource and previewSource.right then countDetail(previewSource.right) end
+    if previewDef and previewDef.machine then
+      local move = game.data.moves and game.data.moves[previewDef.machine.move]
+      countDetail(Strings("%s  %s", previewDef.machine.kind or "TM",
+        move and move.name or previewDef.machine.move))
+      if move then
+        countDetail(Strings("TYPE %s   PP %s", move.type or "â€”", move.pp or "â€”"))
+      end
+    elseif previewDef and previewDef.keyItem then
+      countDetail(Strings("KEY ITEM"))
+    end
+    countDetail(itemValueText(previewItemId, previewDef))
+    if detailLines > 0 then
+      detailMinH = math.max(detailMinH,
+        spacing.md + detailTitleLines * detailTitleFont:getHeight() + spacing.sm
+          + detailLines * detailLineGap + spacing.md)
+    end
+    local desiredContentH = minimalContext and desiredListH
+      or landscape and math.max(desiredListH, detailMinH)
+      or detailMinH + spacing.sm + desiredListH
+    local compactContextH = headerH + messageH + desiredListH + spacing.lg * 2
+    local panelH = math.min(h - gutter * 2,
+      minimalContext and compactContextH
+        or headerH + messageH + desiredContentH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local minimal = minimalContext
-    local detailW = not minimal and landscape and math.min(panelW * 0.34, 300) or 0
     local detailH = not minimal and not landscape
-      and math.min(148, panelH * 0.25) or 0
+      and math.min(detailMinH, math.max(1, panelH - headerH - messageH
+        - spacing.sm - rowHeight)) or 0
     local listW = panelW - detailW - (detailW > 0 and spacing.sm or 0)
     local listY = py + headerH + (detailH > 0 and detailH + spacing.sm or 0)
     local listH = math.max(1, py + panelH - messageH - listY)
-    local rowHeight = minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
     selected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -3989,32 +4355,37 @@ return function(mod)
       local infoW = math.max(24, detailX + cardW - spacing.lg - infoX)
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.text)
-      love.graphics.print(truncate(row and row.label or Strings("ITEM"),
-        infoW), infoX, detailY + spacing.md)
+      local titleBottom = drawWrappedText(row and row.label or Strings("ITEM"),
+        infoX, detailY + spacing.md, infoW,
+        font(fontCache, theme.typography.body),
+        theme.typography.body + spacing.xs)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(colors.textMuted)
-      local infoY = detailY + spacing.md + theme.typography.body + spacing.sm
+      local infoY = titleBottom + spacing.sm
+      local detailFont = love.graphics.getFont()
+      local detailMax = math.max(24, detailX + cardW - spacing.lg - infoX)
       if source and source.right then
-        love.graphics.print(safeText(source.right), infoX, infoY)
-        infoY = infoY + theme.typography.caption + spacing.xs
+        infoY = drawWrappedText(source.right, infoX, infoY, detailMax,
+          detailFont, theme.typography.caption + spacing.xs)
       end
       if def and def.machine then
         local move = game.data.moves and game.data.moves[def.machine.move]
-        love.graphics.print(Strings("%s  %s", def.machine.kind or "TM",
-          move and move.name or def.machine.move), infoX, infoY)
-        infoY = infoY + theme.typography.caption + spacing.xs
+        infoY = drawWrappedText(Strings("%s  %s", def.machine.kind or "TM",
+          move and move.name or def.machine.move), infoX, infoY, detailMax,
+          detailFont, theme.typography.caption + spacing.xs)
         if move then
-          love.graphics.print(Strings("TYPE %s   PP %s",
-            move.type or "—", move.pp or "—"), infoX, infoY)
-          infoY = infoY + theme.typography.caption + spacing.xs
+          infoY = drawWrappedText(Strings("TYPE %s   PP %s",
+            move.type or "—", move.pp or "—"), infoX, infoY, detailMax,
+            detailFont)
         end
       elseif def and def.keyItem then
-        love.graphics.print(Strings("KEY ITEM"), infoX, infoY)
-        infoY = infoY + theme.typography.caption + spacing.xs
+        infoY = drawWrappedText(Strings("KEY ITEM"), infoX, infoY, detailMax,
+          detailFont, theme.typography.caption + spacing.xs)
       end
       local value = itemValueText(itemId, def)
       if value then
-        love.graphics.print(value, infoX, infoY)
+        drawWrappedText(value, infoX, infoY, detailMax, detailFont,
+          theme.typography.caption + spacing.xs)
       end
     end
 
@@ -4032,7 +4403,7 @@ return function(mod)
     setColor(colors.textMuted)
     local hint = kind == "shop_list" and "A  choose   B  back"
       or "A  choose   B  back"
-    drawHint(theme, Strings(hint), px + spacing.lg,
+    drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
       py + panelH - spacing.md - theme.typography.caption,
       panelW - spacing.lg * 2)
     love.graphics.pop()
@@ -4043,7 +4414,7 @@ return function(mod)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      theme.density.panelMax or 780)
+      panelMaxWidth(theme, 780))
     -- The grid itself is the content. Keep a compact square-cell frame
     -- instead of reserving the entire viewport around a 5x4 or 3x2 grid.
     local panelH = math.min(h - gutter * 2,
@@ -4096,7 +4467,7 @@ return function(mod)
     local footerText = state.notice or (mode == "box"
       and "A  pick/place   START  stats   SELECT  party   B  back"
       or "A  pick/place   START  stats   SELECT  box   B  back")
-    drawHint(theme, Strings(footerText), px + spacing.lg,
+    drawHintIfUseful(theme, Strings(footerText), px + spacing.lg,
       py + panelH - footer + 2, panelW - spacing.lg * 2)
 
     for i = 1, cols * gridRows do
@@ -4186,10 +4557,7 @@ return function(mod)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      theme.density.panelMax or 780)
-    local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.10, 520, 700))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+      panelMaxWidth(theme, 780))
     local def = dexDefinition(game, state) or {}
     local species = def.id or state.species or state.speciesId
     if type(species) == "table" then species = species.species or species.id end
@@ -4200,10 +4568,55 @@ return function(mod)
     local titleFont = font(fontCache, theme.typography.title)
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
+    -- Dex data and base-stat cards are content panels. A responsive scale may
+    -- enlarge the type, but it should not make these two-column pages span
+    -- most of an ultrawide window.
+    panelW = math.min(panelW, scaledPanelWidth(theme,
+      page == "moves" and 720 or 620))
+    local lineGap = bodyFont:getHeight() + spacing.sm
+    local desiredHeroH = math.max(190,
+      math.min(250, bodyFont:getHeight() * 4 + spacing.lg * 3 + 70))
+    local desiredDetailH = lineGap * 4 + spacing.lg * 2
+    local descriptionLines = 1
+    local detailWidthEstimate = math.max(80,
+      panelW - math.min(240, panelW * 0.34) - spacing.xl - spacing.lg * 2)
+    if page == "stats" and state.stats then
+      local evolutionLines = 0
+      for _, evo in ipairs(state.stats.evolutions or {}) do
+        evolutionLines = evolutionLines + #wrappedLines(
+          (evo.label or "") .. " " .. (evo.name or ""),
+          detailWidthEstimate, bodyFont)
+      end
+      desiredDetailH = lineGap * math.max(1, #(state.stats.stats or {}) + 1)
+        + spacing.md + math.max(1, evolutionLines) * lineGap
+        + spacing.lg * 2
+    elseif page == "moves" then
+      local ok, moveRows = pcall(function() return state:rows() end)
+      desiredDetailH = lineGap * math.min(10, #(ok and moveRows or {}))
+        + spacing.lg * 2
+    else
+      local entry = def.dexEntry or {}
+      local owned = state.forceOwned or (state.vanilla and state.vanilla.forceOwned)
+        or (game.save and game.save.pokedex and game.save.pokedex.owned and
+          game.save.pokedex.owned[def.id])
+      local text = owned and entry.text and game.data.text and game.data.text[entry.text]
+      if text then
+        descriptionLines = #wrappedLines(safeText(text):gsub("[\r\n\v\f]+", " "),
+          panelW - spacing.lg * 2, bodyFont)
+      end
+      desiredDetailH = desiredHeroH + spacing.lg
+        + math.min(8, descriptionLines) * lineGap + spacing.lg
+    end
+    local desiredContentH = page == "data"
+      and desiredDetailH or math.max(desiredHeroH, desiredDetailH)
+    local panelH = math.min(h - gutter * 2,
+      titleFont:getHeight() + spacing.xl + 12 + desiredContentH
+        + spacing.lg + captionFont:getHeight())
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local heroX = px + spacing.lg
     local heroY = py + titleFont:getHeight() + spacing.xl + 12
     local heroW = math.min(240, panelW * 0.34)
-    local heroH = math.min(250, panelH * 0.34)
+    local heroH = math.min(250, desiredHeroH)
     local detailX = heroX + heroW + spacing.xl
     local detailW = math.max(40, panelW - (detailX - px) - spacing.lg)
     local footerY = py + panelH - spacing.lg - captionFont:getHeight() - 4
@@ -4217,7 +4630,8 @@ return function(mod)
     love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print(title, px + spacing.lg, py + spacing.md)
+    drawFittedText(title, px + spacing.lg, py + spacing.md,
+      panelW - spacing.lg * 2, titleFont)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(captionFont)
     love.graphics.print((page == "stats" and "BASE STATS" or page == "moves" and "MOVES" or
@@ -4242,16 +4656,18 @@ return function(mod)
       local stats = state.stats.stats or {}
       local yy = heroY + spacing.md
       for _, stat in ipairs(stats) do
-        love.graphics.print(("%s  %s"):format(safeText(stat.key), safeText(stat.value)),
-          tx, yy)
+        drawFittedText(("%s  %s"):format(safeText(stat.key), safeText(stat.value)),
+          tx, yy, maxW, bodyFont)
         yy = yy + bodyFont:getHeight() + spacing.sm
       end
-      love.graphics.print("BST  " .. safeText(state.stats.bst), tx, yy + 4)
+      drawFittedText("BST  " .. safeText(state.stats.bst), tx, yy + 4,
+        maxW, bodyFont)
       yy = yy + bodyFont:getHeight() + spacing.md
       for _, evo in ipairs(state.stats.evolutions or {}) do
-        love.graphics.print(truncate((evo.label or "") .. " " .. (evo.name or ""), maxW),
-          tx, yy)
-        yy = yy + bodyFont:getHeight() + spacing.xs
+        local nextY = drawWrappedText((evo.label or "") .. " "
+          .. (evo.name or ""), tx, yy, maxW, bodyFont,
+          bodyFont:getHeight() + spacing.xs)
+        yy = nextY + spacing.xs
       end
     elseif page == "moves" then
       local ok, moveRows = pcall(function() return state:rows() end)
@@ -4274,7 +4690,8 @@ return function(mod)
       local visible = math.min(10, remaining, maxVisible)
       for offset = 0, visible - 1 do
         local row = rows[start + offset]
-        love.graphics.print(truncate(row, maxW), tx, heroY + offset * lineGap)
+        drawWrappedText(row, tx, heroY + offset * lineGap, maxW, bodyFont,
+          bodyFont:getHeight() + spacing.xs)
       end
       if visible < requested then
         setColor(theme.colors.textMuted)
@@ -4283,13 +4700,16 @@ return function(mod)
       end
     else
       local entry = def.dexEntry or {}
-      love.graphics.print("No. " .. safeText(def.dex), tx, heroY + spacing.md)
-      love.graphics.print(safeText(entry.kind), tx,
-        heroY + spacing.md + bodyFont:getHeight() + spacing.sm)
-      love.graphics.print(safeText(entry.heightM and ("HT " .. entry.heightM .. "m") or ""),
-        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 2)
-      love.graphics.print(safeText(entry.weightKg and ("WT " .. entry.weightKg .. "kg") or ""),
-        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 3)
+      drawFittedText("No. " .. safeText(def.dex), tx, heroY + spacing.md,
+        maxW, bodyFont)
+      drawFittedText(entry.kind, tx,
+        heroY + spacing.md + bodyFont:getHeight() + spacing.sm, maxW, bodyFont)
+      drawFittedText(entry.heightM and ("HT " .. entry.heightM .. "m") or "",
+        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 2,
+        maxW, bodyFont)
+      drawFittedText(entry.weightKg and ("WT " .. entry.weightKg .. "kg") or "",
+        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 3,
+        maxW, bodyFont)
       local owned = state.forceOwned or (state.vanilla and state.vanilla.forceOwned)
         or (game.save and game.save.pokedex and game.save.pokedex.owned and
           game.save.pokedex.owned[def.id])
@@ -4298,7 +4718,7 @@ return function(mod)
       setColor(theme.colors.textMuted)
       if text then
         local lines = wrappedLines(safeText(text):gsub("[\r\n\v\f]+", " "),
-          panelW - spacing.lg * 2)
+          panelW - spacing.lg * 2, bodyFont)
         local lineHeight = bodyFont:getHeight() + spacing.sm
         for i, line in ipairs(lines) do
           local yy = descriptionY + (i - 1) * lineHeight
@@ -4318,7 +4738,8 @@ return function(mod)
         footer = "UP/DOWN  page   A  next page   B  back"
       end
     end
-    love.graphics.print(footer, px + spacing.lg, footerY)
+    drawHintIfUseful(theme, Strings(footer), px + spacing.lg, footerY,
+      panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
@@ -4528,7 +4949,7 @@ return function(mod)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(1, theme.density.panelMax or 900))
+      math.max(1, panelMaxWidth(theme, 900)))
     local panelH = math.max(1, h - gutter * 2)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local cardW = math.min(390, panelW * 0.43)
@@ -4576,8 +4997,8 @@ return function(mod)
       py + panelH - footerH, panelW - spacing.lg * 2, footerH)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
-    love.graphics.print("A  select    B  back", px + spacing.lg,
-      py + panelH - spacing.sm - 14)
+    drawHintIfUseful(theme, "A  select    B  back", px + spacing.lg,
+      py + panelH - spacing.sm - 14, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
@@ -4739,7 +5160,7 @@ return function(mod)
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
       themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
-    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + theme.spacing.sm,
       layout.w - theme.spacing.lg * 2)
     love.graphics.pop()
@@ -4837,7 +5258,7 @@ return function(mod)
       (kind == "choice" and "A  choose    B  cancel"
       or kind == "quantity" and "A  confirm    B  cancel"
       or "Arrow keys / A  select    B  back")
-    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
     love.graphics.pop()
@@ -4854,16 +5275,20 @@ return function(mod)
   end
 
   local function drawModernStack(game, layers, viewport)
-    local theme = responsiveTheme(currentTheme(), viewport, responsiveThemeCache)
+    local theme = responsiveTheme(currentTheme(viewport), viewport, responsiveThemeCache)
     love.graphics.push("all")
     love.graphics.origin()
+    local modalActive = false
     for index, layer in ipairs(layers) do
       local underKind = index > 1 and layers[index - 1].kind or nil
       local underState = index > 1 and layers[index - 1].state or nil
       local overKind = index < #layers and layers[index + 1].kind or nil
       local overState = index < #layers and layers[index + 1].state or nil
+      local modal = index > 1 and isModalLayer(layer.kind)
+      if modal and not modalActive then drawModalScrim(theme, viewport) end
+      modalActive = modal
       drawModern(game, layer.state, layer.kind, viewport, theme,
-        index > 1 and isModalLayer(layer.kind), underKind, underState,
+        modal, underKind, underState,
         overKind, overState)
     end
     love.graphics.pop()

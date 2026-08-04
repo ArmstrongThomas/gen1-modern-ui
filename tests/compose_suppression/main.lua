@@ -147,10 +147,12 @@ function love.load()
       if row.key == "dialogueTextScale" then dialogueScaleRow = row end
     end
   end
-  check(uiScaleRow and #uiScaleRow.choices == 16 and uiScaleRow.default == "100",
-    "UI scale exposes 75% through 150% in 5% steps")
-  check(fontScaleRow and #fontScaleRow.choices == 25 and fontScaleRow.default == "100",
-    "font scale exposes 80% through 200% in 5% steps")
+  check(uiScaleRow and #uiScaleRow.choices == 17 and uiScaleRow.choices[1][2] == "auto"
+      and uiScaleRow.default == "100",
+    "UI scale exposes AUTO plus 75% through 150% in 5% steps")
+  check(fontScaleRow and #fontScaleRow.choices == 26 and fontScaleRow.choices[1][2] == "auto"
+      and fontScaleRow.default == "100",
+    "font scale exposes AUTO plus 80% through 200% in 5% steps")
   check(dialogueScaleRow and #dialogueScaleRow.choices == 6
       and dialogueScaleRow.default == "inherit",
     "dialogue scale exposes inherit and readability presets")
@@ -631,6 +633,15 @@ function love.load()
     _gen1TouchVisible = true }
   local largeDesktopViewport = { width = 1600, height = 1000,
     safe = { x = 0, y = 0, width = 1600, height = 1000 } }
+  values.uiScale, values.fontScale = "auto", "auto"
+  local autoPortrait = mod.exports.getScaleTokens(portraitViewport)
+  local autoDesktop = mod.exports.getScaleTokens(largeDesktopViewport)
+  check(autoPortrait.uiScale >= 0.75 and autoPortrait.uiScale <= 1.50
+      and autoPortrait.fontScale >= 0.80 and autoPortrait.fontScale <= 2.00,
+    "AUTO scale stays within the configured bounds")
+  check(autoDesktop.uiScale > autoPortrait.uiScale
+      and autoDesktop.fontScale > autoPortrait.fontScale,
+    "AUTO scale responds to portrait and large-desktop viewports")
   local hudCanvases = {}
   local captureHud = os.getenv("GEN1_UI_SHOTS") == "1"
   local function renderHud(states, name, activeViewport)
@@ -679,9 +690,26 @@ function love.load()
     renderHud({ overworld, textBox, choice }, "scaling_dialogue_" .. scaleCase.font,
       scaleCase.font == "200" and mobileLandscapeViewport or portraitViewport)
   end
+  values.uiScale, values.fontScale = "auto", "auto"
+  renderHud({ bag }, "scaling_bag_auto_portrait", portraitViewport)
+  renderHud({ bag }, "scaling_bag_auto_desktop", largeDesktopViewport)
   textBox.pages = savedPage
   textBox.charIndex = savedCharIndex
   values.uiScale, values.fontScale, values.dialogueTextScale = "100", "100", "inherit"
+  local savedDialogueDone, savedDialogueChoice = textBox.done, textBox.choice
+  local savedDialoguePageIndex, savedDialogueLineIndex = textBox.pageIndex, textBox.lineIndex
+  textBox.pages = {{ "Short dialogue should not inherit a tall chrome-only card." }}
+  textBox.pageIndex, textBox.lineIndex = 1, 1
+  textBox.charIndex, textBox.done, textBox.choice = #textBox.pages[1][1], true, nil
+  values.uiScale, values.fontScale = "150", "100"
+  local dialogueSized = renderHud({ overworld, textBox },
+    "dialogue_content_sized", largeDesktopViewport)
+  check(pixelAlpha(dialogueSized, 800, 800) == 0,
+    "short dialogue uses a content-sized card")
+  textBox.pages, textBox.charIndex = savedPage, savedCharIndex
+  textBox.pageIndex, textBox.lineIndex = savedDialoguePageIndex, savedDialogueLineIndex
+  textBox.done, textBox.choice = savedDialogueDone, savedDialogueChoice
+  values.uiScale, values.fontScale = "100", "100"
   for _, themeChoice in ipairs(themeRow.choices) do
     values.theme = themeChoice[2]
     values.panelOpacity, values.foregroundOpacity = 0, 0
@@ -803,6 +831,19 @@ function love.load()
     index = 1, party = game.save.party }, { __index = partyClass })
   renderHud({ party }, "party_rich")
   renderHud({ party }, "party_rich_portrait", portraitViewport)
+  local savedPartyForShot = party.party
+  party.party = {}
+  for index = 1, 6 do
+    party.party[index] = {
+      species = "TESTMON", nickname = "PARTY " .. index, level = 12 + index,
+      hp = 31, stats = { hp = 40, attack = 24, defense = 22, speed = 25,
+        special = 20 }, moves = { { id = "TEST_MOVE", pp = 17 } },
+    }
+  end
+  local partySixLarge = renderHud({ party }, "party_rich_six_large", largeDesktopViewport)
+  check(pixelAlpha(partySixLarge, 800, 900) == 0,
+    "Party rich panel sizes to six rows and detail content")
+  party.party = savedPartyForShot
   values.layoutStyle = "floating"
   local floatingParty = renderHud({ party }, nil)
   check(pixelAlpha(floatingParty, 0, 0) == 0,
@@ -869,6 +910,10 @@ function love.load()
     "floating Summary presenter survives classic UI suppression")
   check(pixelAlpha(floatingSummary, 20, 20) > 0,
     "nested Summary uses its rich presenter instead of a generic modal")
+  local summarySized = renderHud({ summary }, "summary_content_sized",
+    largeDesktopViewport)
+  check(pixelAlpha(summarySized, 800, 900) == 0,
+    "Summary stat panel stays content-sized on a large desktop")
 
   local dexEntry = setmetatable({ screenId = "DexEntryMenu", vanilla = {},
     def = game.data.pokemon.TESTMON, view = "data", forceOwned = true },
@@ -886,6 +931,30 @@ function love.load()
     "floating Dex Entry presenter survives classic UI suppression")
   check(pixelAlpha(floatingDexEntry, 20, 20) > 0,
     "nested Dex Entry uses its rich presenter instead of a generic modal")
+  game.data.text = game.data.text or {}
+  game.data.text.TESTMON_DATA = "A compact data description used to verify that the Pokédex data page sizes to its visible content instead of reserving a full-height card."
+  game.data.pokemon.TESTMON.dexEntry = {
+    kind = "SEED TESTMON", heightM = 0.7, weightKg = 6.9, text = "TESTMON_DATA",
+  }
+  local dexDataSized = renderHud({ dexEntry }, "dex_entry_data_content_sized",
+    largeDesktopViewport)
+  check(pixelAlpha(dexDataSized, 800, 900) == 0,
+    "Dex data panel sizes to its visible description")
+  dexEntry.view = "stats"
+  dexEntry.stats = {
+    stats = {
+      { key = "HP", value = 40 }, { key = "ATK", value = 24 },
+      { key = "DEF", value = 22 }, { key = "SPD", value = 25 },
+      { key = "SPC", value = 20 },
+    },
+    bst = 131,
+    evolutions = { { label = "LV 16", name = "TESTMON 2" } },
+  }
+  local dexStatsSized = renderHud({ dexEntry }, "dex_entry_stats_content_sized",
+    largeDesktopViewport)
+  check(pixelAlpha(dexStatsSized, 800, 900) == 0,
+    "Dex stats panel sizes to its visible stat rows")
+  dexEntry.view, dexEntry.stats = "data", nil
 
   -- A malformed/partially initialized rich state must never leave a blank
   -- world-visible frame.  The classic canvas remains available until the
@@ -953,10 +1022,28 @@ function love.load()
   renderHud({ shop }, "shop")
   shop.items = { { label = "TM01", right = "¥3000", value = "TM_TEST" } }
   renderHud({ shop }, "shop_portrait", portraitViewport)
+  local savedTestMoveName = game.data.moves.TEST_MOVE.name
+  game.data.moves.TEST_MOVE.name = "A VERY LONG DOUBLE TEAM MOVE NAME"
+  values.uiScale, values.fontScale = "150", "150"
+  renderHud({ shop }, "shop_detail_wrapped", largeDesktopViewport)
+  game.data.moves.TEST_MOVE.name = savedTestMoveName
+  values.uiScale, values.fontScale = "100", "100"
   shop.items = { { label = "POTION", right = "¥300", value = "POTION" } }
   values.minimalUi = true
   renderHud({ shop }, "shop_minimal")
   values.minimalUi = false
+
+  -- Nested prompts should share one modal policy across rich parents. Bare
+  -- quantity/choice states belong over the shop or Bag that opened them, not
+  -- at an unrelated safe-window edge; the parent remains visible but dimmed.
+  local nestedQuantity = setmetatable({ qty = 1, unitPrice = 150 },
+    { __index = quantityClass })
+  renderHud({ shop, nestedQuantity }, "shop_quantity_modal")
+  renderHud({ bag, nestedQuantity }, "bag_quantity_modal")
+  local dexOptions = setmetatable({ title = "POKÃ©DEX OPTIONS", index = 1,
+    items = { { label = "DATA" }, { label = "CRY" }, { label = "AREA" },
+      { label = "QUIT" } } }, { __index = menuClass })
+  renderHud({ dex, dexOptions }, "pokedex_action_modal")
 
   -- On a large desktop viewport, rich screens should spend the extra vertical
   -- room that readability scaling requests instead of keeping the reference
@@ -981,6 +1068,29 @@ function love.load()
   shop.items = savedShopItems
   values.uiScale, values.fontScale = "100", "100"
 
+  -- Minimal rich lists should grow their content-width budget with the
+  -- readable font instead of keeping the old 760px ceiling. The high-scale
+  -- frame reaches this sample column; the reference-scale frame ends before
+  -- it and would otherwise silently truncate the label/value row.
+  local savedBagItems = bag.items
+  local savedMinimalUi = values.minimalUi
+  bag.items = {{
+    label = "A VERY LONG MINIMAL BAG LABEL THAT SHOULD REMAIN FULLY READABLE",
+    right = "A LONG VALUE COLUMN", value = "POTION",
+  }}
+  values.minimalUi = true
+  values.uiScale, values.fontScale = "100", "100"
+  local minimalBag100 = renderHud({ bag }, "minimal_bag_100", largeDesktopViewport)
+  local minimalBag100Sample = pixelAlpha(minimalBag100, 1200, 500)
+  values.uiScale, values.fontScale = "150", "200"
+  local minimalBag200 = renderHud({ bag }, "minimal_bag_200", largeDesktopViewport)
+  check(minimalBag100Sample == 0
+      and pixelAlpha(minimalBag200, 1200, 500) > 0,
+    "minimal bag width grows with larger readable text")
+  bag.items = savedBagItems
+  values.minimalUi = savedMinimalUi
+  values.uiScale, values.fontScale = "100", "100"
+
   local pc = setmetatable({ title = "WITHDRAW", messageBox = true,
     footer = "Withdraw how many?",
     items = { { label = "POTION", right = "x2", value = "POTION" } },
@@ -990,9 +1100,21 @@ function love.load()
 
   textBox.choice = true
   choice.anchor = "bottom"
+  local printedChoiceText = {}
+  local nativePrint = love.graphics.print
+  love.graphics.print = function(value, ...)
+    printedChoiceText[#printedChoiceText + 1] = tostring(value)
+    return nativePrint(value, ...)
+  end
   renderHud({ overworld, textBox, choice }, "dialogue_choice")
   renderHud({ overworld, textBox, choice }, "dialogue_choice_portrait",
     portraitViewport)
+  love.graphics.print = nativePrint
+  local printedChoice = table.concat(printedChoiceText, "\n")
+  check(not printedChoice:find("A / B  continue", 1, true)
+      and not printedChoice:find("Choose an option", 1, true)
+      and not printedChoice:find("A  choose   B  no", 1, true),
+    "dialogue choices omit redundant button tips")
 
   if captureHud then
     print("compose suppression shots: " .. love.filesystem.getSaveDirectory())

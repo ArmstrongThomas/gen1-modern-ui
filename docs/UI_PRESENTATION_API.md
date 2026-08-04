@@ -6,7 +6,7 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.7.2 uses four released hooks plus a narrowly scoped class wrapper:
+Version 0.7.3 uses four released hooks plus a narrowly scoped class wrapper:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -65,8 +65,9 @@ input coordinates are never changed.
 The presenter marks viewports with visible virtual controls before layout.
 `layoutStyle=auto` is the default and leaves the area outside content-sized
 cards transparent on desktop and mobile; the Start Menu docks to a compact
-card and richer screens use scale-aware height budgets when the safe viewport
-has room, so larger readability settings reveal more of the available card.
+card and richer screens use scale-aware width and height budgets when the safe
+viewport has room, so larger readability settings reveal more of the available
+card without retaining reference-size ceilings.
 `layoutStyle=floating` forces this world-visible behavior for every supported
 presenter, including full-card screens such as Party, Trainer Card, Pokédex,
 and PC. `layoutStyle=full` is the explicit backdrop-first presentation: it
@@ -76,6 +77,15 @@ that predate `layoutStyle`; explicit FLOATING always wins, while an older
 save whose adaptive setting is still paired with `desktopFloating=false`
 keeps its previous full treatment until that legacy toggle is enabled. This
 changes only HUD drawing, never the engine viewport or input coordinates.
+
+Rich Party, PokÃ©dex, Bag, Shop, and item-detail presenters derive their panel
+height from visible rows, detail content, and footer before clamping to the
+safe viewport. Dialogue and modal cards use the same content-first rule, so a
+large UI scale does not create empty vertical space when font scale is smaller.
+Detail columns wrap localized labels, move names, prices, descriptions, and
+stat values before using a bounded fallback for text that cannot reflow. The
+content-heavy Summary and PokÃ©dex entry cards also cap their width to the
+measured data layout instead of inheriting a full rich-panel ceiling.
 
 The title menu is a special shared-canvas case. While the modern title menu is
 active, its `titleUiBox` palette marker is temporarily expanded to the full
@@ -180,10 +190,14 @@ are percentage values from 0 to 100 and multiply the authored theme alpha.
 
 The readability controls are applied before measurement and layout:
 
-- `uiScale` accepts 75% through 150% in 5% steps and scales spacing, row
-  rhythm, icons, radii, borders, panel limits, and control-hint spacing.
-- `fontScale` accepts 80% through 200% in 5% steps and scales the cached title,
-  body, caption, value, and hint fonts.
+- `uiScale` accepts `AUTO` or 75% through 150% in 5% steps and scales spacing,
+  row rhythm, icons, radii, borders, panel limits, and control-hint spacing.
+  `AUTO` resolves a bounded five-percent value from the safe window viewport;
+  landscape uses both width and height, while portrait uses width as the
+  limiting dimension.
+- `fontScale` accepts `AUTO` or 80% through 200% in 5% steps and scales the
+  cached title, body, caption, value, and hint fonts. Its `AUTO` value uses the
+  same responsive viewport policy as `uiScale`.
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
   confirmation prompts.
@@ -192,8 +206,10 @@ Larger fonts raise measured row minimums and can promote generic rows to a
 two-line layout. Dialogue wraps the currently revealed glyph prefix, so a
 scale change never advances or rewrites the TextBox typewriter state. Images
 remain aspect-fit and nearest-neighbor filtered. A dependent theme can inspect
-`mod.exports.scaleTokens` or call `mod.exports.getScaleTokens()`; its authored
-typography, spacing, density, and `metrics` tokens are scaled consistently.
+`mod.exports.scaleTokens` or call `mod.exports.getScaleTokens(viewport)`; pass
+the active safe viewport when resolving an `AUTO` setting outside the built-in
+presenter. Its authored typography, spacing, density, and `metrics` tokens are
+scaled consistently.
 
 Rows are rebuilt from live state during each HUD pass. Preserve descriptor
 identity and unknown fields in any data you add, and use stable `id` fields for
@@ -302,6 +318,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.2 targets released game
+- Do not assume a custom engine build: version 0.7.3 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.
