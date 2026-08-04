@@ -96,7 +96,9 @@ when the listing is enabled there.
 - PokePCFollowers compatibility crops its six-frame `follower_###.png`
   sheets to the correct nearest-neighbor frame for party/box icons and larger
   previews.
-- Dialogue panels now show up to five wrapped lines plus a readable prompt.
+- Dialogue panels size to the live text window: normal two-line messages stay
+  compact, while longer supplied page models can expand up to five wrapped
+  lines plus a readable prompt.
   UI SETTINGS is organized into expandable Appearance, Navigation, Presenters,
   and Advanced categories instead of one long list.
 - Useful Dex and Gen 3 Box presenters with square grids and animated authored

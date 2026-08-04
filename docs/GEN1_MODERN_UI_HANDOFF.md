@@ -179,13 +179,14 @@ classic UI is suppressed independently.
 - Released `src.link.LinkState` stages (LAN, online, tournament, connection,
   trade, and battle handshakes) use a draw-only modern adapter. Networking,
   code/address editing, and callbacks remain owned by LinkState.
-- Dialogue panels reserve up to five wrapped lines plus the prompt strip;
-  high-resolution text is no longer limited to the classic two-line window.
+- Dialogue panels size to the live wrapped text window: the released two-line
+  TextBox stays compact, while richer page models can expand up to five lines
+  plus the prompt strip. High-resolution text is no longer needlessly padded.
 - The battle adapter reads public battler, phase, move, and message fields. Its
   `battleUiWip` toggle is WIP and defaults off; other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
   `startMenuFastJump`,
-  `dialogueUi`, `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
+`dialogueUi`, `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
   options. `desktopFloating` remains only as a migration field for old saves.
 - Every option schema row includes a short description. The modern manager
   presents it as a non-destructive help card when SELECT is pressed on that

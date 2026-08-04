@@ -2127,7 +2127,7 @@ return function(mod)
     if type(page) ~= "table" then return { "" } end
     local current = clamp(state.lineIndex or 1, 1, math.max(1, #page))
     local shownCount = type(state.shown) == "table" and #state.shown or 1
-    shownCount = clamp(shownCount, 1, 3)
+    shownCount = clamp(shownCount, 1, 5)
     local first = math.max(1, current - shownCount + 1)
     local lines = {}
     for index = first, current do
@@ -2136,6 +2136,16 @@ return function(mod)
       lines[#lines + 1] = line
     end
     if #lines == 0 then lines[1] = "" end
+    return lines
+  end
+
+  local function wrappedDialogueLines(state, body, maxWidth)
+    local lines = {}
+    for _, source in ipairs(dialogueLines(state)) do
+      for _, line in ipairs(wrappedLines(source, maxWidth)) do
+        lines[#lines + 1] = line
+      end
+    end
     return lines
   end
 
@@ -2151,13 +2161,14 @@ return function(mod)
     local maxWidth = landscape and math.min(760, w * 0.70) or math.min(620, w - gutter * 2)
     local minWidth = math.min(landscape and 280 or 260, maxWidth)
     local width = clamp(widest + gutter * 2, minWidth, maxWidth)
-    -- The original presenter reserved two lines, which made wrapped dialog
-    -- text truncate on high-resolution screens. Reserve a comfortable five
-    -- lines (or all available portrait/landscape height) while keeping the
-    -- panel content-sized rather than stretching it to the whole viewport.
+    -- TextBox pages in the released engine normally expose two visible lines.
+    -- Size to the live wrapped content instead of reserving five lines for
+    -- every message; longer page models can still grow up to five lines.
     local lineGap = body:getHeight() + theme.spacing.xs
-    local desiredLines = landscape and 5 or 5
-    local height = math.max(160,
+    local available = math.max(1, width - gutter * 2)
+    local desiredLines = #wrappedDialogueLines(state, body, available)
+    desiredLines = clamp(math.max(2, desiredLines), 2, 5)
+    local height = math.max(112,
       lineGap * desiredLines + theme.spacing.lg * 2
         + theme.typography.caption + theme.spacing.md)
     height = math.min(height, h - gutter * 2)
@@ -2176,12 +2187,7 @@ return function(mod)
     local body = font(fontCache, theme.typography.body)
     love.graphics.setFont(body)
     local available = panelW - spacing.lg * 2
-    local lines = {}
-    for _, source in ipairs(dialogueLines(state)) do
-      for _, line in ipairs(wrappedLines(source, available)) do
-        lines[#lines + 1] = line
-      end
-    end
+    local lines = wrappedDialogueLines(state, body, available)
     local lineGap = body:getHeight() + spacing.xs
     local footerH = theme.typography.caption + spacing.md
     local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2 - footerH) / lineGap))

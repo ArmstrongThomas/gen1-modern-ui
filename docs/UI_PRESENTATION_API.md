@@ -165,8 +165,10 @@ presentation that keeps the same live rows, selection, prompts, and callbacks
 while omitting optional preview/detail panes, then measures the remaining
 content again so hidden regions do not leave empty columns or oversized cards.
 
-Dialogue panels reserve up to five wrapped lines plus their prompt strip, with
-the same typewriter reveal and callback ownership as the released TextBox.
+Dialogue panels size to the live wrapped text window: the released two-line
+TextBox stays compact, while richer page models can expand up to five wrapped
+lines plus their prompt strip. Typewriter reveal and callback ownership remain
+the same as the released TextBox.
 
 `panelOpacity` controls backdrop and filled-surface alpha independently from
 `foregroundOpacity`, which controls text, borders, dividers, and accents. Both
