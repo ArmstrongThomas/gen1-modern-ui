@@ -233,11 +233,15 @@ local function titleFor(Strings, state, kind)
     OptionsMenu = "OPTIONS",
     PartyMenu = "POKéMON",
     SummaryMenu = "SUMMARY",
+    RunModeOptions = "RUN MODE",
+    ShinyPokemonOptions = "SHINY POKEMON",
+    QualityOfLife = "QUALITY OF LIFE",
   }
   local title = state and state.title or names[state and state.screenId]
   if not title then
     title = ({ menu = "MENU", list = "LIST", choice = "CHOOSE",
                quantity = "QUANTITY", options = "OPTIONS",
+               mod_options = "OPTIONS",
                party = "POKéMON", summary = "SUMMARY" })[kind]
   end
   if kind == "choice" or (kind == "menu" and not (state and state.title)
@@ -1031,6 +1035,27 @@ return function(mod)
       and (state.view == "data" or state.view == "stats" or state.view == "moves")
   end
 
+  -- Several popular mods expose their settings as registered screen factories
+  -- built on the released `src.ui.OptionRows` helper. Those screens are plain
+  -- tables (not an OptionsMenu subclass), so class-only detection would leave
+  -- their native 160x144 renderer visible. Keep the adapter deliberately
+  -- semantic: an OptionRows screen has a stable screen id, live row table,
+  -- cursor, update method, and draw method. The suffix rule covers future
+  -- option screen names while the Quality of Life id is retained for that
+  -- mod's established public contract.
+  local function isOptionRowsScreen(state)
+    if type(state) ~= "table" or type(state.screenId) ~= "string"
+        or type(state.rows) ~= "table" or type(state.index) ~= "number"
+        or type(state.update) ~= "function" or type(state.draw) ~= "function" then
+      return false
+    end
+    local id = state.screenId
+    if id == "OptionsMenu" then return false end
+    return id == "RunModeOptions" or id == "ShinyPokemonOptions"
+      or id == "QualityOfLife" or id:match("Options$") ~= nil
+      or id:match("Settings$") ~= nil
+  end
+
   local function kindFor(state)
     if not state then return nil end
     local id = state.screenId
@@ -1048,6 +1073,7 @@ return function(mod)
     if isGen3Box(state) then return "gen3_box" end
     if id == "DexEntryMenu" and ((dexEntryClass and inherits(class, dexEntryClass))
         or isUsefulDexEntry(state)) then return "dex_entry" end
+    if isOptionRowsScreen(state) then return "mod_options" end
     if id == "TrainerCard" and trainerCardClass
         and inherits(class, trainerCardClass) then return "trainer_card" end
     if isBoxRoot(state) then return "box_root" end
@@ -1081,7 +1107,9 @@ return function(mod)
     if kind == "text" or kind == "choice" or kind == "quantity" then
       return option("dialogueUi", true) ~= false
     end
-    if kind == "mod_manager" then return option("managerUi", true) ~= false end
+    if kind == "mod_manager" or kind == "mod_options" then
+      return option("managerUi", true) ~= false
+    end
     if kind == "gen3_box" or kind == "dex_entry" or kind == "summary"
         or kind == "party" or kind == "trainer_card" or kind == "pokedex"
         or kind == "box_mon_list" then
@@ -1097,6 +1125,7 @@ return function(mod)
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   local function customDrawModeled(state, kind)
+    if kind == "mod_options" and isOptionRowsScreen(state) then return true end
     if kind == "bag" and state.screenId == "BagMenu"
         and type(state.modernBag) == "table" then return true end
     if kind == "gen3_box" and isGen3Box(state) then return true end
@@ -1267,6 +1296,8 @@ return function(mod)
     if not ok or type(base) ~= "number" then return {}, false end
     local layers = {}
     local preserveUiCanvas = false
+    local topState = states[#states]
+    local optionRowsTop = isOptionRowsScreen(topState)
     for index = base, #states do
       local visible = states[index]
       -- The overworld is rendered independently on the world canvas. States
@@ -1299,7 +1330,14 @@ return function(mod)
             or not presenterReady(game, visible, kind) then
           return {}, false
         end
-        layers[#layers + 1] = { state = visible, kind = kind, index = index }
+        -- A registered OptionRows screen is pushed above the manager state
+        -- that opened it. The custom screen is the complete visible surface;
+        -- retaining the manager beneath it would duplicate panels in floating
+        -- layouts. The manager remains in the engine stack for input/back
+        -- navigation, but is omitted from this visual composition.
+        if not (kind == "mod_manager" and optionRowsTop) then
+          layers[#layers + 1] = { state = visible, kind = kind, index = index }
+        end
       end
     end
     return layers, #layers > 0, not preserveUiCanvas
@@ -1374,7 +1412,7 @@ return function(mod)
 
     if kind == "mod_manager" then
       return managerRowsFor(game, state)
-    elseif kind == "options" then
+    elseif kind == "options" or kind == "mod_options" then
       for _, row in ipairs(state.rows or {}) do
         rows[#rows + 1] = {
           label = row.label, value = optionValue(game, row),

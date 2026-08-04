@@ -564,6 +564,31 @@ function love.load()
     mobileLandscapeViewport)
   check(pixelAlpha(mobileMenu, 0, 0) == 0,
     "adaptive mobile landscape start menu leaves the world area transparent")
+
+  -- Third-party settings mods use plain registered screens built from the
+  -- released OptionRows helper rather than an OptionsMenu subclass. The
+  -- shared adapter must recognize their public shape, suppress the native
+  -- 160x144 draw, and still render live labels/values.
+  for _, screenId in ipairs({ "RunModeOptions", "ShinyPokemonOptions",
+      "QualityOfLife" }) do
+    local optionScreen = {
+      screenId = screenId,
+      rows = { { label = "EXAMPLE SETTING", value = function() return "ON" end } },
+      index = 1, scroll = 0, isOpaque = true,
+      update = function() end, draw = function() end,
+    }
+    game.stack.states = { overworld, optionScreen }
+    hooks["input.step"](function() end, game, 0)
+    check(optionScreen.isOpaque == false,
+      "OptionRows adapter makes " .. screenId .. " world-visible")
+    fill()
+    compose(false)
+    check(alpha() == 0,
+      "OptionRows adapter suppresses the native " .. screenId .. " canvas")
+    local optionCanvas = renderHud({ optionScreen }, "options_" .. screenId)
+    check(pixelAlpha(optionCanvas, 320, 180) > 0,
+      "OptionRows adapter renders " .. screenId .. " through modern HUD")
+  end
   renderHud({ title, titleMenu }, "title_main_menu")
 
   local dex = setmetatable({ screenId = "PokedexMenu", title = "POKéDEX",

@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.6.5 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.6.6 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -62,6 +62,9 @@ when the listing is enabled there.
   before suppressing the classic canvas, preventing blank frames while a
   mobile stats or entry page is being initialized.
 - Live rows and options, so other mods' menu entries remain visible.
+- Shared OptionRows adapters for Run Mode, Shiny Pokémon, Quality of Life, and
+  future mod settings screens keep their custom options readable at high
+  resolution without replacing their callbacks or input ownership.
 - Stack-aware dialogue, YES/NO, quantity, and action cards that preserve the
   game's typewriter timing and callback/input ownership.
 - The in-game Start menu and title-screen main menu use the same floating
@@ -96,6 +99,15 @@ the built-in mod manager, while preserving custom entries added by other
 authors. Sprite replacement packs such as **Gold_Silver_Sprites** are used when
 they are enabled. Unknown or unsupported screens remain vanilla instead of
 being forced through an incorrect layout.
+
+Mod settings screens built with gen1recomp's public `src.ui.OptionRows`
+contract are also recognized. The current compatibility pass covers
+[Run Mode](https://github.com/masterwebx/gen1recomp-run-mode),
+[Shiny Pokémon](https://github.com/masterwebx/gen1recomp-shiny-pokemon), and
+[Quality of Life](https://github.com/unxpected-uxp/pokemon-gen1-recomp-mod-qol);
+their live rows and values are presented by Gen1 Modern UI while each mod
+continues to own navigation and callbacks. A custom screen with an unknown
+shape still falls back to its native renderer.
 
 The presentation path stays inside released hooks. `ui.state.decorate`
 suppresses only the ordinary title Menu draw while retaining its shared title
@@ -158,7 +170,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.5.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.6.6.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -174,7 +186,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.6.5`) and push that commit to `main`. Each release includes a commit-based
+`0.6.6`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

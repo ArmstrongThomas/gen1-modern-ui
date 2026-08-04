@@ -1,4 +1,5 @@
 artifacts/
+.audit_mods/
 *.gpa.gb
 *.tmp
 *.bak

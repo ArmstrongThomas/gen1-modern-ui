@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.6.5 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.6.6 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -50,8 +50,10 @@ custom engine checkout or a patched binary.
 - **MINIMAL UI** defaults to off so new installs receive the richer Party,
   Pokédex, Bag, Shop, and PC presenters; enable it when a compact list is
   preferred.
-- The presenter leaves unknown custom screens vanilla; explicit adapters are
-  added only for screens with a stable public state contract.
+- OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
+  of Life are presented through the same live-row path. Their callbacks and
+  input remain owned by the source mod; unknown custom screen shapes stay
+  vanilla.
 - The presenter decorates `Menu`, `ListMenu`, `ChoiceBox`, `QuantityBox`,
   `TextBox`, `OptionsMenu`, `PartyMenu`, `SummaryMenu`, and the released in-game
   `ManagerState` mod-list/profile/error screens. The manager rows are read
@@ -59,8 +61,10 @@ custom engine checkout or a patched binary.
   per-mod adapter. It also presents the public `DexEntryMenu` and `Gen3Box`
   screen IDs used by Useful Dex and Gen 3 Box. Trainer Card, Pokédex list,
   Bag, Shop-product, Player-PC, Party, and released Bill's-PC Pokémon lists
-  have responsive specialized presenters. Battle states receive a separate
-  responsive status/action presenter.
+  have responsive specialized presenters. Plain OptionRows settings screens
+  from Run Mode, Shiny Pokémon, Quality of Life, and future screens ending in
+  `Options` or `Settings` use the shared high-resolution rows presenter. Battle
+  states receive a separate responsive status/action presenter.
 
 ### Dialogue and modal stacks
 

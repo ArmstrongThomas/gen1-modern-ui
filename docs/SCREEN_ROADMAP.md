@@ -92,6 +92,7 @@ than their live semantic contract.
 | Pokédex side menu | `Menu` layered above Pokédex | Shipped layered modal | Presents over the modern Pokédex only when the complete visible chain is modeled. |
 | Town Map / Fly / AREA | `screenId="TownMap"`; map image, locations, selection, fly/nests | Vanilla | **P2.** Full-window map, responsive banner/details, grid navigation, fly list, blinking nest markers. |
 | Options | `screenId="OptionsMenu"`; live descriptor rows | Dedicated rows | Shipped; allow stable-ID grouping only and never reorder unknown mod rows. |
+| Third-party OptionRows settings | Plain registered screen with `rows`, `index`, `scroll`, `update`, and `draw`; known IDs include `RunModeOptions`, `ShinyPokemonOptions`, and `QualityOfLife` | Shared adapter | Shipped in v0.6.6; reads live labels/values, preserves source callbacks/input, and falls back for non-semantic custom screens. |
 | Controls/bindings | `screenId="BindingsMenu"`; list fields plus `capture`/pending | Unsafe generic fallback | **P0 safety/P1 presenter.** Keep capture prompt vanilla now; later show logical control, existing bindings, reset/clear hints, and capture modal. |
 | Mod manager | `screenId="ManagerState"`; screen/tab/rows/current mod/overlays | Dedicated presenter | Shipped across list, profiles, errors, detail, options, permissions, and apply; keep explicit adapter. |
 | Quarantine report | `screenId="QuarantineReport"`; lines/offset/maxOffset | Vanilla | **P2.** Simple scrollable report with paging hints. |
@@ -128,7 +129,7 @@ require it.
 | Gen 3 Box | Stable `screenId="Gen3Box"` and grid/held fields. Existing adapter remains appropriate. |
 | Gold/Silver Sprites | Continue resolving through `Sprites.path`/`iconPath`; disabled packs naturally leave their hooks inactive. |
 | Unique Menu Icons | Preserve authored `frames=2` descriptors; keep vanilla pose sheets static instead of guessing animation frames. |
-| Quality of Life | Plain `screenId="QualityOfLife"` with rows/index/scroll. Add an option-model adapter in P3. |
+| Run Mode / Shiny Pokémon / Quality of Life | Plain OptionRows screens (`RunModeOptions`, `ShinyPokemonOptions`, `QualityOfLife`) with rows/index/scroll. The shared adapter shipped in v0.6.6; source mods continue to own updates and callbacks. |
 | Overworld Wild Spawns | List views mostly fit generic models; preview detail/animation screen IDs need explicit adapters or vanilla fallback. |
 | RBY MMO | Generic widget screens can inherit baseline coverage; Naming, PicBox, opaque custom screens, and network flows need P2/P3 adapters. |
 | Modern Bag / Bag 999 / Item Shortcut / PC-shop utilities | Preserve their live row objects and constructors. Render only explicit `right`/`displayValue` metadata, not opaque `value` payloads. Use an explicit capability/adapter for custom tabs and drawing before suppression; a blanket custom-draw rejection would also reject wrappers that safely delegate. |
