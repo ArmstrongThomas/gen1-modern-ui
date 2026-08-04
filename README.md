@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.7.3 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.7.4 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -47,8 +47,17 @@ when the listing is enabled there.
   transparent panels readable without fading borders or labels.
 - Theme-driven ornamental panel framing is available through **UI FRAME STYLE**:
   authored theme frames, pixel corners, soft rounded borders, or a plain fallback.
-  Frame geometry scales with the active UI size and applies consistently to
-  menus, rich screens, dialogue, and nested cards.
+  Pixel frames use selectable nine-slice PNG assets with crisp corners, while frame
+  margins keep ornamentation outside the content container. **PIXEL FRAME SCALE**
+  enlarges authored pixels by an exact 1X–4X multiplier with nearest-neighbor
+  sampling. **PIXEL FRAME** selects one of the three shipped authored borders.
+  Frame geometry scales with the active UI size and applies
+  consistently to menus, rich screens, dialogue, and nested cards. Pixel mode
+  also removes theme rounded corners and top accent strips so the PNG owns the
+  panel chrome.
+- Health bars use theme-aware teal/gold/orange/purple states instead of a
+  red/green-only ramp, with numeric HP labels retained as the authoritative
+  color-independent cue.
 - Independent **UI SCALE** (AUTO or 75%–150%), **FONT SCALE** (AUTO or
   80%–200%), and **DIALOGUE TEXT SCALE** (inherit–200%) controls measure
   content at the selected size before laying out panels. AUTO responds to the
@@ -202,7 +211,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.3.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.4.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -218,7 +227,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.7.3`) and push that commit to `main`. Each release includes a commit-based
+`0.7.4`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

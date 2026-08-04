@@ -19,12 +19,26 @@ end
 function love.load()
   local entryPath = os.getenv("GEN1_UI_MAIN")
   check(entryPath and entryPath ~= "", "GEN1_UI_MAIN is required")
+  local assetRoot = entryPath:gsub("[\\/]main%.lua$", "assets")
+  local mountedAssets = false
+  if love.filesystem.mount then
+    local mountOk, mountResult = pcall(love.filesystem.mount, assetRoot, "assets")
+    mountedAssets = mountOk and mountResult == true
+  end
+  if mountedAssets then
+    for _, name in ipairs({ "pixel_frame1.png", "pixel_frame2.png",
+        "pixel_frame3.png" }) do
+      check(love.filesystem.getInfo("assets/" .. name, "file"),
+        "mounted " .. name .. " is readable")
+    end
+  end
 
   local hooks = {}
   local eventListeners = {}
   local values = {}
   local savedPins = {}
   local schemas = {}
+  local modAssetLoads = 0
   local menuDraws = 0
   local menuClass = {
     draw = function() menuDraws = menuDraws + 1 end,
@@ -69,6 +83,12 @@ function love.load()
   package.loaded["src.ui.TitleState"] = titleClass
   package.loaded["src.pokemon.Stats"] = statsLibrary
   local mod = {
+    assets = {
+      image = function(_, relative)
+        modAssetLoads = modAssetLoads + 1
+        return love.graphics.newImage(relative)
+      end,
+    },
     hooks = {
       wrap = function(_, name, callback)
         hooks[name] = callback
@@ -116,11 +136,12 @@ function love.load()
   check(type(installer) == "function", "entry must return an installer")
   installer(mod)
 
-  local themeRow, frameStyleRow
+  local themeRow, frameStyleRow, frameScaleRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
       if row.key == "theme" then themeRow = row end
       if row.key == "frameStyle" then frameStyleRow = row end
+      if row.key == "frameScale" then frameScaleRow = row end
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
@@ -129,6 +150,11 @@ function love.load()
       and frameStyleRow.choices[4][2] == "plain"
       and frameStyleRow.default == "theme",
     "frame style exposes theme, pixel, soft, and plain treatments")
+  check(frameScaleRow and #frameScaleRow.choices == 4
+      and frameScaleRow.choices[1][2] == "1"
+      and frameScaleRow.choices[4][2] == "4"
+      and frameScaleRow.default == "2",
+    "pixel frame scale exposes whole-number 1X through 4X choices")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -753,6 +779,8 @@ function love.load()
     values.frameStyle = style
     renderHud({ bag }, "frame_" .. style, mobileLandscapeViewport)
   end
+  check(modAssetLoads > 0,
+    "theme-owned pixel frame loads through the mod asset helper")
   values.frameStyle = "theme"
   local opaqueBag = setmetatable({ screenId = "BagMenu", items = {}, index = 1,
     isOpaque = true }, { __index = listClass })

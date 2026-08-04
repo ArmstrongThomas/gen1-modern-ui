@@ -48,7 +48,8 @@ foreach ($file in (Get-ChildItem -LiteralPath $sourcePath -File -Recurse |
     Sort-Object FullName)) {
   $sourcePrefix = $sourcePath.TrimEnd([char[]]"\/")
   $relative = $file.FullName.Substring($sourcePrefix.Length + 1)
-  if ($relative -eq ".luarc.json" -or $file.Name -eq ".gitkeep") { continue }
+  if ($relative -eq ".luarc.json" -or $file.Name -eq ".gitkeep" -or
+      $file.Extension -eq ".aseprite") { continue }
   if (-not $seen.ContainsKey($relative)) {
     $ordered.Add($relative)
     $seen[$relative] = $true

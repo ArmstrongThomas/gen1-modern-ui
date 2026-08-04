@@ -6,7 +6,7 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.7.3 uses four released hooks plus a narrowly scoped class wrapper:
+Version 0.7.4 uses four released hooks plus a narrowly scoped class wrapper:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -304,20 +304,49 @@ Theme specs are merged with the built-in defaults. Supported token groups are
 semantic colors, typography sizes, spacing, corner radii, density, ornamental
 `frame` geometry, and presentation `metrics` (`border`, `divider`, `icon`, and
 `dialogueMinHeight`). A frame can be authored with `style` (`pixel`, `soft`, or
-`none`), `width`, `corner`, `inset`, `step`, and `shadow`; all numeric frame
-tokens are scaled with the active UI size. The presenter uses data only; theme
-mods cannot provide drawing callbacks. All other numeric geometry tokens are
+`none`), an optional `asset` PNG, nine-slice `slice` size, pixel-art
+`pixelScale` multiplier, source `pixelInset`, destination `width`, `corner`,
+`inset`, `margin`, `step`, and `shadow`. Numeric frame geometry follows the
+active UI size, while source `slice`, `pixelScale`, and `pixelInset` remain
+pixel-art tokens.
+Pixel assets are drawn as
+nine-slice borders with nearest-neighbor filtering, so their corners remain
+crisp while the top/bottom and left/right edge slices repeat along their
+respective axes instead of stretching. The `margin` keeps ornamental pixels
+outside the content container. The presenter uses data only; theme mods
+cannot provide drawing callbacks. All other numeric geometry tokens are
 adjusted by `uiScale` before the presenter measures content; typography tokens
 use `fontScale`.
+
+For asset-backed pixel frames, `pixelInset` describes the source pixels from
+the image's outer edge to the UI boundary. The renderer places the image edge
+that many scaled pixels outside the panel, rather than expanding by the whole
+transparent slice. This keeps an authored frame snug to the panel while
+preserving its deliberate outer decorative space.
+The panel surface is painted through the snapped UI rectangle, while the
+transparent image inset remains outside that rectangle for authored ornament.
+This keeps the content area solid without making the container as large as the
+entire PNG bounds.
+When the effective frame style is `pixel`, the presenter also suppresses
+rounded panel corners and separate top accent strips; the PNG owns that chrome.
+Themes may also provide `colors.health` with `track`, `high`, `medium`, `low`,
+and `critical` colors. Party, PC, and battle HP bars use those semantic tokens
+and keep their numeric HP labels visible so health is not communicated by
+color alone.
 
 For example:
 
 ```lua
 frame = {
   style = "pixel",
+  asset = "assets/pixel_frame1.png",
+  slice = 24,
+  pixelScale = 2,
+        pixelInset = 7,
   width = 3,
   corner = 12,
   inset = 2,
+  margin = 4,
   step = 4,
   shadow = 2,
 },
@@ -338,6 +367,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.3 targets released game
+- Do not assume a custom engine build: version 0.7.4 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

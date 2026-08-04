@@ -284,10 +284,23 @@ end
 
 Themes may override semantic colors, typography sizes, spacing, radii, density,
 and the ornamental `frame` group. Frame tokens include `style` (`pixel`, `soft`,
-or `none`), `width`, `corner`, `inset`, `step`, and `shadow`; numeric frame
-geometry follows UI scaling. The **UI FRAME STYLE** option can select the theme's
-frame, a built-in pixel or soft treatment, or a plain panel. Drawing callbacks
-are intentionally not part of the theme contract.
+or `none`), an optional nine-slice `asset` PNG, `slice`, integer `pixelScale`,
+source `pixelInset`, `width`, `corner`, `inset`, `margin`, `step`, and
+`shadow`; destination frame geometry follows UI scaling except for the source
+`slice`, `pixelScale`, and `pixelInset` tokens. `pixelInset` is the source-pixel distance from the outer image edge to
+the UI boundary; the image edge is placed that many scaled pixels outside the
+panel. Pixel
+assets use nearest-neighbor filtering, keep their corners crisp while repeating
+their top/bottom and left/right edge slices along their respective axes, and
+`margin` keeps decorative pixels outside the content container. The **UI FRAME
+STYLE** option can select the theme's frame,
+a built-in pixel or soft treatment, or a plain panel; **PIXEL FRAME** selects
+one of the three shipped PNG borders, while **PIXEL FRAME SCALE** selects a
+1X–4X multiplier for authored pixel frames. Drawing callbacks are
+intentionally not part of the theme contract.
+Themes can also provide `colors.health` tokens for `track`, `high`, `medium`,
+`low`, and `critical`; Party, PC, and battle presenters use them for HP bars
+while keeping numeric HP labels visible.
 
 The built-in options expose the selected theme and row density in the mod
 options menu. Theme IDs other than `default` must be namespaced with the

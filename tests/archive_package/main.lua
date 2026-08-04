@@ -37,6 +37,11 @@ function love.load()
     "manifest id is missing or unreadable")
   check(love.filesystem.getInfo(mount .. "/main.lua", "file"),
     "main.lua is not a readable root file")
+  for _, name in ipairs({ "pixel_frame1.png", "pixel_frame2.png",
+      "pixel_frame3.png" }) do
+    check(love.filesystem.getInfo(mount .. "/assets/" .. name, "file"),
+      name .. " is missing from the archive")
+  end
 
   love.filesystem.unmount(staged)
   love.filesystem.remove(staged)

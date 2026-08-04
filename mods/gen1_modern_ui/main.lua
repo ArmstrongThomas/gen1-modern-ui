@@ -25,12 +25,23 @@ local DEFAULT_THEME = {
     textMuted = { 0.62, 0.70, 0.82, 1 },
     onAccent = { 0.02, 0.05, 0.09, 1 },
     divider = { 0.25, 0.34, 0.50, 0.90 },
+    -- Health states intentionally use teal/gold/orange/purple rather than
+    -- the usual green/yellow/red ramp. The adjacent numeric HP label remains
+    -- the authoritative, non-color status cue.
+    health = {
+      track = { 0.16, 0.22, 0.30, 1 },
+      high = { 0.18, 0.78, 0.72, 1 },
+      medium = { 0.96, 0.72, 0.24, 1 },
+      low = { 0.98, 0.47, 0.22, 1 },
+      critical = { 0.82, 0.40, 0.94, 1 },
+    },
   },
   typography = { title = 24, body = 17, caption = 13 },
   spacing = { xs = 5, sm = 9, md = 13, lg = 18, xl = 26 },
   radii = { sm = 8, md = 16, lg = 22 },
-  frame = { style = "pixel", width = 3, corner = 12, inset = 2,
-    step = 4, shadow = 2 },
+  frame = { style = "pixel", asset = "assets/pixel_frame1.png", slice = 24,
+    pixelScale = 2, pixelInset = 7, width = 3, corner = 12, inset = 2,
+    margin = 4, step = 4, shadow = 2 },
   density = { rowHeight = 54, panelMax = 780 },
   -- Metrics are presentation tokens rather than engine pixels.  The
   -- effective UI scale resolver below adjusts these before any presenter
@@ -68,6 +79,13 @@ local BUILTIN_THEMES = {
       textMuted = { 0.30, 0.31, 0.27, 1 },
       onAccent = { 0.98, 0.98, 0.93, 1 },
       divider = { 0.48, 0.49, 0.43, 0.82 },
+      health = {
+        track = { 0.80, 0.80, 0.72, 1 },
+        high = { 0.02, 0.38, 0.36, 1 },
+        medium = { 0.56, 0.32, 0.02, 1 },
+        low = { 0.66, 0.20, 0.04, 1 },
+        critical = { 0.36, 0.08, 0.48, 1 },
+      },
     },
     radii = { sm = 2, md = 4, lg = 6 },
   },
@@ -84,6 +102,13 @@ local BUILTIN_THEMES = {
       textMuted = { 0.20, 0.28, 0.17, 1 },
       onAccent = { 0.90, 0.95, 0.72, 1 },
       divider = { 0.34, 0.44, 0.29, 0.90 },
+      health = {
+        track = { 0.76, 0.81, 0.62, 1 },
+        high = { 0.02, 0.38, 0.36, 1 },
+        medium = { 0.56, 0.32, 0.02, 1 },
+        low = { 0.66, 0.20, 0.04, 1 },
+        critical = { 0.36, 0.08, 0.48, 1 },
+      },
     },
     radii = { sm = 2, md = 5, lg = 8 },
   },
@@ -130,6 +155,13 @@ local BUILTIN_THEMES = {
       textMuted = { 0.28, 0.35, 0.45, 1 },
       onAccent = { 0.98, 1.00, 1.00, 1 },
       divider = { 0.58, 0.68, 0.80, 0.82 },
+      health = {
+        track = { 0.86, 0.90, 0.95, 1 },
+        high = { 0.02, 0.38, 0.36, 1 },
+        medium = { 0.56, 0.32, 0.02, 1 },
+        low = { 0.66, 0.20, 0.04, 1 },
+        critical = { 0.36, 0.08, 0.48, 1 },
+      },
     },
   },
 }
@@ -559,7 +591,10 @@ local function scaledTheme(theme, uiScale, fontScale, cache)
     if type(value) == "number" then out.radii[name] = value * uiScale end
   end
   for name, value in pairs(out.frame) do
-    if type(value) == "number" then out.frame[name] = value * uiScale end
+    if type(value) == "number" and name ~= "pixelScale" and
+        name ~= "pixelInset" and name ~= "pixelBorder" and name ~= "slice" then
+      out.frame[name] = value * uiScale
+    end
   end
   if type(out.density.rowHeight) == "number" then
     out.density.rowHeight = out.density.rowHeight * uiScale
@@ -596,7 +631,10 @@ local function responsiveTheme(theme, viewport, cache)
   for key, value in pairs(out.spacing) do out.spacing[key] = value * scale end
   for key, value in pairs(out.radii) do out.radii[key] = value * scale end
   for key, value in pairs(out.frame) do
-    if type(value) == "number" then out.frame[key] = value * scale end
+    if type(value) == "number" and key ~= "pixelScale" and
+        key ~= "pixelInset" and key ~= "pixelBorder" and key ~= "slice" then
+      out.frame[key] = value * scale
+    end
   end
   out.density.rowHeight = out.density.rowHeight * scale
   for key, value in pairs(out.metrics) do out.metrics[key] = value * scale end
@@ -648,6 +686,7 @@ return function(mod)
   local responsiveThemeCache = setmetatable({}, { __mode = "k" })
   local dialogueThemeCache = setmetatable({}, { __mode = "k" })
   local imageCache = {}
+  local modAssetCache = {}
   local utf8Library
   local glyphFont = mod.ui and mod.ui.Font
   local filteredImages = setmetatable({}, { __mode = "k" })
@@ -664,6 +703,31 @@ return function(mod)
     end
     filteredImages[image] = true
     return image
+  end
+
+  -- A mod's files are mounted under its private virtual root.  A plain
+  -- love.graphics.newImage("assets/foo.png") lookup only sees the game's
+  -- global read path, so it cannot resolve art shipped beside this entry
+  -- point after the mod has been imported.  Prefer the loader-provided asset
+  -- helper for theme-owned files, while retaining the ordinary image lookup
+  -- for engine and third-party paths.
+  local function modAssetImage(relative)
+    if type(relative) ~= "string" or relative == "" or not mod.assets or
+        type(mod.assets.image) ~= "function" then
+      return nil
+    end
+    if modAssetCache[relative] == false then return nil end
+    if modAssetCache[relative] then return modAssetCache[relative] end
+    local ok, image = pcall(function()
+      return mod.assets:image(relative)
+    end)
+    if ok and image then
+      image = prepareImage(image)
+      modAssetCache[relative] = image
+      return image
+    end
+    modAssetCache[relative] = false
+    return nil
   end
 
   local function markAnimated(image, options)
@@ -790,6 +854,12 @@ return function(mod)
     return nil
   end
 
+  local function themeAssetFor(value)
+    local image = imageFor(value)
+    if image then return image end
+    return modAssetImage(value)
+  end
+
   -- PokePCFollowers registers its 6-frame overworld sheets as `frames = 1`
   -- because the engine's icon registry expects one image descriptor.  The
   -- resulting 16x96 sheet must still be cropped to one 16px frame or it
@@ -881,11 +951,17 @@ return function(mod)
     local fontScale = fontPercent / 100
     local density = safeText(option("density", "auto"))
     local frameStyle = safeText(option("frameStyle", "theme"))
+    local frameAsset = safeText(option("frameAsset", "1"))
+    if frameAsset ~= "1" and frameAsset ~= "2" and frameAsset ~= "3" then
+      frameAsset = "1"
+    end
+    local frameScale = clamp(math.floor(
+      tonumber(option("frameScale", 2)) or 2), 1, 4)
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
     local key = ("%.3f:%.3f:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
       uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
-      frameStyle,
+      frameStyle .. ":" .. frameAsset .. ":" .. frameScale,
       panelOpacity, foregroundOpacity)
     local bucket = themePresentationCache[base]
     if not bucket then
@@ -899,10 +975,19 @@ return function(mod)
     theme.scale = copy(theme.scale or {})
     theme.scale.auto = uiAuto or fontAuto
     theme.frame = copy(theme.frame or {})
+    theme.frame.asset = "assets/pixel_frame" .. frameAsset .. ".png"
+    theme.frame.pixelScale = frameScale
     if frameStyle == "pixel" or frameStyle == "soft" then
       theme.frame.style = frameStyle
     elseif frameStyle == "plain" then
       theme.frame.style = "none"
+    end
+    if theme.frame.style == "pixel" then
+      -- Pixel frames carry their own corners and edge treatment. Do not
+      -- combine them with rounded theme chrome or a separate accent strip.
+      theme.radii.sm = 0
+      theme.radii.md = 0
+      theme.radii.lg = 0
     end
     theme.colors = copy(base.colors)
     for _, key in ipairs({ "backdrop", "surface", "surfaceRaised", "selected" }) do
@@ -1004,6 +1089,14 @@ return function(mod)
       description = "Choose the panel border treatment. THEME uses the active theme's authored frame.",
       choices = { { "THEME", "theme" }, { "PIXEL", "pixel" },
                   { "SOFT", "soft" }, { "PLAIN", "plain" } }, default = "theme" },
+    { key = "frameAsset", label = "PIXEL FRAME", type = "choice",
+      description = "Choose the authored PNG used when PIXEL framing is active.",
+      choices = { { "FRAME 1", "1" }, { "FRAME 2", "2" },
+                  { "FRAME 3", "3" } }, default = "1" },
+    { key = "frameScale", label = "PIXEL FRAME SCALE", type = "choice",
+      description = "Scale PNG pixel frames by a whole-number multiplier so their authored pixels remain visible.",
+      choices = { { "1X", "1" }, { "2X", "2" }, { "3X", "3" },
+                  { "4X", "4" } }, default = "2" },
     { key = "density", label = "UI DENSITY", type = "choice",
       description = "Adjust the spacing and row height used by modern panels.",
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
@@ -1441,6 +1534,17 @@ return function(mod)
       return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %s."):format(
         label)
     end
+    if id == "frameScale" then
+      local value = clamp(math.floor(tonumber(option("frameScale", 2)) or 2), 1, 4)
+      return ("Scale PNG pixel-frame artwork by %dX using nearest-neighbor sampling. Current setting: %dX."):format(
+        value, value)
+    end
+    if id == "frameAsset" then
+      local value = safeText(option("frameAsset", "1"))
+      if value ~= "1" and value ~= "2" and value ~= "3" then value = "1" end
+      return ("Choose the authored pixel-frame border. Current frame: %s."):format(
+        value)
+    end
     if id == "fontScale" then
       local percent, auto = resolvedScalePercent(option("fontScale", 100),
         nil, 80, 200)
@@ -1475,7 +1579,9 @@ return function(mod)
       description = "Compatibility and reset controls." },
   }
   local OPTION_CATEGORY_BY_KEY = {
-    theme = "appearance", frameStyle = "appearance", density = "appearance", layoutStyle = "appearance",
+    theme = "appearance", frameStyle = "appearance", frameAsset = "appearance",
+    frameScale = "appearance",
+    density = "appearance", layoutStyle = "appearance",
     uiScale = "appearance", fontScale = "appearance", dialogueTextScale = "appearance",
     panelOpacity = "appearance", foregroundOpacity = "appearance",
     minimalUi = "appearance", hideOriginalUi = "appearance",
@@ -2444,7 +2550,7 @@ return function(mod)
     }
   end
 
-  local function drawPanelFrame(theme, x, y, w, h, radius)
+  local function drawPanelFrame(theme, x, y, w, h, radius, fillColor)
     local frame = theme.frame or {}
     local style = frame.style or "pixel"
     if style == "none" then return end
@@ -2452,13 +2558,128 @@ return function(mod)
     local width = math.max(1, tonumber(frame.width) or
       themeMetric(theme, "border", 3))
     local inset = math.max(0, tonumber(frame.inset) or 0)
+    local margin = math.max(0, tonumber(frame.margin) or 0)
     local shadow = math.max(0, tonumber(frame.shadow) or 0)
     local lineRadius = style == "soft" and (radius or theme.radii.md) or 0
-    local fx, fy = x + inset, y + inset
-    local fw, fh = math.max(1, w - inset * 2), math.max(1, h - inset * 2)
+    local fx, fy = x - margin + inset, y - margin + inset
+    local fw = math.max(1, w + margin * 2 - inset * 2)
+    local fh = math.max(1, h + margin * 2 - inset * 2)
     local frameColor = colors.frame or colors.accent
     local shadowColor = colors.frameShadow or colors.divider
 
+    setColor(frameColor)
+    love.graphics.setLineWidth(width)
+    local asset = style == "pixel" and frame.asset and themeAssetFor(frame.asset)
+    if asset then
+      local iw, ih = imageMetrics(asset)
+      if iw and ih then
+      -- Pixel artwork must meet integer pixel edges. Presenter layout is
+      -- intentionally allowed to use fractional coordinates for centering,
+      -- but rounding each side independently during nine-slice placement can
+      -- leave a one-pixel seam on the right or bottom edge. Snap the panel
+      -- edges once, then derive every frame dimension from that same rect.
+      local snap = function(value) return math.floor(value + 0.5) end
+      local panelX, panelY = snap(x), snap(y)
+      local panelRight, panelBottom = snap(x + w), snap(y + h)
+      local panelW = math.max(1, panelRight - panelX)
+      local panelH = math.max(1, panelBottom - panelY)
+      local sourceSlice = math.max(1, math.min(
+        tonumber(frame.slice) or 24, math.min(iw or 1, ih or 1) / 2))
+      local destinationCorner = math.max(1, math.min(
+        tonumber(frame.corner) or sourceSlice, math.min(panelW, panelH) / 2))
+      local pixelScale = tonumber(frame.pixelScale)
+      if pixelScale then
+        pixelScale = clamp(math.floor(pixelScale), 1, 4)
+        destinationCorner = math.min(sourceSlice * pixelScale,
+          math.min(panelW, panelH) / 2)
+        destinationCorner = math.max(1, snap(destinationCorner))
+      end
+      local edgeScale = destinationCorner / sourceSlice
+      -- The frame image reserves a seven-source-pixel outer inset by
+      -- contract. Expand by that inset rather than the whole slice, so the
+      -- image edge sits just outside the UI while its authored border lands
+      -- snugly at the panel boundary. Keep the old pixelBorder spelling as a
+      -- harmless compatibility alias for early unreleased theme experiments.
+      local sourceInset = math.max(0, math.min(
+        tonumber(frame.pixelInset) or tonumber(frame.pixelBorder) or 7,
+        sourceSlice))
+      local frameMargin = snap(sourceInset * edgeScale)
+      local assetFx, assetFy = panelX - frameMargin, panelY - frameMargin
+      local assetFw = math.max(1, panelW + frameMargin * 2)
+      local assetFh = math.max(1, panelH + frameMargin * 2)
+      -- Keep the authored transparent inset outside the UI surface. The
+      -- panel itself is already snapped to the visible content boundary; if
+      -- we fill the full image bounds here, the transparent outer ornament
+      -- becomes a visibly oversized container on the right and bottom.
+      setColor(fillColor or colors.surface)
+      love.graphics.rectangle("fill", panelX, panelY, panelW, panelH)
+      -- Asset-backed pixel frames own their shadow/edge treatment. A second
+      -- shifted rectangle would necessarily protrude only on the right and
+      -- bottom, making the container look asymmetrical.
+      local function drawSlice(sx, sy, sw, sh, dx, dy, dw, dh)
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 then return end
+        local ok, quad = pcall(love.graphics.newQuad, sx, sy, sw, sh, iw, ih)
+        if not ok or not quad then return end
+        love.graphics.draw(asset, quad, dx, dy, 0, dw / sw, dh / sh)
+      end
+      local function drawTiledX(sx, sy, sw, sh, dx, dy, dw, dh)
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScale <= 0 then return end
+        local tileWidth = sw * edgeScale
+        local offset = 0
+        while offset < dw - 0.001 do
+          local drawWidth = math.min(tileWidth, dw - offset)
+          local sourceWidth = math.min(sw, drawWidth / edgeScale)
+          drawSlice(sx, sy, sourceWidth, sh, dx + offset, dy,
+            drawWidth, dh)
+          offset = offset + drawWidth
+        end
+      end
+      local function drawTiledY(sx, sy, sw, sh, dx, dy, dw, dh)
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScale <= 0 then return end
+        local tileHeight = sh * edgeScale
+        local offset = 0
+        while offset < dh - 0.001 do
+          local drawHeight = math.min(tileHeight, dh - offset)
+          local sourceHeight = math.min(sh, drawHeight / edgeScale)
+          drawSlice(sx, sy, sw, sourceHeight, dx, dy + offset,
+            dw, drawHeight)
+          offset = offset + drawHeight
+        end
+      end
+      local centerSourceW, centerSourceH = iw - sourceSlice * 2,
+        ih - sourceSlice * 2
+      local centerDestW, centerDestH = assetFw - destinationCorner * 2,
+        assetFh - destinationCorner * 2
+      setColor({ 1, 1, 1, 1 })
+      drawSlice(0, 0, sourceSlice, sourceSlice,
+        assetFx, assetFy, destinationCorner, destinationCorner)
+      drawTiledX(sourceSlice, 0, centerSourceW, sourceSlice,
+        assetFx + destinationCorner, assetFy, centerDestW, destinationCorner)
+      drawSlice(iw - sourceSlice, 0, sourceSlice, sourceSlice,
+        assetFx + assetFw - destinationCorner, assetFy,
+        destinationCorner, destinationCorner)
+      drawTiledY(0, sourceSlice, sourceSlice, centerSourceH,
+        assetFx, assetFy + destinationCorner, destinationCorner, centerDestH)
+      drawSlice(sourceSlice, sourceSlice, centerSourceW, centerSourceH,
+        assetFx + destinationCorner, assetFy + destinationCorner,
+        centerDestW, centerDestH)
+      drawTiledY(iw - sourceSlice, sourceSlice, sourceSlice, centerSourceH,
+        assetFx + assetFw - destinationCorner, assetFy + destinationCorner,
+        destinationCorner, centerDestH)
+      drawSlice(0, ih - sourceSlice, sourceSlice, sourceSlice,
+        assetFx, assetFy + assetFh - destinationCorner,
+        destinationCorner, destinationCorner)
+      drawTiledX(sourceSlice, ih - sourceSlice, centerSourceW, sourceSlice,
+        assetFx + destinationCorner, assetFy + assetFh - destinationCorner,
+        centerDestW, destinationCorner)
+      drawSlice(iw - sourceSlice, ih - sourceSlice, sourceSlice, sourceSlice,
+        assetFx + assetFw - destinationCorner,
+        assetFy + assetFh - destinationCorner,
+        destinationCorner, destinationCorner)
+      love.graphics.setLineWidth(1)
+      return
+      end
+    end
     if shadow > 0 then
       setColor(shadowColor)
       love.graphics.setLineWidth(width)
@@ -2466,7 +2687,6 @@ return function(mod)
         math.max(1, fw), math.max(1, fh), lineRadius)
     end
     setColor(frameColor)
-    love.graphics.setLineWidth(width)
     love.graphics.rectangle("line", fx, fy, fw, fh, lineRadius)
     love.graphics.setLineWidth(1)
 
@@ -2488,16 +2708,21 @@ return function(mod)
       fy + fh - mark + width * 0.5, -1, -1)
   end
 
-  local function drawHeader(theme, layout, title)
+  local function drawPanelAccent(theme, x, y, w, radius, height)
+    if theme.frame and theme.frame.style == "pixel" then return end
+    setColor(theme.colors.accent)
+    love.graphics.rectangle("fill", x, y, w, height or
+      themeMetric(theme, "border", 4), radius, radius, 0, 0)
+  end
+
+  local function drawHeader(theme, layout, title, fillColor)
     if layout.h then
-      drawPanelFrame(theme, layout.x, layout.y, layout.w, layout.h, layout.radius)
+      drawPanelFrame(theme, layout.x, layout.y, layout.w, layout.h,
+        layout.radius, fillColor)
     end
     if safeText(title) == "" then return end
     local colors = theme.colors
-    setColor(colors.accent)
-    love.graphics.rectangle("fill", layout.x, layout.y, layout.w,
-      themeMetric(theme, "border", 4),
-      layout.radius, layout.radius, 0, 0)
+    drawPanelAccent(theme, layout.x, layout.y, layout.w, layout.radius)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     setColor(colors.text)
     love.graphics.print(truncate(title, layout.w - theme.spacing.lg * 2),
@@ -2810,10 +3035,7 @@ return function(mod)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
-    setColor(colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW,
-      themeMetric(theme, "border", 4),
-      theme.radii.md, theme.radii.md, 0, 0)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.md)
 
     local body = font(fontCache, theme.typography.body)
     love.graphics.setFont(body)
@@ -2967,10 +3189,7 @@ return function(mod)
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", mx, my, modalW,
-      themeMetric(theme, "border", 4),
-      theme.radii.lg or 20, theme.radii.lg or 20, 0, 0)
+    drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
     love.graphics.setFont(font(fontCache, theme.typography.body))
     for i, line in ipairs(lines) do
       setColor(theme.colors.text)
@@ -3024,10 +3243,7 @@ return function(mod)
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", mx, my, modalW,
-      themeMetric(theme, "border", 4),
-      theme.radii.lg or 20, theme.radii.lg or 20, 0, 0)
+    drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
     love.graphics.setFont(titleFont)
     setColor(theme.colors.text)
     love.graphics.print(truncate(title, modalW - spacing.lg * 2),
@@ -3173,8 +3389,7 @@ return function(mod)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText(name, px + spacing.lg, py + spacing.md,
@@ -3614,15 +3829,32 @@ return function(mod)
     return rows
   end
 
+  local function healthPalette(theme)
+    local colors = theme.colors or {}
+    local health = colors.health or {}
+    return {
+      track = health.track or colors.divider or colors.backdrop,
+      high = health.high or { 0.18, 0.78, 0.72, 1 },
+      medium = health.medium or { 0.96, 0.72, 0.24, 1 },
+      low = health.low or { 0.98, 0.47, 0.22, 1 },
+      critical = health.critical or { 0.82, 0.40, 0.94, 1 },
+    }
+  end
+
+  local function healthFillColor(theme, ratio)
+    local palette = healthPalette(theme)
+    if ratio <= 0.05 then return palette.critical end
+    if ratio <= 0.20 then return palette.low end
+    if ratio <= 0.50 then return palette.medium end
+    return palette.high
+  end
+
   local function drawHPBar(theme, x, y, w, hp, maxHP)
     maxHP = math.max(1, tonumber(maxHP) or 1)
     local ratio = clamp((tonumber(hp) or 0) / maxHP, 0, 1)
-    setColor(theme.colors.divider)
+    setColor(healthPalette(theme).track)
     love.graphics.rectangle("fill", x, y, w, 8, 4)
-    local color = ratio <= 0.20 and { 0.92, 0.24, 0.28, 1 }
-      or ratio <= 0.50 and { 0.96, 0.72, 0.20, 1 }
-      or { 0.24, 0.78, 0.46, 1 }
-    setColor(color)
+    setColor(healthFillColor(theme, ratio))
     love.graphics.rectangle("fill", x, y, math.max(0, w * ratio), 8, 4)
   end
 
@@ -3827,7 +4059,7 @@ return function(mod)
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", ax, ay, actionW, actionH, theme.radii.md)
       drawHeader(theme, { x = ax, y = ay, w = actionW, h = actionH, radius = theme.radii.md },
-        Strings("POKéMON ACTIONS"))
+        Strings("POKéMON ACTIONS"), colors.surfaceRaised)
       local actionVisible = math.max(1, math.min(#actionRows,
         math.floor((actionH - actionHeader) / actionRowH)))
       local actionSelected = clamp(state.subIndex or 1, 1,
@@ -4527,8 +4759,7 @@ return function(mod)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     love.graphics.print(title, px + spacing.lg, py + spacing.md)
@@ -4697,8 +4928,7 @@ return function(mod)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText(title, px + spacing.lg, py + spacing.md,
@@ -4830,13 +5060,11 @@ return function(mod)
   end
 
   local function drawBattleBar(theme, x, y, w, h, hp, maxHP)
-    setColor(theme.colors.backdrop)
+    setColor(healthPalette(theme).track)
     love.graphics.rectangle("fill", x, y, w, h, h / 2)
     local ratio = clamp(hp / math.max(1, maxHP), 0, 1)
     if ratio > 0 then
-      setColor(ratio <= 0.25 and { 0.92, 0.30, 0.28, 1 }
-        or ratio <= 0.5 and { 0.96, 0.72, 0.24, 1 }
-        or { 0.28, 0.82, 0.48, 1 })
+      setColor(healthFillColor(theme, ratio))
       love.graphics.rectangle("fill", x, y, w * ratio, h, h / 2)
     end
   end
@@ -5037,8 +5265,7 @@ return function(mod)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    setColor(theme.colors.accent)
-    love.graphics.rectangle("fill", px, py, panelW, 4, theme.radii.lg, theme.radii.lg, 0, 0)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     love.graphics.print(state.kind == "trainer" and "TRAINER BATTLE" or "BATTLE",
