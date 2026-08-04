@@ -52,19 +52,40 @@ jobs:
         env:
           ASSET: ${{ steps.metadata.outputs.asset }}
         run: |
-          (cd mods/gen1_modern_ui && zip -9 -r "../../$ASSET" .)
           python - <<'PY'
           import json
           import os
           import zipfile
+          from pathlib import Path
 
           asset = os.environ["ASSET"]
+          source = Path("mods/gen1_modern_ui")
+          preferred = ["manifest.json", "main.lua", "README.md"]
+          paths = [source / name for name in preferred if (source / name).is_file()]
+          included = {path.relative_to(source).as_posix() for path in paths}
+          for path in sorted(source.rglob("*")):
+              if not path.is_file() or path.name == ".gitkeep":
+                  continue
+              relative = path.relative_to(source).as_posix()
+              if relative == ".luarc.json" or relative in included:
+                  continue
+              paths.append(path)
+              included.add(relative)
+          with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED,
+                               compresslevel=9) as archive:
+              for path in paths:
+                  archive.write(path, path.relative_to(source).as_posix())
           with zipfile.ZipFile(asset) as archive:
-              names = set(archive.namelist())
+              ordered_names = archive.namelist()
+              names = set(ordered_names)
               required = {"manifest.json", "main.lua"}
               missing = required - names
               if missing:
                   raise SystemExit(f"archive is missing: {sorted(missing)}")
+              if ordered_names[0] != "manifest.json":
+                  raise SystemExit("manifest.json must be the first root entry")
+              if any("\\" in name for name in ordered_names):
+                  raise SystemExit("archive contains a Windows-style entry")
               manifest = json.loads(archive.read("manifest.json"))
               expected = os.environ["ASSET"][len("gen1_modern_ui-"):-len(".zip")]
               if manifest.get("version") != expected:
@@ -94,6 +115,7 @@ jobs:
           ASSET: ${{ steps.metadata.outputs.asset }}
           VERSION: ${{ steps.metadata.outputs.version }}
         run: |
+          NOTES_FILE="docs/releases/v$VERSION.md"
           PREVIOUS_TAG="$(git tag --sort=-version:refname \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | grep -v -Fx "$TAG" \
@@ -107,7 +129,11 @@ jobs:
             CHANGELOG="- Initial release."
           fi
           SHA256="$(sha256sum "$ASSET" | cut -d ' ' -f 1)"
-          cat > release-notes.md <<EOF
+          if [ -f "$NOTES_FILE" ]; then
+            cp "$NOTES_FILE" release-notes.md
+            printf '\n\n**SHA-256:** `%s`\n' "$SHA256" >> release-notes.md
+          else
+            cat > release-notes.md <<EOF
           # Gen1 Modern UI v$VERSION
 
           High-resolution, themeable menu presentation for released gen1recomp builds.
@@ -130,14 +156,20 @@ jobs:
 
           - Requires gen1recomp v0.1.51 or newer (and remains compatible with 1.x).
           - Keeps vanilla input/state ownership and reads live rows from other mods.
+          - Presents complete compatible dialogue/action/quantity stacks without replacing callbacks.
+          - Includes responsive title/Start, Trainer Card, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC views.
+          - Shows Pokémon stats/moves, Trainer ID, and BASE/SELL item values including TMs.
+          - Adds a presentation-only MINIMAL UI mode for closer-to-original layouts.
+          - Uses desktop-only floating cards while retaining mobile-focused layouts.
           - Hides supported classic UI canvases while preserving the independently rendered world.
           - **HIDE ORIGINAL UI** can restore the classic layer as a compatibility fallback.
           - Includes classic and modern themes in opaque and glass variants.
           - Supports active sprite replacement packs and nearest-neighbor artwork.
           - Battle UI remains WIP and disabled by default.
 
-          **SHA-256:** `$SHA256`
+          **SHA-256:** $SHA256
           EOF
+          fi
 
       - name: Create GitHub release
         env:

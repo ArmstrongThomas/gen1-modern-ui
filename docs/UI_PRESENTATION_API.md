@@ -6,22 +6,30 @@ or own input.
 
 ## Frame hook sequence
 
-Version 0.4.0 uses three released hooks in order:
+Version 0.5.0 uses four released hooks:
 
-1. `render.zones` caches the live `Game` reference for the current frame. This
+1. `ui.state.decorate` identifies only the ordinary Menu opened directly over
+   released `TitleState`. While its complete stack is supported, the decorator
+   skips that Menu's classic draw so the shared title-art canvas can remain
+   intact. It never replaces update/input/callback behavior, and restores the
+   original draw whenever an unknown overlay is visible.
+
+2. `render.zones` caches the live `Game` reference for the current frame. This
    is needed because `render.compose` receives a renderer/context, not `Game`.
-2. `render.compose` checks that frame's top state and options. It first calls
-   `next(renderer, ctx)`, allowing lower-priority compositor mods to inspect or
-   take over the untouched canvases. When the result is not `true`, **HIDE
-   ORIGINAL UI** is on, and a supported presenter owns the whole visible UI
-   layer, it clears only `ctx.uiCanvas` to transparent. It does not clear or
-   replace the world canvas. Nested transparent modals and custom capture
-   prompts retain the classic canvas until a stack-aware presenter exists.
-   Returning the unclaimed result (`false`) lets the engine perform its normal
-   composition, scaling, zones, fades, post-processing, and display effects.
-3. `render.hud` calls `next(game, viewport)` once, refreshes the live Game
-   reference, and draws the modern UI over the composed frame. The engine draws
-   `TouchControls` after this hook, keeping mobile controls visible and active.
+3. `render.compose` snapshots every drawing state from the visible stack base
+   through the top. It first calls `next(renderer, ctx)`, allowing
+   lower-priority compositor mods to inspect or take over the untouched
+   canvases. When the result is not `true`, **HIDE ORIGINAL UI** is on, and
+   every visible drawing state has an enabled presenter, it clears only
+   `ctx.uiCanvas` to transparent. It does not clear or replace the world
+   canvas. An unknown/custom draw, capture prompt, or incomplete presenter
+   chain retains the complete classic slice. Returning the unclaimed result
+   (`false`) lets the engine perform its normal composition, scaling, zones,
+   fades, post-processing, and display effects.
+4. `render.hud` calls `next(game, viewport)` once, refreshes the live Game
+   reference, and draws the complete modern stack bottom-up over the composed
+   frame. The engine draws `TouchControls` after this hook, keeping mobile
+   controls visible and active.
 
 Conceptually, the released hooks are used like this:
 
@@ -52,16 +60,30 @@ the full `viewport.width`/`viewport.height`; it does not need to stay inside the
 above the live virtual controls when they are visible; the game viewport and
 input coordinates are never changed.
 
-The suppression guard is deliberately conservative. If **HIDE ORIGINAL UI**
-is off, no supported/enabled presenter owns the visible UI stack, a custom
-capture prompt is active, or the graphics/context/UI canvas is unavailable,
-the original `ctx.uiCanvas` is left untouched. An unsupported, nested, or
-disabled presenter therefore cannot blank required classic context. Unknown
-instance-level `draw` replacements also retain the classic canvas; the audited
-Modern Bag wrapper is an explicit exception because its live pocket title and
-rows are already represented.
+The presenter marks viewports with visible virtual controls before layout.
+With `desktopFloating` enabled, non-mobile viewports without that marker leave
+the area outside modern cards transparent; the Start Menu docks to an inset
+right-side card. Android/iOS and touch-visible viewports retain the larger
+centered/full-backdrop presentation. This changes only HUD drawing, never the
+engine viewport or input coordinates.
 
-These hooks must remain observational. Do not replace `game.stack` states,
+The suppression guard is deliberately conservative. If **HIDE ORIGINAL UI**
+is off, any visible drawing state lacks a supported/enabled presenter, a custom
+capture prompt is active, or the graphics/context/UI canvas is unavailable,
+the original `ctx.uiCanvas` is left untouched. A complete recognized modal
+chain can be modernized together; an incomplete chain cannot blank required
+classic context. Unknown instance- or class-level `draw` replacements also
+retain the classic canvas. The audited Modern Bag, Useful Dex entry, and Gen 3
+Box adapters are explicit structural exceptions because their live models are
+already represented. Released Bill's-PC screens require their verified root in
+the full stack. Active overworld-owned UI such as the Pikachu portrait or
+poison flash likewise keeps the classic canvas. Additive wrappers around the
+released singleton's raw `drawUI` method are allowed so Quality-of-Life
+location banners and similar overlays do not disable Start/dialogue
+presentation; a replaced world `draw` or foreign overworld still falls back to
+classic.
+
+These hooks must remain presentation-only. Do not replace `game.stack` states,
 mutate another mod's menu arrays, or invoke menu callbacks from a draw hook.
 
 ### `render.compose` interoperability
@@ -79,26 +101,48 @@ canvas still contains the original UI.
 The current presenter recognizes these released classes or screen IDs:
 
 - `Menu` and `ListMenu`: reads `state.items`, `state.index`, and `state.scroll`.
-- `ChoiceBox`: reads the current choice index.
+- `TextBox`: reads live pages, page/line/glyph progress, waiting, and done state
+  to reproduce only text the engine has already revealed.
+- `ChoiceBox`: reads the current choice index and pending state.
 - `QuantityBox`: reads quantity, maximum, and optional unit price.
 - `OptionsMenu`: reads `state.rows` and current selection.
-- `PartyMenu`: reads the live party and selected index.
+- `PartyMenu`: reads the live party, selected index, healing/swap/TM state,
+  current stats, moves/PP, and exact injected submenu rows. Class identity is
+  accepted for released direct callers that do not stamp a `screenId`.
 - `ManagerState`: reads live MODS/PROFILES/ERRORS, detail, options,
   permissions, and pending-apply rows.
 - `DexEntryMenu`: presents the data/stats/moves pages used by Useful Dex.
+- `TrainerCard`: reads the live player portrait, name, five-digit trainer ID,
+  money, play time, and runtime badge definitions.
+- `PokedexMenu`: reads the live list/filter rebuild, selection, seen/owned
+  status, and active selected-species artwork.
+- `BagMenu`: reads current rows, selection, swap markers, pockets, counts,
+  item/machine details, BASE/SELL values, and nested
+  action/quantity/confirmation layers.
+- Shop and Player-PC item lists: recognized by their released
+  `dialogue`/`money` or `messageBox` capabilities and rendered with their live
+  money/message and item rows.
+- Released Bill's PC: requires the structural `screenId="BoxMenu"` root in the
+  full stack, then resolves deposit/withdraw rows through their numeric payload
+  and release rows by live row position. The rich detail view is presentation
+  only; private action, Summary, TextBox, and Choice states retain ownership.
 - `Gen3Box`: presents the box/party grid from its public mode/cursor/save
   fields while the screen retains all movement and storage actions.
 - Battle-state-shaped screens: reads public `kind`, `phase`, `player`,
   `enemy`, move, and message fields for a responsive status/action overlay.
 - `SummaryMenu`: reads the selected Pokémon and summary page.
 
+The `minimalUi` option does not change these models. It selects a lower-detail
+presentation that keeps the same live rows, selection, prompts, and callbacks
+while omitting optional preview/detail panes.
+
 Rows are rebuilt from live state during each HUD pass. Preserve descriptor
 identity and unknown fields in any data you add, and use stable `id` fields for
 your own bookkeeping. Generic rows can optionally provide `image`, `icon`,
-`thumbnail`, `sprite`, or `asset` artwork. Any PC/Box or shop state implemented
-with a recognized generic `Menu`/`ListMenu` class may receive that generic list
-shell; rich content-specific metadata is not inferred. Unsupported or unknown
-screens remain vanilla.
+`thumbnail`, `sprite`, or `asset` artwork. Other PC/Box states implemented with
+a recognized generic `Menu`/`ListMenu` class may receive the generic list
+shell; rich content-specific metadata is not inferred without a stable
+contract. Unsupported or unknown screens remain vanilla.
 
 PokÃ©mon presenters resolve front artwork through the runtime's active
 `pokemon.sprite` seam, and party icons through `pokemon.icon`, when those
@@ -116,8 +160,9 @@ row or card.
 
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
-toggle is independent from the generic `menuUi`, `pokemonUi`, `managerUi`, and
-`spriteAnimation` toggles exposed by the mod options.
+toggle is independent from the `desktopFloating`, `dialogueUi`, generic
+`menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by
+the mod options.
 
 On portrait phones the presenter scales typography and row density modestly.
 Gen 3 Box cells remain square and reserve a caption strip for name/level text;
@@ -179,6 +224,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.4.0 targets released game
+- Do not assume a custom engine build: version 0.5.0 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

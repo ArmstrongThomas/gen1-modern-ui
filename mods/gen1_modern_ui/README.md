@@ -1,7 +1,7 @@
 # Gen1 Modern UI
 
-A lightweight `overhaul` mod for released gen1recomp builds. It uses the
-released `render.hud` hook to paint supported menus in high-resolution safe
+A lightweight `overhaul` mod for released gen1recomp builds. It uses released
+UI/render hooks to paint supported menus in high-resolution safe
 window space, so portrait phones, landscape tablets, desktop windows, and
 ultrawide displays can use their available room instead of being confined to
 the original 160x144 layout. It is visual-only: the game remains responsible
@@ -29,7 +29,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.4.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.5.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -39,30 +39,52 @@ custom engine checkout or a patched binary.
   not replace states or consume input.
 - Touch and click activation are intentionally deferred; the existing game
   touch controls and pointer behavior remain the source of truth.
-- The presenter reads the live top menu state after the classic frame. It does
-  not rebuild hook-provided descriptor tables or call callbacks directly.
+- The presenter reads the complete visible state stack after the classic
+  frame. It does not rebuild hook-provided descriptor tables or call callbacks
+  directly.
 - The presenter leaves unknown custom screens vanilla; explicit adapters are
   added only for screens with a stable public state contract.
 - The presenter decorates `Menu`, `ListMenu`, `ChoiceBox`, `QuantityBox`,
-  `OptionsMenu`, `PartyMenu`, `SummaryMenu`, and the released in-game
+  `TextBox`, `OptionsMenu`, `PartyMenu`, `SummaryMenu`, and the released in-game
   `ManagerState` mod-list/profile/error screens. The manager rows are read
   live, so newly installed mods and other authors' entries appear without a
   per-mod adapter. It also presents the public `DexEntryMenu` and `Gen3Box`
-  screen IDs used by Useful Dex and Gen 3 Box. PC/Box and shop screens that
-  use a generic `Menu`/`ListMenu` shell receive the generic list overlay;
-  content-specific metadata such as money, shop totals, or a third-party
-  custom drawing pipeline is not inferred. Battle states receive a separate
-  responsive status/action presenter. Stack-aware dialogue and attached
-  choice/quantity modals are the next presentation-layer prerequisite.
+  screen IDs used by Useful Dex and Gen 3 Box. Trainer Card, Pokédex list,
+  Bag, Shop-product, Player-PC, Party, and released Bill's-PC Pokémon lists
+  have responsive specialized presenters. Battle states receive a separate
+  responsive status/action presenter.
+
+### Dialogue and modal stacks
+
+Version 0.5.0 presents ordinary `TextBox` dialogue and attached `Menu`,
+`ChoiceBox`, and `QuantityBox` layers as one composition. The text presenter
+reconstructs only the glyphs already revealed by the live typewriter state;
+the original state still owns reveal speed, waiting, advancement, sounds, and
+callbacks. Bag actions, shop quantities, confirmation prompts, and YES/NO
+choices can therefore sit above their modern parent without exposing or
+blanking a classic layer. If any visible drawing state is unknown, captured,
+disabled, or custom-drawn outside an audited adapter, the entire UI slice stays
+classic for that frame.
+
+The normal overworld singleton is identity-checked against its released
+`draw` method, so its built-in world renderer no longer gets mistaken for a
+custom override. Additive `drawUI` wrappers from other mods remain compatible;
+the released world draw must still be intact. The title-screen main Menu is
+suppressed independently from
+its title artwork; this keeps the logo and title Pokémon intact while the live
+menu rows receive the same floating desktop presentation as the in-game Start
+menu. A custom title draw or unknown overlay restores the complete classic
+title stack.
 
 ### Original UI suppression
 
 **HIDE ORIGINAL UI** defaults on. Each frame, `render.zones` caches the live
-Game, then `render.compose` checks whether the top state has a supported,
-enabled presenter that owns the whole visible UI layer. It lets downstream
+Game, then `render.compose` checks whether every drawing state from the visible
+base through the top has a supported, enabled presenter. It lets downstream
 compositor hooks inspect the untouched canvases first; only when none takes
-over does it clear `ctx.uiCanvas`. Transparent modals over another visible
-menu and custom input-capture prompts retain their classic context. The mod
+over does it clear `ctx.uiCanvas`. Known transparent modals are drawn above
+their modern parent; unknown layers and custom input-capture prompts retain
+their classic context. The mod
 never clears the world canvas. The hook leaves the normal engine scaling,
 palette zones, fades, post-processing, and display effects in place.
 `render.hud` then draws the modern presentation.
@@ -87,7 +109,9 @@ Rows may opt into artwork with an `image`, `icon`, `thumbnail`, `sprite`, or
 descriptor containing `image`, or a virtual LÖVE path. Missing optional art
 never removes the text row. Manager entries may expose the same fields from
 their manifest for an optional mod thumbnail. Existing mods that keep their
-images inside a custom `draw` method continue to own that drawing.
+images inside a custom `draw` method continue to own that drawing unless an
+explicit audited semantic adapter (such as Useful Dex or Gen 3 Box) represents
+the complete surface.
 
 For Pokémon artwork, the presenter asks the runtime's sprite/icon resolvers for
 the active `pokemon.sprite`/`pokemon.icon` results before falling back to the
@@ -114,6 +138,28 @@ The Useful Dex moves page advertises `UP/DOWN page` in its footer only when the
 live screen reports more than one move page; single-page lists keep the footer
 compact.
 
+The Pokédex list keeps the live selection, scroll/filter rows, seen/owned
+markers, and Useful Dex rebuilds while adding a selected-species preview.
+Trainer Card uses the already-resolved player portrait, shows the canonical
+five-digit Trainer ID, and supports runtime badge definitions including
+optional custom badge art. Party and released Bill's-PC deposit/withdraw lists
+show the selected Pokémon's active front sprite, HP/status, current stats, and
+live move PP while retaining injected Party action rows. Box records that do
+not store calculated stats receive a read-only display calculation; opening the
+UI never expands or rewrites the save record. Bag, Shop, and Player-PC
+presenters read their current rows and selected item details instead of
+replacing their menu factories. Their detail cards work in landscape and
+portrait. Item details expose both the base purchase value and the half-price
+sell value; TM details also retain move, type, and PP, while key items and HMs
+clearly remain unsellable.
+
+**MINIMAL UI** keeps the responsive themed shell, selections, live rows, and
+control hints while removing optional Pokédex/Bag/Shop preview panes. Party
+retains its compact Pokémon icons and essential level/HP/status data; Bill's-PC
+lists use original-style text rows. Both omit the large selected-Pokémon detail
+pane. The setting affects only presentation and does not alter state,
+callbacks, menus, or save data.
+
 ### Mobile layout
 
 When the game's virtual touch controls are visible, the presenter measures
@@ -126,6 +172,19 @@ with full available height, while box screens retain compact square grids. A cus
 touch-control
 layout is respected because the inset is measured from the live control
 positions rather than hard-coded screen coordinates.
+
+### Desktop floating layout
+
+**DESKTOP FLOATING UI** defaults on. On Windows, macOS, and Linux without
+visible virtual controls, modern panels leave the surrounding HUD layer
+transparent so the independently rendered world remains visible. The Start
+Menu becomes a compact card inset from the right, top, and bottom edges;
+larger data screens remain centered but keep their own outer breathing room.
+Nested choices and quantities float relative to their parent.
+
+Android/iOS and any desktop session currently showing virtual controls keep
+the mobile presentation instead. Turning **DESKTOP FLOATING UI** off restores
+the full themed backdrop on desktop without changing input or suppression.
 
 ### Battle presentation
 
@@ -140,9 +199,9 @@ four moves retain the engine's up/down selection order.
 
 The battle presenter is WIP and disabled by default; leave its option off for
 normal play while its responsive layout is stabilized. The mod options expose
-independent toggles for the battle overlay, generic
-menus, PokÃ©mon screens, the mod manager, and sprite animation. Turning a
-surface off leaves the original game presentation visible; turning sprite
+independent toggles for the battle overlay, desktop floating layout, dialogue,
+generic menus, Pokémon screens, minimal detail mode, the mod manager, and
+sprite animation. Turning a surface off leaves the original game presentation visible; turning sprite
 animation off freezes animated sheets on their first frame. **HIDE ORIGINAL
 UI** is independent of those surface toggles and defaults on; it suppresses the
 classic UI only when the corresponding modern presenter is enabled.
@@ -220,7 +279,9 @@ Copy-Item -Path (Join-Path $source '*') -Destination $target -Recurse -Force
 
 From Windows Explorer, you can double-click the repository-root
 `sync_gen1_modern_ui.cmd` to sync the folder and create a launcher-ready
-`gen1_modern_ui-<version>.zip` in the project root.
+`gen1_modern_ui-<version>.zip` in the project root. It uses the portable build
+script so `manifest.json` is the first root entry and every ZIP path uses `/`,
+which is safe for both desktop and mobile importers.
 
 Restart the game after syncing so the mod loader discovers the updated entry
 chunk. Keep `manifest.json` and `main.lua` directly inside the mod folder.

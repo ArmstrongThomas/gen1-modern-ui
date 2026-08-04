@@ -225,6 +225,7 @@ local function titleFor(Strings, state, kind)
     StartMenu = "MENU",
     BagMenu = "ITEMS",
     ShopMenu = "SHOP",
+    PlayerPC = "ITEM STORAGE",
     BoxMenu = "PC BOX",
     PokedexMenu = "POKéDEX",
     OptionsMenu = "OPTIONS",
@@ -314,8 +315,11 @@ local function viewportForTouchControls(game, viewport)
   end
   local okVisible, visible = pcall(touch.visible, touch)
   if not okVisible or not visible then return viewport end
+  local adjusted = {}
+  for key, value in pairs(viewport or {}) do adjusted[key] = value end
+  adjusted._gen1TouchVisible = true
   local okLayout, controls = pcall(touch.layout, touch)
-  if not okLayout or type(controls) ~= "table" then return viewport end
+  if not okLayout or type(controls) ~= "table" then return adjusted end
 
   local x, y, w, h = viewportRect(viewport)
   local lowerTop = y + h
@@ -333,7 +337,7 @@ local function viewportForTouchControls(game, viewport)
     end
   end
   local inset = math.max(0, y + h - lowerTop + 10)
-  if inset <= 12 then return viewport end
+  if inset <= 12 then return adjusted end
   -- A landscape phone has a very short safe height; keep the footer above
   -- the controls without allowing a stray custom position to consume the
   -- entire canvas. Portrait uses the measured control edge directly.
@@ -342,8 +346,6 @@ local function viewportForTouchControls(game, viewport)
     or math.max(180, h * 0.30)
   inset = math.min(inset, cap)
   local safeH = math.max(1, h - inset)
-  local adjusted = {}
-  for key, value in pairs(viewport or {}) do adjusted[key] = value end
   adjusted.safeX, adjusted.safeY = x, y
   adjusted.safeWidth, adjusted.safeHeight = w, safeH
   adjusted.safe = { x = x, y = y, width = w, height = safeH }
@@ -407,6 +409,7 @@ local function classOf(state)
 end
 
 local function inherits(class, target, seen)
+  if not target then return false end
   if class == target then return true end
   if type(class) ~= "table" or not target then return false end
   seen = seen or {}
@@ -417,11 +420,27 @@ local function inherits(class, target, seen)
 end
 
 return function(mod)
-  local Strings = (mod.ui and mod.ui.Strings) or function(value) return value end
+  local okStrings, engineStrings = pcall(require, "src.core.Strings")
+  local function fallbackStrings(value, ...)
+    if select("#", ...) == 0 then return value end
+    local ok, formatted = pcall(string.format, value, ...)
+    return ok and formatted or value
+  end
+  local Strings = okStrings and engineStrings or fallbackStrings
+  local okTypeChart, typeChart = pcall(require, "src.battle.TypeChart")
+  local function displayType(value)
+    if okTypeChart and type(typeChart.displayName) == "function" then
+      local ok, name = pcall(typeChart.displayName, value)
+      if ok and name then return name end
+    end
+    return safeText(value):gsub("_TYPE$", "")
+  end
   local themes = { default = copy(DEFAULT_THEME) }
   local themeChoices = { { "Gen1 Modern", "default" } }
   local fontCache = {}
   local imageCache = {}
+  local utf8Library
+  local glyphFont = mod.ui and mod.ui.Font
   local filteredImages = setmetatable({}, { __mode = "k" })
   local animatedImages = setmetatable({}, { __mode = "k" })
   local spriteAnimationOn = true
@@ -528,6 +547,17 @@ return function(mod)
     return true
   end
 
+  local function drawImageFit(image, x, y, w, h, maxScale)
+    local iw, ih = imageMetrics(image)
+    if not iw or not ih or w <= 0 or h <= 0 then return false end
+    local scale = math.min(w / iw, h / ih)
+    if maxScale then scale = math.min(scale, maxScale) end
+    scale = math.max(0.01, scale)
+    setColor({ 1, 1, 1, 1 })
+    return drawImage(image, x + (w - iw * scale) / 2,
+      y + (h - ih * scale) / 2, 0, scale, scale)
+  end
+
   local function imageFor(value, options)
     local descriptor
     value, descriptor = imageDescriptor(value)
@@ -554,6 +584,18 @@ return function(mod)
   local function option(key, default)
     local value = mod.options:get(key)
     return value == nil and default or value
+  end
+
+  local function drawHint(theme, value, x, y, maxWidth)
+    local text = safeText(value)
+    local size = theme.typography.caption
+    local selected = font(fontCache, size)
+    while selected:getWidth(text) > maxWidth and size > 10 do
+      size = size - 1
+      selected = font(fontCache, size)
+    end
+    love.graphics.setFont(selected)
+    love.graphics.print(truncate(text, maxWidth), x, y)
   end
 
   local function currentTheme()
@@ -599,20 +641,127 @@ return function(mod)
     -- its responsive layout is finished.  Keeping the option visible makes
     -- the WIP status explicit without disrupting the game's native battle UI.
     { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false },
+    { key = "desktopFloating", label = "DESKTOP FLOATING UI", type = "toggle", default = true },
+    { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false },
+    { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true },
     { key = "menuUi", label = "MENU UI", type = "toggle", default = true },
     { key = "pokemonUi", label = "POKEMON SCREENS", type = "toggle", default = true },
     { key = "managerUi", label = "MOD MANAGER UI", type = "toggle", default = true },
     { key = "spriteAnimation", label = "SPRITE ANIMATION", type = "toggle", default = true },
   })
 
+  local function floatingDesktop(viewport)
+    if option("desktopFloating", true) == false
+        or (viewport and viewport._gen1TouchVisible) then return false end
+    if love and love.system and type(love.system.getOS) == "function" then
+      local ok, osName = pcall(love.system.getOS)
+      if ok and (osName == "Android" or osName == "iOS") then return false end
+    end
+    return true
+  end
+
+  local function drawPresenterBackdrop(theme, viewport)
+    if floatingDesktop(viewport) then return false end
+    local x, y, w, h = fullViewportRect(viewport)
+    setBackdrop(theme)
+    love.graphics.rectangle("fill", x, y, w, h)
+    return true
+  end
+
   local menuClass = mod.ui and mod.ui.Menu
   local listClass = mod.ui and mod.ui.ListMenu
   local choiceClass = mod.ui and mod.ui.ChoiceBox
   local quantityClass = mod.ui and mod.ui.QuantityBox
+  local textBoxClass = mod.ui and mod.ui.TextBox
+  local function optionalClass(path)
+    local ok, class = pcall(require, path)
+    return ok and class or false
+  end
+  local trainerCardClass = optionalClass("src.ui.TrainerCard")
+  local optionsClass = optionalClass("src.ui.OptionsMenu")
+  local partyClass = optionalClass("src.ui.PartyMenu")
+  local summaryClass = optionalClass("src.ui.SummaryMenu")
+  local dexEntryClass = optionalClass("src.ui.DexEntryMenu")
+  local managerClass = optionalClass("src.mods.ManagerState")
+  local titleClass = optionalClass("src.ui.TitleState")
+  local statsLibrary = optionalClass("src.pokemon.Stats")
+  -- The released overworld is a singleton class table rather than a normal
+  -- instance. Its drawUI method is therefore a legitimate raw field. Capture
+  -- the shipped identities once so a replaced world renderer still triggers
+  -- the conservative classic fallback. Additive drawUI wrappers (for example
+  -- Quality of Life's location banner) are allowed when the world draw itself
+  -- remains the released renderer, so they do not disable every menu layered
+  -- over the overworld.
+  local overworldClass = optionalClass("src.world.OverworldController")
+  local overworldDraw = overworldClass and rawget(overworldClass, "draw")
+
+  local isBoxRoot
+  local function boxPokemonList(state)
+    if not (state and inherits(classOf(state), listClass)
+        and type(state.items) == "table") then return nil end
+    local game = state.game
+    local root
+    local stack = game and game.stack and game.stack.states
+    if type(stack) == "table" then
+      for index = #stack, 1, -1 do
+        if stack[index] == state then
+          for lower = index - 1, 1, -1 do
+            if isBoxRoot(stack[lower]) then root = stack[lower] break end
+          end
+          break
+        end
+      end
+    end
+    if not root then return nil end
+    local source, action
+    if root.index == 2 then
+      source, action = game and game.save and game.save.party, "DEPOSIT"
+    elseif root.index == 1 then
+      local save = game and game.save
+      source, action = save and save.boxes and save.boxes[save.currentBox or 1], "WITHDRAW"
+    elseif root.index == 3 then
+      local save = game and game.save
+      source, action = save and save.boxes and save.boxes[save.currentBox or 1], "RELEASE"
+    end
+    if type(source) ~= "table" or not action or #state.items ~= #source then return nil end
+    for index, item in ipairs(state.items) do
+      if type(source[index]) ~= "table" or source[index].species == nil
+          or type(item) ~= "table"
+          or (action ~= "RELEASE" and item.value ~= index) then return nil end
+    end
+    return source, action
+  end
+
+  isBoxRoot = function(state)
+    if not (state and state.screenId == "BoxMenu"
+        and inherits(classOf(state), menuClass)
+        and type(state.items) == "table" and state.noSound == true
+        and #state.items >= 5) then return false end
+    for index = 1, 4 do
+      local item = state.items[index]
+      if type(item) ~= "table" or item.keepOpen ~= true
+          or type(item.onSelect) ~= "function" then return false end
+    end
+    local exit = state.items[#state.items]
+    return type(exit) == "table" and exit.keepOpen ~= true
+  end
+
+  local function isGen3Box(state)
+    return (state.screenId == "Gen3Box" or state.screenId == "Gen3BoxMenu")
+      and (state.mode == "box" or state.mode == "party")
+      and type(state.row) == "number" and type(state.col) == "number"
+  end
+
+  local function isUsefulDexEntry(state)
+    return state.screenId == "DexEntryMenu" and type(state.vanilla) == "table"
+      and type(state.def) == "table"
+      and (state.view == "data" or state.view == "stats" or state.view == "moves")
+  end
 
   local function kindFor(state)
     if not state then return nil end
     local id = state.screenId
+    local class = classOf(state)
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
          state.kind == "link" or state.enemy or state.player) then
@@ -621,26 +770,33 @@ return function(mod)
     -- ManagerState is part of the released in-game mod manager.  It is not a
     -- Menu/ListMenu subclass, so identify it by its public screen id rather
     -- than by reaching into the engine's class hierarchy.
-    if id == "ManagerState" then return "mod_manager" end
-    if id == "Gen3Box" or id == "Gen3BoxMenu" then return "gen3_box" end
-    if id == "DexEntryMenu" then return "dex_entry" end
-    if id == "OptionsMenu" then return "options" end
-    if id == "PartyMenu" then return "party" end
-    if id == "SummaryMenu" then return "summary" end
-    local class = classOf(state)
+    if id == "ManagerState" and managerClass
+        and inherits(class, managerClass) then return "mod_manager" end
+    if isGen3Box(state) then return "gen3_box" end
+    if id == "DexEntryMenu" and ((dexEntryClass and inherits(class, dexEntryClass))
+        or isUsefulDexEntry(state)) then return "dex_entry" end
+    if id == "TrainerCard" and trainerCardClass
+        and inherits(class, trainerCardClass) then return "trainer_card" end
+    if isBoxRoot(state) then return "box_root" end
+    if boxPokemonList(state) then return "box_mon_list" end
+    if id == "PokedexMenu" and inherits(class, listClass) then return "pokedex" end
+    if id == "BagMenu" and inherits(class, listClass) then return "bag" end
+    if id == "OptionsMenu" and optionsClass
+        and inherits(class, optionsClass) then return "options" end
+    -- Several released callers (Day Care, Name Rater, scripted pickers) push
+    -- PartyMenu directly rather than through Screens, so the stable class is
+    -- authoritative even when no screenId was stamped.
+    if partyClass and inherits(class, partyClass) then return "party" end
+    if id == "SummaryMenu" and summaryClass
+        and inherits(class, summaryClass) then return "summary" end
+    if inherits(class, textBoxClass) then return "text" end
     if inherits(class, choiceClass) then return "choice" end
     if inherits(class, quantityClass) then return "quantity" end
+    if inherits(class, listClass) and state.dialogue then return "shop_list" end
+    if inherits(class, listClass) and state.messageBox then return "pc_list" end
     if inherits(class, listClass) then return "list" end
     if inherits(class, menuClass) then return "menu" end
     return nil
-  end
-
-  local function topSupported(game)
-    local stack = game and game.stack
-    local top = stack and stack.top and stack:top()
-    local kind = kindFor(top)
-    if kind then return top, kind end
-    return nil, nil
   end
 
   -- Keep availability checks in one place so render.compose only removes the
@@ -649,9 +805,13 @@ return function(mod)
   -- blanks the stable native battle UI by default.
   local function presenterEnabled(kind)
     if kind == "battle" then return option("battleUiWip", false) == true end
+    if kind == "text" or kind == "choice" or kind == "quantity" then
+      return option("dialogueUi", true) ~= false
+    end
     if kind == "mod_manager" then return option("managerUi", true) ~= false end
     if kind == "gen3_box" or kind == "dex_entry" or kind == "summary"
-        or kind == "party" then
+        or kind == "party" or kind == "trainer_card" or kind == "pokedex"
+        or kind == "box_mon_list" then
       return option("pokemonUi", true) ~= false
     end
     return option("menuUi", true) ~= false
@@ -660,45 +820,113 @@ return function(mod)
   -- Some mods keep a standard Menu/ListMenu state but replace `draw` on the
   -- instance. That custom pipeline may contain tabs, badges, previews, or
   -- prompts which cannot be recovered from ordinary rows, so suppressing it
-  -- would silently lose UI. Modern Bag is an explicit installed integration:
-  -- it delegates to ListMenu, exposes its current pocket through the title,
-  -- and rebuilds ordinary live rows that this presenter already consumes.
+  -- would silently lose UI. Only audited structural adapters are exceptions:
+  -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
+  -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   local function customDrawModeled(state, kind)
-    return kind == "list" and state.screenId == "BagMenu"
-      and type(state.modernBag) == "table"
+    if kind == "bag" and state.screenId == "BagMenu"
+        and type(state.modernBag) == "table" then return true end
+    if kind == "gen3_box" and isGen3Box(state) then return true end
+    if kind == "dex_entry" and isUsefulDexEntry(state) then return true end
+    if kind == "box_root" and isBoxRoot(state) then return true end
+    if kind == "menu" and state._gen1ModernTitleMenu == true
+        and rawget(state, "draw") == state._gen1ModernTitleDraw then return true end
+    return false
+  end
+
+  local function expectedClass(kind)
+    if kind == "menu" then return menuClass end
+    if kind == "box_root" then return menuClass end
+    if kind == "list" or kind == "pokedex" or kind == "bag"
+        or kind == "shop_list" or kind == "pc_list"
+        or kind == "box_mon_list" then return listClass end
+    if kind == "choice" then return choiceClass end
+    if kind == "quantity" then return quantityClass end
+    if kind == "text" then return textBoxClass end
+    if kind == "options" then return optionsClass end
+    if kind == "party" then return partyClass end
+    if kind == "summary" then return summaryClass end
+    if kind == "trainer_card" then return trainerCardClass end
+    if kind == "dex_entry" then return dexEntryClass end
+    if kind == "mod_manager" then return managerClass end
+    return nil
+  end
+
+  local function resolvedDraw(class, seen)
+    if type(class) ~= "table" then return nil end
+    seen = seen or {}
+    if seen[class] then return nil end
+    seen[class] = true
+    local draw = rawget(class, "draw")
+    if type(draw) == "function" then return draw end
+    local mt = getmetatable(class)
+    return mt and resolvedDraw(mt.__index, seen) or nil
   end
 
   local function hasUnknownDrawOverride(state, kind)
+    if customDrawModeled(state, kind) then return false end
     local ownDraw = rawget(state, "draw")
-    if type(ownDraw) ~= "function" then return false end
     local class = classOf(state)
-    if type(class) == "table" and ownDraw == rawget(class, "draw") then
-      return false
+    if type(ownDraw) == "function" and ownDraw ~= resolvedDraw(class) then
+      return true
     end
-    return not customDrawModeled(state, kind)
+    local expected = expectedClass(kind)
+    local expectedDraw = resolvedDraw(expected)
+    local actualDraw = resolvedDraw(class)
+    return expectedDraw ~= nil and actualDraw ~= nil and actualDraw ~= expectedDraw
   end
 
-  -- Clearing ctx.uiCanvas removes every visible classic state, not just the
-  -- top one.  Only do that when the top presenter owns the whole visible UI
-  -- layer.  Transparent choice/quantity/submenu states stacked over another
-  -- menu keep their classic context until a stack-aware modern presenter can
-  -- draw both layers.  Custom input-capture modes likewise retain vanilla UI.
-  local function suppressionSafe(game, state, kind)
-    if not (game and state and kind and presenterEnabled(kind)) then return false end
-    if state.capture then return false end
-    if hasUnknownDrawOverride(state, kind) then return false end
+  -- Build the complete visible UI stack bottom-up. `ctx.uiCanvas` contains
+  -- every one of these states, so it is safe to clear only when each visible
+  -- draw owner has a modern presenter. This lets a Bag -> action -> quantity
+  -- or TextBox -> YES/NO chain become one coherent modern composition while
+  -- any unknown/custom layer immediately falls back to the classic canvas.
+  local function presentationStack(game)
+    if not game then return {}, false end
     local stack = game.stack
     local states = stack and stack.states
     if type(states) ~= "table" or type(stack.visibleBase) ~= "function" then
-      return false
+      return {}, false
     end
     local ok, base = pcall(stack.visibleBase, stack)
-    if not ok or type(base) ~= "number" then return false end
+    if not ok or type(base) ~= "number" then return {}, false end
+    local layers = {}
+    local preserveUiCanvas = false
     for index = base, #states do
       local visible = states[index]
-      if visible ~= state and visible ~= game.overworld then return false end
+      -- The overworld is rendered independently on the world canvas. States
+      -- without a draw function likewise contribute nothing to uiCanvas.
+      if visible == game.overworld then
+        local emote = visible and visible.emote
+        if (emote and emote.pikaPic)
+            or ((tonumber(visible and visible.poisonFlash) or 0) > 0) then
+          return {}, false
+        end
+        if overworldClass then
+          if visible ~= overworldClass
+              or rawget(visible, "draw") ~= overworldDraw
+              or type(rawget(visible, "drawUI")) ~= "function" then
+            return {}, false
+          end
+        elseif type(rawget(visible, "drawUI")) == "function" then
+          return {}, false
+        end
+      elseif titleClass and visible.screenId == "TitleState"
+          and inherits(classOf(visible), titleClass) then
+        -- The title art and its Menu share uiCanvas. The title-menu draw is
+        -- suppressed independently by ui.state.decorate below, so preserve
+        -- the canvas here rather than erasing the logo and title Pokémon.
+        preserveUiCanvas = true
+      elseif type(visible and visible.draw) == "function" then
+        local kind = kindFor(visible)
+        if not kind or not presenterEnabled(kind) or visible.capture
+            or hasUnknownDrawOverride(visible, kind) then
+          return {}, false
+        end
+        layers[#layers + 1] = { state = visible, kind = kind, index = index }
+      end
     end
-    return true
+    return layers, #layers > 0, not preserveUiCanvas
   end
 
   local function optionValue(game, row)
@@ -766,6 +994,23 @@ return function(mod)
         }
       end
       if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+    elseif kind == "box_mon_list" then
+      local mons, action = boxPokemonList(state)
+      for _, mon in ipairs(mons or {}) do
+        local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+        local name = mon.nickname or (def and def.name) or mon.species or "POKéMON"
+        local maxHP = mon.stats and mon.stats.hp
+        local hp = maxHP and ("%d/%d"):format(mon.hp or 0, maxHP) or ""
+        rows[#rows + 1] = {
+          label = name,
+          value = (mon.level and ("Lv %d"):format(mon.level) or "")
+            .. (hp ~= "" and ("  " .. hp) or ""),
+          image = imageCandidate(mon), source = mon,
+        }
+      end
+      if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+      footer = action == "RELEASE" and Strings("A  release    B  back")
+        or action and Strings("A  %s / stats    B  back", action:lower()) or nil
     elseif kind == "summary" then
       return nil, selected, scroll, title, nil
     elseif kind == "choice" then
@@ -778,7 +1023,7 @@ return function(mod)
       if state.unitPrice then value = value .. ("  ¥%d"):format(qty * state.unitPrice) end
       rows = { { label = Strings("QUANTITY"), value = value } }
     else
-      for _, item in ipairs(state.items or {}) do
+      for index, item in ipairs(state.items or {}) do
         rows[#rows + 1] = {
           label = item.label or item.name or "",
           -- `value` is commonly an opaque callback payload, item ID, or table.
@@ -786,7 +1031,7 @@ return function(mod)
           -- metadata; this keeps third-party list rows from leaking internals.
           value = item.right ~= nil and item.right or item.displayValue,
           enabled = item.enabled,
-          marker = item.ball,
+          marker = item.ball or state.swapIndex == index or state.hollowIndex == index,
           image = imageCandidate(item),
           source = item,
         }
@@ -889,6 +1134,7 @@ return function(mod)
     local density = option("density", "auto")
     local scale = density == "compact" and 0.88 or density == "comfortable" and 1.12 or 1
     local landscape = w > h * 1.2
+    local desktopFloat = floatingDesktop(viewport)
     -- Touch controls can consume a large fraction of a phone's short
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.
@@ -910,8 +1156,9 @@ return function(mod)
       rowHeight = math.min(rowHeight, math.max(minLandscapeRow * scale, fitHeight))
     end
     local panelW = math.min(w - gutter * 2, panelMax)
-    local sidePanel = landscape and kind == "menu" and rowCount > 0
-    if kind == "menu" or kind == "choice" or kind == "quantity" then
+    local navigationMenu = kind == "menu" or kind == "box_root"
+    local sidePanel = desktopFloat and landscape and navigationMenu and rowCount > 0
+    if navigationMenu or kind == "choice" or kind == "quantity" then
       -- Short action/confirmation menus should read as focused cards in
       -- landscape, not as banners stretched across the whole phone. Longer
       -- list/options screens keep the wider panel calculated from the theme
@@ -923,11 +1170,11 @@ return function(mod)
       -- screen. On wide windows keep it narrow and dock it to the edge so the
       -- world remains visible instead of dimming behind a centered card.
       panelW = clamp(w * 0.30, 240, 360)
-      gutter = 0
+      gutter = spacing.lg or 18
       header = (theme.typography.title or 24) + (spacing.md or 13)
       footer = (spacing.sm or 9) + (theme.typography.caption or 13)
       rowHeight = math.min(rowHeight, math.max(30 * scale,
-        (h - header - footer) / math.max(1, rowCount)))
+        (h - gutter * 2 - header - footer) / math.max(1, rowCount)))
     end
     panelW = math.max(1, panelW)
     local visible = math.max(1, math.floor((h - gutter * 2 - header - footer) / rowHeight))
@@ -937,15 +1184,15 @@ return function(mod)
     -- secondary values, and the extra move/metadata line used by Dex screens.
     -- This applies to every generic menu rather than special-casing one mod.
     if landscape then contentH = contentH + rowHeight end
-    local panelH = sidePanel and h or math.min(h - gutter * 2, contentH)
+    local panelH = math.min(h - gutter * 2, contentH)
     panelH = math.max(1, panelH)
     return {
-      x = sidePanel and (x + w - panelW) or x + (w - panelW) / 2,
-      y = sidePanel and y or y + (h - panelH) / 2,
+      x = sidePanel and (x + w - panelW - gutter) or x + (w - panelW) / 2,
+      y = y + (h - panelH) / 2,
       w = panelW, h = panelH, rowHeight = rowHeight,
       header = header, footer = footer, visible = visible,
       safeX = x, safeY = y, safeW = w, safeH = h,
-      radius = sidePanel and 0 or (theme.radii and theme.radii.md or 16),
+      radius = theme.radii and theme.radii.md or 16,
       sidePanel = sidePanel,
     }
   end
@@ -1051,6 +1298,164 @@ return function(mod)
     end
   end
 
+  local function textPrefix(value, glyphs)
+    value = safeText(value)
+    glyphs = math.max(0, math.floor(tonumber(glyphs) or 0))
+    if glyphs == 0 then return "" end
+    if glyphFont == nil then
+      local ok, library = pcall(require, "src.render.Font")
+      glyphFont = ok and library or false
+    end
+    if glyphFont and type(glyphFont.split) == "function" then
+      local ok, spans = pcall(glyphFont.split, value)
+      if ok and type(spans) == "table" then
+        if glyphs >= #spans then return value end
+        local span = spans[glyphs]
+        if span and span.to then return value:sub(1, span.to) end
+      end
+    end
+    if utf8Library == nil then
+      local ok, lib = pcall(require, "utf8")
+      utf8Library = ok and lib or false
+    end
+    if utf8Library and type(utf8Library.offset) == "function" then
+      local ok, nextByte = pcall(utf8Library.offset, value, glyphs + 1)
+      if ok then
+        return nextByte and value:sub(1, nextByte - 1) or value
+      end
+    end
+    return value:sub(1, glyphs)
+  end
+
+  local function dialogueLines(state)
+    local pages = state and state.pages
+    local page = type(pages) == "table" and pages[state.pageIndex or 1]
+    if type(page) ~= "table" then return { "" } end
+    local current = clamp(state.lineIndex or 1, 1, math.max(1, #page))
+    local shownCount = type(state.shown) == "table" and #state.shown or 1
+    shownCount = clamp(shownCount, 1, 3)
+    local first = math.max(1, current - shownCount + 1)
+    local lines = {}
+    for index = first, current do
+      local line = safeText(page[index])
+      if index == current then line = textPrefix(line, state.charIndex or #line) end
+      lines[#lines + 1] = line
+    end
+    if #lines == 0 then lines[1] = "" end
+    return lines
+  end
+
+  local function dialogueRect(viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local landscape = w > h * 1.2
+    local gutter = theme.spacing.lg
+    local width = math.min(w - gutter * 2,
+      landscape and math.min(760, w * 0.64) or 620)
+    local body = font(fontCache, theme.typography.body)
+    local height = math.max(104,
+      body:getHeight() * 2 + theme.spacing.lg * 2 + theme.typography.caption + 12)
+    height = math.min(height, h - gutter * 2)
+    return x + (w - width) / 2, y + h - height - gutter, width, height
+  end
+
+  local function drawDialogue(state, viewport, theme)
+    local px, py, panelW, panelH = dialogueRect(viewport, theme)
+    local spacing, colors = theme.spacing, theme.colors
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    setColor(colors.accent)
+    love.graphics.rectangle("fill", px, py, panelW, 4,
+      theme.radii.md, theme.radii.md, 0, 0)
+
+    local body = font(fontCache, theme.typography.body)
+    love.graphics.setFont(body)
+    local available = panelW - spacing.lg * 2
+    local lines = {}
+    for _, source in ipairs(dialogueLines(state)) do
+      for _, line in ipairs(wrappedLines(source, available)) do
+        lines[#lines + 1] = line
+      end
+    end
+    -- The released TextBox owns two visible lines. Preserve that contract
+    -- after high-resolution wrapping so the affordance strip cannot overlap.
+    while #lines > 2 do table.remove(lines, 1) end
+    local lineGap = body:getHeight() + spacing.xs
+    local textY = py + spacing.lg
+    setColor(colors.text)
+    for index, line in ipairs(lines) do
+      love.graphics.print(line, px + spacing.lg, textY + (index - 1) * lineGap)
+    end
+
+    local ready = state.waiting or (state.done and not state.choice
+      and not state.auto and not state.stay)
+    setColor(colors.textMuted)
+    local hint
+    if ready then hint = "A / B  continue"
+    elseif state.done and state.choice then hint = "Choose an option"
+    elseif state.done and state.auto then hint = "Please wait"
+    elseif not (state.done and state.stay) then hint = "Hold A / B  speed up" end
+    if hint then
+      drawHint(theme, Strings(hint), px + spacing.lg,
+        py + panelH - spacing.md - theme.typography.caption,
+        panelW - spacing.lg * 2)
+    end
+    if ready and not state.choice then
+      setColor(colors.accent)
+      love.graphics.print("v", px + panelW - spacing.lg - 8,
+        py + panelH - spacing.md - theme.typography.caption)
+    end
+    return { x = px, y = py, w = panelW, h = panelH }
+  end
+
+  local function drawModalRows(game, state, kind, viewport, theme, underKind)
+    local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
+    if not rows then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing = theme.spacing
+    local landscape = w > h * 1.2
+    local rowHeight = math.max(40, math.min(theme.density.rowHeight, 50))
+    local header = theme.typography.title + spacing.md
+    local footer = theme.typography.caption + spacing.md
+    local visible = math.min(#rows, landscape and 7 or 6)
+    local panelW = math.min(w - spacing.lg * 2,
+      landscape and math.min(390, w * 0.36) or 440)
+    local panelH = header + footer + visible * rowHeight
+    panelH = math.min(panelH, h - spacing.lg * 2)
+    local px = x + (w - panelW) / 2
+    local py = y + (h - panelH) / 2
+    if underKind == "text" then
+      local dx, dy, dw = dialogueRect(viewport, theme)
+      px = dx + dw - panelW
+      py = math.max(y + spacing.lg, dy - panelH - spacing.sm)
+    elseif underKind then
+      px = x + w - panelW - spacing.lg
+      py = y + spacing.lg * 2
+    end
+    local layout = {
+      x = px, y = py, w = panelW, h = panelH,
+      rowHeight = rowHeight, header = header, footer = footer,
+      visible = visible, radius = theme.radii.md, sidePanel = false,
+    }
+    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    setColor(theme.colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawHeader(theme, layout, title)
+    drawRows(theme, layout, rows, selected, scroll, game)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footer, panelW - spacing.lg * 2, 1)
+    setColor(theme.colors.textMuted)
+    local hint = footerText or (kind == "choice" and "A  choose   B  no"
+      or kind == "quantity" and "UP/DOWN  amount   A  confirm   B  cancel"
+      or "A  select   B  back")
+    drawHint(theme, Strings(hint), px + spacing.lg,
+      py + panelH - footer + spacing.xs, panelW - spacing.lg * 2)
+  end
+
   local function drawManagerTabs(theme, layout, state)
     if state.screen ~= "list" then return end
     local labels = { "MODS", "PROFILES", "ERRORS" }
@@ -1096,12 +1501,10 @@ return function(mod)
     end
   end
 
-  local function drawManagerOverlay(theme, layout, state)
+  local function drawManagerOverlay(theme, layout, state, viewport)
     local overlay = state.overlay
     if not overlay then return end
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", layout.safeX, layout.safeY,
-      layout.safeW, layout.safeH)
+    drawPresenterBackdrop(theme, viewport)
     local lines = overlay.lines or {}
     local lineHeight = theme.typography.body + 8
     local modalW = math.min(layout.w * 0.84, 620)
@@ -1157,9 +1560,7 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
+    drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h,
       layout.radius)
@@ -1171,12 +1572,30 @@ return function(mod)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
     setColor(theme.colors.textMuted)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
-    local footer = state.notice or (state.screen == "list" and
-      "A  open   SELECT  toggle   START  apply" or "A  choose   B  back")
-    love.graphics.print(Strings(footer), layout.x + theme.spacing.lg,
-      layout.y + layout.h - layout.footer + 8)
-    drawManagerOverlay(theme, layout, state)
+    local footer = state.notice
+    if not footer and state.screen == "list" then
+      if state.tab == 1 then
+        footer = "A  open   SELECT  toggle   START  apply   B  exit"
+      elseif state.tab == 2 then
+        footer = "A  apply   SELECT  rename   START  delete"
+      else
+        footer = "UP/DOWN  scroll"
+      end
+    elseif not footer and state.screen == "detail" then
+      footer = "L/R  details   A  choose   SELECT  toggle   B  back"
+    elseif not footer and state.screen == "errors" then
+      footer = "UP/DOWN  scroll   B  back"
+    elseif not footer and state.screen == "permissions" then
+      footer = "Declared by author; not enforced   B  back"
+    elseif not footer and state.screen == "options" then
+      footer = "Arrow keys  adjust   B  done"
+    elseif not footer then
+      footer = "A  choose   B  back"
+    end
+    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer + 8,
+      layout.w - theme.spacing.lg * 2)
+    drawManagerOverlay(theme, layout, state, viewport)
     love.graphics.pop()
   end
 
@@ -1206,9 +1625,7 @@ return function(mod)
     local levelY = pageY + bodyFont:getHeight() + spacing.xs
     local hpY = levelY + lineGap
     local statusY = hpY + lineGap
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
+    drawPresenterBackdrop(theme, viewport)
     love.graphics.setFont(bodyFont)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
@@ -1413,6 +1830,859 @@ return function(mod)
     return imageFor(fallback)
   end
 
+  local function drawTrainerCard(game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 860))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.15
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    local headerLayout = { x = px, y = py, w = panelW,
+      radius = theme.radii.md }
+    drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
+
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = theme.typography.caption + spacing.lg
+    local contentY = py + headerH
+    local contentH = panelH - headerH - footerH
+    local profileH = landscape and math.min(contentH * 0.38, 170)
+      or math.min(contentH * 0.34, 210)
+    local portraitSize = math.max(72, math.min(profileH - spacing.md * 2,
+      landscape and 128 or panelW * 0.26))
+    local portraitX = px + panelW - spacing.lg - portraitSize
+    local portraitY = contentY + spacing.md
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", portraitX, portraitY, portraitSize, portraitSize,
+      theme.radii.sm)
+    local portrait = prepareImage(state.pic)
+    if portrait then
+      drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
+        portraitSize - spacing.sm * 2, portraitSize - spacing.sm * 2)
+    end
+
+    local save = game.save or {}
+    local player = save.player or {}
+    local playTime = math.floor(save.playTime or 0)
+    local profileX = px + spacing.lg
+    local profileW = math.max(80, portraitX - profileX - spacing.lg)
+    local profileFont = font(fontCache, theme.typography.body)
+    love.graphics.setFont(profileFont)
+    local profile = {
+      { Strings("NAME"), player.name or "RED" },
+      { Strings("ID"), ("%05d"):format(tonumber(player.id) or 0) },
+      { Strings("MONEY"), ("¥%d"):format(save.money or 0) },
+      { Strings("TIME"), ("%d:%02d"):format(math.floor(playTime / 3600),
+          math.floor(playTime / 60) % 60) },
+    }
+    local profileGap = math.max(26,
+      math.min(44, (profileH - spacing.md * 2) / #profile))
+    local labelWidth = 0
+    for _, row in ipairs(profile) do
+      labelWidth = math.max(labelWidth, profileFont:getWidth(row[1]))
+    end
+    local valueX = profileX + labelWidth + spacing.md
+    for index, row in ipairs(profile) do
+      local ry = contentY + spacing.md + (index - 1) * profileGap
+      setColor(colors.textMuted)
+      love.graphics.print(row[1], profileX, ry)
+      setColor(colors.text)
+      love.graphics.print(truncate(row[2], math.max(20,
+        profileX + profileW - valueX)), valueX, ry)
+    end
+
+    local badges = game.data and game.data.constants and game.data.constants.badges
+    if type(badges) ~= "table" or #badges == 0 then
+      badges = {
+        { id = "BOULDERBADGE" }, { id = "CASCADEBADGE" },
+        { id = "THUNDERBADGE" }, { id = "RAINBOWBADGE" },
+        { id = "SOULBADGE" }, { id = "MARSHBADGE" },
+        { id = "VOLCANOBADGE" }, { id = "EARTHBADGE" },
+      }
+    end
+    local inventory = save.inventory or {}
+    local ownedCount = 0
+    for _, badge in ipairs(badges) do
+      if inventory[badge.item or badge.id] then ownedCount = ownedCount + 1 end
+    end
+    local gridY = contentY + profileH + spacing.sm
+    local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.textMuted)
+    love.graphics.print(Strings("BADGES  %d/%d", ownedCount, #badges),
+      px + spacing.lg, gridY)
+    gridY = gridY + theme.typography.caption + spacing.sm
+    gridH = math.max(1, contentY + contentH - gridY)
+    local baseCols = landscape and 4 or 2
+    local maxRows = math.max(1, math.floor((gridH + spacing.sm) / 34))
+    local cols = math.max(baseCols, math.ceil(#badges / maxRows))
+    cols = math.max(1, math.min(cols, #badges))
+    local gridRows = math.max(1, math.ceil(#badges / cols))
+    local gap = spacing.sm
+    local cellW = (panelW - spacing.lg * 2 - gap * (cols - 1)) / cols
+    local cellH = math.max(1, (gridH - gap * (gridRows - 1)) / gridRows)
+
+    for index, badge in ipairs(badges) do
+      local col, row = (index - 1) % cols, math.floor((index - 1) / cols)
+      local cx = px + spacing.lg + col * (cellW + gap)
+      local cy = gridY + row * (cellH + gap)
+      local owned = inventory[badge.item or badge.id] and true or false
+      setColor(owned and colors.surfaceRaised or colors.surface)
+      love.graphics.rectangle("fill", cx, cy, cellW, cellH, theme.radii.sm)
+      setColor(owned and colors.accent or colors.divider)
+      love.graphics.rectangle("line", cx + 0.5, cy + 0.5,
+        cellW - 1, cellH - 1, theme.radii.sm)
+
+      local icon = imageFor(badge.icon or badge.image)
+      local artSize = math.max(20, math.min(cellH - spacing.sm * 2, cellW * 0.34))
+      if icon then
+        drawImageFit(icon, cx + spacing.sm, cy + (cellH - artSize) / 2,
+          artSize, artSize)
+      else
+        local sheet = owned and state.badges or state.faces
+        local quad = sheet and sheet.quads and sheet.quads[index - 1]
+        if sheet and sheet.img and quad then
+          local image = prepareImage(sheet.img)
+          local ok, qx, qy, qw, qh = pcall(quad.getViewport, quad)
+          if ok and qw and qh then
+            local scale = math.min(artSize / qw, artSize / qh)
+            setColor({ 1, 1, 1, 1 })
+            love.graphics.draw(image, quad,
+              cx + spacing.sm + (artSize - qw * scale) / 2,
+              cy + (cellH - qh * scale) / 2, 0, scale, scale)
+          end
+        else
+          setColor(owned and colors.accent or colors.divider)
+          love.graphics.circle("line", cx + spacing.sm + artSize / 2,
+            cy + cellH / 2, artSize * 0.34)
+        end
+      end
+      local badgeName = safeText(badge.name or badge.id or ("BADGE " .. index))
+        :gsub("_", " "):gsub("BADGE$", "")
+      local labelX = cx + spacing.sm + artSize + spacing.sm
+      love.graphics.setFont(font(fontCache, theme.typography.caption))
+      setColor(owned and colors.text or colors.textMuted)
+      love.graphics.print(truncate(("%d  %s"):format(index, badgeName),
+        math.max(20, cx + cellW - spacing.sm - labelX)), labelX,
+        cy + (cellH - theme.typography.caption) / 2)
+    end
+
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2, 1)
+    setColor(colors.textMuted)
+    drawHint(theme, Strings("A / B  back"), px + spacing.lg,
+      py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  local function selectedListRow(rows, selected)
+    return rows and rows[clamp(selected or 1, 1, math.max(1, #rows))]
+  end
+
+  local function maxMovePP(move, moveDef)
+    if not (move and moveDef) then return 0 end
+    local base = tonumber(moveDef.pp) or 0
+    return base + (tonumber(move.ppUps) or 0) * math.floor(base / 5)
+  end
+
+  -- Imported box_struct records intentionally omit their calculated stat
+  -- block. Derive a temporary display copy for Bill's PC without calling
+  -- Stats.ensure (which would mutate the save merely because UI was drawn).
+  local function displayStats(game, mon, derive)
+    if type(mon) ~= "table" then return {} end
+    if type(mon.stats) == "table" then return mon.stats end
+    local def = derive and game.data and game.data.pokemon
+      and game.data.pokemon[mon.species]
+    if def and type(def.baseStats) == "table"
+        and statsLibrary and type(statsLibrary.calc) == "function" then
+      local ok, stats = pcall(statsLibrary.calc, def, mon.level or 1,
+        mon.dvs or {}, mon.statExp)
+      if ok and type(stats) == "table" then return stats end
+    end
+    return {}
+  end
+
+  local function monDisplayRows(game, mons, state, deriveStats)
+    local rows = {}
+    for index, mon in ipairs(mons or {}) do
+      local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+      local stats = displayStats(game, mon, deriveStats)
+      local maxHP = stats.hp
+      local shownHP = state and state.heal and state.heal.mon == mon
+        and math.floor(state.heal.shown or state.heal.from or mon.hp or 0)
+        or math.min(tonumber(mon.hp) or maxHP or 0, maxHP or math.huge)
+      local status = shownHP <= 0 and "FNT" or mon.status
+      local value
+      if state and state.tmhm and state.tmhm.move then
+        local able = false
+        for _, moveId in ipairs(def and def.tmhm or {}) do
+          if moveId == state.tmhm.move then able = true break end
+        end
+        value = able and Strings("ABLE") or Strings("NOT ABLE")
+      else
+        value = (mon.level and ("Lv %d"):format(mon.level) or "")
+          .. (maxHP and ("  %d/%d"):format(shownHP, maxHP) or "")
+          .. (status and status ~= "" and ("  " .. safeText(status)) or "")
+      end
+      rows[#rows + 1] = {
+        label = mon.nickname or (def and def.name) or mon.species or "POKéMON",
+        value = value, source = mon,
+        marker = state and (state.swapFrom == index
+          or state.softboiledFrom == index) or false,
+      }
+    end
+    if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+    return rows
+  end
+
+  local function drawHPBar(theme, x, y, w, hp, maxHP)
+    maxHP = math.max(1, tonumber(maxHP) or 1)
+    local ratio = clamp((tonumber(hp) or 0) / maxHP, 0, 1)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", x, y, w, 8, 4)
+    local color = ratio <= 0.20 and { 0.92, 0.24, 0.28, 1 }
+      or ratio <= 0.50 and { 0.96, 0.72, 0.20, 1 }
+      or { 0.24, 0.78, 0.46, 1 }
+    setColor(color)
+    love.graphics.rectangle("fill", x, y, math.max(0, w * ratio), 8, 4)
+  end
+
+  -- Shared selected-Pokémon detail card for Party and Bill's PC. All data is
+  -- read from the current Pokémon/species/move records so total conversions,
+  -- sprite packs, added moves, and live party copies remain authoritative.
+  local function drawMonDetail(game, mon, x, y, w, h, theme, context)
+    local spacing, colors = theme.spacing, theme.colors
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm)
+    if not mon then
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(colors.textMuted)
+      love.graphics.printf(Strings("No POKéMON selected."), x + spacing.lg,
+        y + h / 2 - 10, w - spacing.lg * 2, "center")
+      return
+    end
+    local def = game.data and game.data.pokemon and game.data.pokemon[mon.species] or {}
+    local name = mon.nickname or def.name or mon.species or "POKéMON"
+    local compact = h < 250 or w < 360
+    local titleFont = font(fontCache, compact and theme.typography.body
+      or theme.typography.title)
+    local bodyFont = font(fontCache, compact and theme.typography.caption
+      or theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local artSize = math.max(54, math.min(compact and 92 or 150,
+      h * (compact and 0.42 or 0.48), w * 0.30))
+    local artX, artY = x + spacing.md, y + spacing.md
+    local sprite = spriteFor(game, mon, def.spriteFront, context or "party")
+    if sprite then drawImageFit(sprite, artX, artY, artSize, artSize) end
+    local infoX = artX + artSize + spacing.md
+    local infoW = math.max(32, x + w - spacing.md - infoX)
+    love.graphics.setFont(titleFont)
+    setColor(colors.text)
+    love.graphics.print(truncate(name, infoW), infoX, y + spacing.md)
+    love.graphics.setFont(captionFont)
+    setColor(colors.textMuted)
+    local speciesName = def.name and def.name ~= name and def.name or nil
+    local level = mon.level and ("Lv %d"):format(mon.level) or ""
+    local types = {}
+    for _, value in ipairs(def.types or {}) do types[#types + 1] = displayType(value) end
+    love.graphics.print(truncate(table.concat({ level, speciesName or "",
+      table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoW),
+      infoX, y + spacing.md + titleFont:getHeight() + spacing.xs)
+    local stats = displayStats(game, mon, context == "box")
+    local maxHP = stats.hp
+    local shownHP = math.min(tonumber(mon.hp) or maxHP or 0,
+      maxHP or math.huge)
+    if maxHP then
+      local barY = y + spacing.md + titleFont:getHeight()
+        + captionFont:getHeight() + spacing.md
+      drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
+      love.graphics.print(("HP %d/%d%s"):format(shownHP, maxHP,
+        mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12)
+    end
+
+    local lowerY = y + math.max(artSize + spacing.md * 2,
+      titleFont:getHeight() + captionFont:getHeight() * 2 + spacing.xl * 2)
+    local lowerH = math.max(1, y + h - spacing.md - lowerY)
+    love.graphics.setFont(bodyFont)
+    local statText = {
+      ("ATK %s"):format(safeText(stats.attack or "—")),
+      ("DEF %s"):format(safeText(stats.defense or "—")),
+      ("SPD %s"):format(safeText(stats.speed or "—")),
+      ("SPC %s"):format(safeText(stats.special or "—")),
+    }
+    setColor(colors.textMuted)
+    love.graphics.print(table.concat(statText, "   "), x + spacing.md, lowerY)
+    local movesY = lowerY + bodyFont:getHeight() + spacing.sm
+    local moves = mon.moves or {}
+    local available = math.max(1, math.floor((lowerH - bodyFont:getHeight() - spacing.sm)
+      / math.max(1, bodyFont:getHeight() + spacing.xs)))
+    local count = math.min(#moves, 4, available)
+    for index = 1, count do
+      local move = moves[index]
+      local moveDef = move and game.data and game.data.moves and game.data.moves[move.id]
+      local moveName = moveDef and moveDef.name or move and move.id or "—"
+      local pp = move and moveDef and ("PP %d/%d"):format(move.pp or 0,
+        maxMovePP(move, moveDef)) or ""
+      setColor(colors.text)
+      love.graphics.print(truncate(moveName, w * 0.58), x + spacing.md,
+        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs))
+      setColor(colors.textMuted)
+      love.graphics.print(pp, x + w - spacing.md - bodyFont:getWidth(pp),
+        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs))
+    end
+    if #moves == 0 then
+      setColor(colors.textMuted)
+      love.graphics.print(Strings("No moves."), x + spacing.md, movesY)
+    end
+  end
+
+  local function drawParty(game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 980))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local party = state.party or (game.save and game.save.party) or {}
+    local rows = monDisplayRows(game, party, state)
+    local selected = clamp(state.index or 1, 1, math.max(1, #party))
+    local minimal = option("minimalUi", false) == true
+    local landscape = panelW > panelH * 1.15
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = theme.typography.caption + spacing.lg
+    local contentY = py + headerH
+    local contentH = math.max(1, panelH - headerH - footerH)
+    local detailW = not minimal and landscape and math.min(panelW * 0.48, 470) or 0
+    local detailH = not minimal and not landscape and math.min(contentH * 0.40, 300) or 0
+    local listX = px
+    local listY = contentY + (detailH > 0 and detailH + spacing.sm or 0)
+    local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
+    local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
+    local rowHeight = math.min(theme.density.rowHeight,
+      math.max(38, listH / math.max(1, #rows)))
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
+    local scroll = clamp((state.scroll or 0), 0, math.max(0, #rows - visible))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
+      or Strings("POKéMON  %d", #party)
+    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
+      partyTitle)
+    local listLayout = { x = listX, y = listY, w = listW, h = listH,
+      rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm, sidePanel = false }
+    drawRows(theme, listLayout, rows, selected, scroll, game)
+    if detailW > 0 then
+      drawMonDetail(game, party[selected], px + panelW - detailW,
+        contentY, detailW, contentH, theme, "party")
+    elseif detailH > 0 then
+      drawMonDetail(game, party[selected], px + spacing.sm, contentY,
+        panelW - spacing.sm * 2, detailH, theme, "party")
+    end
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2, 1)
+    local footer = nil
+    if type(state.bottomMessage) == "function" then
+      local ok, result = pcall(state.bottomMessage, state)
+      if ok then footer = result end
+    end
+    drawHint(theme, footer or Strings("A  choose   B  back"), px + spacing.lg,
+      py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
+
+    -- PartyMenu owns its injected action list internally rather than pushing
+    -- another state. Draw those exact live rows as a visual modal; callbacks,
+    -- selection, and cancellation remain with PartyMenu.
+    if state.submenu and type(state.subItems) == "table" then
+      local actionRows = {}
+      for _, item in ipairs(state.subItems) do
+        actionRows[#actionRows + 1] = { label = item.label or "", source = item }
+      end
+      local actionHeader = theme.typography.title + spacing.lg
+      local actionRowH = 44
+      local actionH = math.min(panelH * 0.72,
+        actionHeader + #actionRows * actionRowH + spacing.lg)
+      local actionW = math.min(420, panelW * 0.62)
+      local ax, ay = px + (panelW - actionW) / 2, py + (panelH - actionH) / 2
+      setColor(colors.surfaceRaised)
+      love.graphics.rectangle("fill", ax, ay, actionW, actionH, theme.radii.md)
+      drawHeader(theme, { x = ax, y = ay, w = actionW, radius = theme.radii.md },
+        Strings("POKéMON ACTIONS"))
+      local actionVisible = math.max(1, math.min(#actionRows,
+        math.floor((actionH - actionHeader) / actionRowH)))
+      local actionSelected = clamp(state.subIndex or 1, 1,
+        math.max(1, #actionRows))
+      local actionScroll = clamp(actionSelected - actionVisible, 0,
+        math.max(0, #actionRows - actionVisible))
+      drawRows(theme, { x = ax, y = ay, w = actionW, h = actionH,
+        rowHeight = actionRowH, header = actionHeader,
+        footer = 0, visible = actionVisible, radius = theme.radii.sm },
+        actionRows, actionSelected, actionScroll, game)
+    end
+    love.graphics.pop()
+  end
+
+  local function drawBoxPokemonList(game, state, viewport, theme)
+    local mons, action = boxPokemonList(state)
+    if not mons then return end
+    local rows = monDisplayRows(game, mons, nil, true)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 980))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local minimal = option("minimalUi", false) == true
+    if minimal then
+      for _, row in ipairs(rows) do row.source = nil end
+    end
+    local landscape = panelW > panelH * 1.15
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = theme.typography.caption + spacing.lg
+    local contentY, contentH = py + headerH, panelH - headerH - footerH
+    local detailW = not minimal and landscape and math.min(panelW * 0.46, 450) or 0
+    local detailH = not minimal and not landscape and math.min(contentH * 0.38, 280) or 0
+    local listY = contentY + (detailH > 0 and detailH + spacing.sm or 0)
+    local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
+    local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
+    local selected = clamp(state.index or 1, 1, math.max(1, #mons))
+    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
+    local scroll = clamp(state.scroll or 0, 0, math.max(0, #rows - visible))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
+      state.title or Strings("PC BOX"))
+    local save = game.save or {}
+    local box = save.boxes and save.boxes[save.currentBox or 1] or {}
+    local context = action == "DEPOSIT"
+      and Strings("BOX %d  %d/20", save.currentBox or 1, #box)
+      or Strings("PARTY  %d/6", #(save.party or {}))
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.textMuted)
+    local contextW = love.graphics.getFont():getWidth(context)
+    local titleW = font(fontCache, theme.typography.title):getWidth(
+      safeText(state.title or Strings("PC BOX")))
+    if titleW + contextW + spacing.lg * 3 < panelW then
+      love.graphics.print(context, px + panelW - spacing.lg - contextW,
+        py + spacing.md + 5)
+    end
+    drawRows(theme, { x = px, y = listY, w = listW, h = listH,
+      rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm }, rows, selected, scroll, game)
+    if detailW > 0 then
+      drawMonDetail(game, mons[selected], px + panelW - detailW,
+        contentY, detailW, contentH, theme, "box")
+    elseif detailH > 0 then
+      drawMonDetail(game, mons[selected], px + spacing.sm, contentY,
+        panelW - spacing.sm * 2, detailH, theme, "box")
+    end
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2, 1)
+    local hint = action == "RELEASE" and "A  release    B  back"
+      or Strings("A  %s / stats    B  back", (action or "choose"):lower())
+    drawHint(theme, hint,
+      px + spacing.lg, py + panelH - footerH + spacing.xs,
+      panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  local function drawPokedex(game, state, viewport, theme)
+    local rows, selected, scroll, title, footerText = rowsFor(game, state, "pokedex")
+    if not rows then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 920))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.05
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = landscape and (theme.typography.caption + spacing.lg)
+      or (theme.typography.caption * 2 + spacing.lg + spacing.xs)
+    local previewW = landscape and math.min(panelW * 0.38, 330) or panelW
+    local previewH = landscape and (panelH - headerH - footerH)
+      or math.min(128, panelH * 0.26)
+    local listW = landscape and (panelW - previewW - spacing.sm) or panelW
+    local listY = landscape and (py + headerH) or (py + headerH + previewH + spacing.sm)
+    local listH = math.max(1, py + panelH - footerH - listY)
+    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
+    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+
+    local previewX = landscape and (px + panelW - previewW) or px
+    local previewY = py + headerH
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", previewX + spacing.sm, previewY,
+      previewW - spacing.sm * 2, previewH, theme.radii.sm)
+    local row = selectedListRow(rows, selected)
+    local source = row and row.source
+    local species = source and source.value
+    local def = species and game.data and game.data.pokemon and game.data.pokemon[species]
+    if def then
+      local sprite = spriteFor(game, { species = species }, def.spriteFront, "dex")
+      local artSize = landscape and math.min(previewW - spacing.lg * 2,
+        previewH * 0.50) or math.min(previewH - spacing.md * 2, previewW * 0.24)
+      local artX = previewX + spacing.lg
+      local artY = previewY + spacing.md
+      if sprite then drawImageFit(sprite, artX, artY, artSize, artSize) end
+      local infoX = landscape and (previewX + spacing.lg)
+        or (artX + artSize + spacing.lg)
+      local infoY = landscape and (artY + artSize + spacing.sm) or (previewY + spacing.md)
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(colors.text)
+      love.graphics.print(truncate(def.name or species,
+        previewX + previewW - spacing.lg - infoX), infoX, infoY)
+      love.graphics.setFont(font(fontCache, theme.typography.caption))
+      setColor(colors.textMuted)
+      local digits = tonumber(game.data and game.data.constants
+        and game.data.constants.dexDigits) or 3
+      digits = clamp(math.floor(digits), 1, 8)
+      local number = def.dex and ("No. %0" .. digits .. "d"):format(def.dex) or ""
+      love.graphics.print(number, infoX, infoY + theme.typography.body + spacing.xs)
+      local types = def.types or {}
+      local typeNames = {}
+      for _, value in ipairs(types) do typeNames[#typeNames + 1] = displayType(value) end
+      love.graphics.print(table.concat(typeNames, " / "), infoX,
+        infoY + theme.typography.body + theme.typography.caption + spacing.sm)
+      setColor(colors.accent)
+      love.graphics.print(source.ball and Strings("OWNED") or Strings("SEEN"),
+        infoX, infoY + theme.typography.body + theme.typography.caption * 2 + spacing.md)
+    else
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(colors.textMuted)
+      love.graphics.printf(Strings("No data for this entry."),
+        previewX + spacing.lg, previewY + previewH / 2 - theme.typography.body,
+        previewW - spacing.lg * 2, "center")
+    end
+
+    local listLayout = { x = px, y = listY, w = listW, h = listH,
+      rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm, sidePanel = false }
+    drawRows(theme, listLayout, rows, selected, scroll, game)
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2, 1)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.textMuted)
+    local hint = (state.pageJump and "L/R  page   " or "")
+      .. (type(state.onSelectKey) == "function" and "SELECT  view   " or "")
+      .. "A  options   B  back"
+    if landscape then
+      if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
+      drawHint(theme, Strings(hint), px + spacing.lg,
+        py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
+    else
+      if footerText and footerText ~= "" then
+        drawHint(theme, footerText, px + spacing.lg,
+          py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
+      end
+      drawHint(theme, Strings(hint), px + spacing.lg,
+        py + panelH - footerH + spacing.xs + theme.typography.caption + spacing.xs,
+        panelW - spacing.lg * 2)
+    end
+    love.graphics.pop()
+  end
+
+  local function itemValueText(itemId, def)
+    if not def or def.price == nil then return nil end
+    local base = math.max(0, math.floor(tonumber(def.price) or 0))
+    local unsellable = def.keyItem == true
+      or (type(itemId) == "string" and itemId:find("^HM_")) ~= nil
+      or (def.machine and def.machine.kind == "HM")
+    local sell = unsellable and "—" or ("¥%d"):format(math.floor(base / 2))
+    return Strings("BASE ¥%d   SELL %s", base, sell)
+  end
+
+  local function drawBag(game, state, viewport, theme)
+    local rows, selected, scroll, title, footerText = rowsFor(game, state, "bag")
+    if not rows then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 900))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.05
+    local minimal = option("minimalUi", false) == true
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = theme.typography.caption + spacing.lg
+    local detailW = minimal and 0
+      or landscape and math.min(panelW * 0.38, 320) or panelW
+    local detailH = minimal and 0
+      or landscape and (panelH - headerH - footerH)
+      or math.min(148, panelH * 0.28)
+    local listW = landscape and (panelW - detailW - spacing.sm) or panelW
+    local listY = (landscape or minimal) and (py + headerH)
+      or (py + headerH + detailH + spacing.sm)
+    local listH = math.max(1, py + panelH - footerH - listY)
+    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
+    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+
+    if detailW > 0 and detailH > 0 then
+      local detailX = landscape and (px + panelW - detailW) or px
+      local detailY = py + headerH
+      setColor(colors.surfaceRaised)
+      love.graphics.rectangle("fill", detailX + spacing.sm, detailY,
+        detailW - spacing.sm * 2, detailH, theme.radii.sm)
+      local row = selectedListRow(rows, selected)
+      local source = row and row.source
+      local itemId = source and source.value
+      local def = itemId and game.data and game.data.items and game.data.items[itemId]
+      local itemName = row and row.label or Strings("ITEM")
+      local icon = imageFor(imageCandidate(source) or imageCandidate(def))
+      local iconSize = icon and math.min(64, detailH - spacing.md * 2) or 0
+      local infoX = detailX + spacing.lg
+      if icon then
+        drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
+        infoX = infoX + iconSize + spacing.md
+      end
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(colors.text)
+      love.graphics.print(truncate(itemName,
+        detailX + detailW - spacing.lg - infoX), infoX, detailY + spacing.md)
+      love.graphics.setFont(font(fontCache, theme.typography.caption))
+      local infoY = detailY + spacing.md + theme.typography.body + spacing.sm
+      setColor(colors.textMuted)
+      if source and source.machineMoveName then
+      love.graphics.print(safeText(source.machineMoveName), infoX, infoY)
+      if def and def.machine then
+        local move = game.data.moves and game.data.moves[def.machine.move]
+        if move then
+          love.graphics.print(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
+            infoX, infoY + theme.typography.caption + spacing.xs)
+        end
+      end
+      local value = itemValueText(itemId, def)
+      if value then
+        love.graphics.print(value, infoX,
+          infoY + (theme.typography.caption + spacing.xs) * 2)
+      end
+    elseif def and def.machine then
+      local move = game.data.moves and game.data.moves[def.machine.move]
+      love.graphics.print(Strings("%s  %s", def.machine.kind or "TM",
+        move and move.name or def.machine.move), infoX, infoY)
+      if move then
+        love.graphics.print(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
+          infoX, infoY + theme.typography.caption + spacing.xs)
+      end
+      local value = itemValueText(itemId, def)
+      if value then
+        love.graphics.print(value, infoX,
+          infoY + (theme.typography.caption + spacing.xs) * 2)
+      end
+    elseif def then
+      local descriptionY = infoY + theme.typography.caption + spacing.xs
+      if def.keyItem then
+        love.graphics.print(Strings("KEY ITEM"), infoX, infoY)
+        local value = itemValueText(itemId, def)
+        if value then
+          love.graphics.print(value, infoX, descriptionY)
+          descriptionY = descriptionY + theme.typography.caption + spacing.xs
+        end
+      else
+        love.graphics.print(itemValueText(itemId, def) or Strings("ITEM"),
+          infoX, infoY)
+      end
+      local description = def.description or def.desc or def.effectText
+      if description then
+        love.graphics.print(truncate(description,
+          detailX + detailW - spacing.lg - infoX), infoX, descriptionY)
+      end
+      else
+        love.graphics.print(Strings("Select an item."), infoX, infoY)
+      end
+    end
+
+    local listLayout = { x = px, y = listY, w = listW, h = listH,
+      rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm, sidePanel = false }
+    drawRows(theme, listLayout, rows, selected, scroll, game)
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2, 1)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.textMuted)
+    local hint = type(state.modernBag) == "table"
+      and "LEFT/RIGHT  pocket   A  use   B  back"
+      or "A  use   SELECT  move   B  back"
+    if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
+    drawHint(theme, Strings(hint), px + spacing.lg,
+      py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  local function drawContextList(game, state, kind, viewport, theme)
+    local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
+    if not rows then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 900))
+    local panelH = math.max(1, h - gutter * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.10
+    local headerH = theme.typography.title + spacing.lg
+    local messageH = math.max(72, theme.typography.caption * 2 + spacing.lg * 2)
+    local minimal = option("minimalUi", false) == true
+    local detailW = not minimal and landscape and math.min(panelW * 0.34, 300) or 0
+    local detailH = not minimal and not landscape
+      and math.min(148, panelH * 0.25) or 0
+    local listW = panelW - detailW - (detailW > 0 and spacing.sm or 0)
+    local listY = py + headerH + (detailH > 0 and detailH + spacing.sm or 0)
+    local listH = math.max(1, py + panelH - messageH - listY)
+    local rowHeight = clamp(theme.density.rowHeight, 38, 54)
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
+    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
+    drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md }, title)
+
+    if kind == "shop_list" and type(state.money) == "function" then
+      local ok, money = pcall(state.money)
+      if ok and money ~= nil then
+        local amount = ("¥%d"):format(money)
+        love.graphics.setFont(font(fontCache, theme.typography.body))
+        local amountW = love.graphics.getFont():getWidth(amount)
+        setColor(colors.surfaceRaised)
+        love.graphics.rectangle("fill", px + panelW - spacing.lg - amountW -
+          spacing.md * 2, py + spacing.sm, amountW + spacing.md * 2,
+          theme.typography.body + spacing.sm * 2, theme.radii.sm)
+        setColor(colors.text)
+        love.graphics.print(amount, px + panelW - spacing.lg - amountW - spacing.md,
+          py + spacing.sm * 1.5)
+      end
+    end
+
+    local listLayout = { x = px, y = listY, w = listW, h = listH,
+      rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm, sidePanel = false }
+    drawRows(theme, listLayout, rows, selected, scroll, game)
+
+    if detailW > 0 or detailH > 0 then
+      local detailX = detailW > 0 and (px + panelW - detailW) or px
+      local detailY = py + headerH
+      local cardW = detailW > 0 and detailW or panelW
+      local cardH = detailW > 0 and listH or detailH
+      setColor(colors.surfaceRaised)
+      love.graphics.rectangle("fill", detailX + spacing.sm, detailY,
+        cardW - spacing.sm * 2, cardH, theme.radii.sm)
+      local row = selectedListRow(rows, selected)
+      local source = row and row.source
+      local itemId = source and type(source.value) == "string" and source.value or nil
+      local def = itemId and game.data and game.data.items and game.data.items[itemId]
+      local icon = imageFor(imageCandidate(source) or imageCandidate(def))
+      local iconSize = icon and math.min(56, cardH - spacing.md * 2) or 0
+      local infoX = detailX + spacing.lg
+      if icon then
+        drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
+        infoX = infoX + iconSize + spacing.md
+      end
+      local infoW = math.max(24, detailX + cardW - spacing.lg - infoX)
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(colors.text)
+      love.graphics.print(truncate(row and row.label or Strings("ITEM"),
+        infoW), infoX, detailY + spacing.md)
+      love.graphics.setFont(font(fontCache, theme.typography.caption))
+      setColor(colors.textMuted)
+      local infoY = detailY + spacing.md + theme.typography.body + spacing.sm
+      if source and source.right then
+        love.graphics.print(safeText(source.right), infoX, infoY)
+        infoY = infoY + theme.typography.caption + spacing.xs
+      end
+      if def and def.machine then
+        local move = game.data.moves and game.data.moves[def.machine.move]
+        love.graphics.print(Strings("%s  %s", def.machine.kind or "TM",
+          move and move.name or def.machine.move), infoX, infoY)
+        infoY = infoY + theme.typography.caption + spacing.xs
+        if move then
+          love.graphics.print(Strings("TYPE %s   PP %s",
+            move.type or "—", move.pp or "—"), infoX, infoY)
+          infoY = infoY + theme.typography.caption + spacing.xs
+        end
+      elseif def and def.keyItem then
+        love.graphics.print(Strings("KEY ITEM"), infoX, infoY)
+        infoY = infoY + theme.typography.caption + spacing.xs
+      end
+      local value = itemValueText(itemId, def)
+      if value then
+        love.graphics.print(value, infoX, infoY)
+      end
+    end
+
+    local messageY = py + panelH - messageH
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", px + spacing.sm, messageY,
+      panelW - spacing.sm * 2, messageH - spacing.sm, theme.radii.sm)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.text)
+    local messageLines = wrappedLines(footerText or "", panelW - spacing.lg * 2)
+    for index = 1, math.min(2, #messageLines) do
+      love.graphics.print(messageLines[index], px + spacing.lg,
+        messageY + spacing.sm + (index - 1) * (theme.typography.caption + spacing.xs))
+    end
+    setColor(colors.textMuted)
+    local hint = kind == "shop_list" and "A  choose   B  back"
+      or "A  choose   B  back"
+    drawHint(theme, Strings(hint), px + spacing.lg,
+      py + panelH - spacing.md - theme.typography.caption,
+      panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
   local function drawGen3Box(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
@@ -1455,9 +2725,7 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
+    drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
@@ -1467,9 +2735,11 @@ return function(mod)
     love.graphics.print(title, px + spacing.lg, py + spacing.md)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
-    love.graphics.print(mode == "box" and "A  pick/place   SELECT  party   B  back"
-      or "A  pick/place   SELECT  box   B  back", px + spacing.lg,
-      py + panelH - footer + 2)
+    local footerText = state.notice or (mode == "box"
+      and "A  pick/place   START  stats   SELECT  party   B  back"
+      or "A  pick/place   START  stats   SELECT  box   B  back")
+    drawHint(theme, Strings(footerText), px + spacing.lg,
+      py + panelH - footer + 2, panelW - spacing.lg * 2)
 
     for i = 1, cols * gridRows do
       local c, r = (i - 1) % cols, math.floor((i - 1) / cols)
@@ -1579,9 +2849,7 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
+    drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
@@ -1661,8 +2929,9 @@ return function(mod)
         tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 2)
       love.graphics.print(safeText(entry.weightKg and ("WT " .. entry.weightKg .. "kg") or ""),
         tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 3)
-      local owned = game.save and game.save.pokedex and game.save.pokedex.owned and
-        game.save.pokedex.owned[def.id]
+      local owned = state.forceOwned or (state.vanilla and state.vanilla.forceOwned)
+        or (game.save and game.save.pokedex and game.save.pokedex.owned and
+          game.save.pokedex.owned[def.id])
       local text = owned and entry.text and game.data.text and game.data.text[entry.text]
       local descriptionY = heroY + heroH + spacing.lg
       setColor(theme.colors.textMuted)
@@ -1911,9 +3180,7 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    local backX, backY, backW, backH = fullViewportRect(viewport)
-    setBackdrop(theme)
-    love.graphics.rectangle("fill", backX, backY, backW, backH)
+    drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
     setColor(theme.colors.accent)
@@ -1953,9 +3220,16 @@ return function(mod)
     love.graphics.pop()
   end
 
-  local function drawModern(game, state, kind, viewport)
-    local theme = responsiveTheme(currentTheme(), viewport)
+  local function drawModern(game, state, kind, viewport, theme, asModal, underKind)
     if not presenterEnabled(kind) then return end
+    if kind == "text" then
+      drawDialogue(state, viewport, theme)
+      return
+    end
+    if asModal or kind == "choice" or kind == "quantity" then
+      drawModalRows(game, state, kind, viewport, theme, underKind)
+      return
+    end
     if kind == "battle" then
       drawBattle(game, state, viewport, theme)
       return
@@ -1964,6 +3238,8 @@ return function(mod)
       drawManager(game, state, viewport, theme)
       return
     end
+    local minimal = option("minimalUi", false) == true
+    local forceGeneric = minimal and kind == "pokedex"
     if kind == "gen3_box" then
       drawGen3Box(game, state, viewport, theme)
       return
@@ -1976,6 +3252,30 @@ return function(mod)
       drawSummary(game, state, viewport, theme)
       return
     end
+    if kind == "trainer_card" then
+      drawTrainerCard(game, state, viewport, theme)
+      return
+    end
+    if kind == "party" then
+      drawParty(game, state, viewport, theme)
+      return
+    end
+    if kind == "box_mon_list" then
+      drawBoxPokemonList(game, state, viewport, theme)
+      return
+    end
+    if kind == "pokedex" and not forceGeneric then
+      drawPokedex(game, state, viewport, theme)
+      return
+    end
+    if kind == "bag" and not forceGeneric then
+      drawBag(game, state, viewport, theme)
+      return
+    end
+    if (kind == "shop_list" or kind == "pc_list") and not forceGeneric then
+      drawContextList(game, state, kind, viewport, theme)
+      return
+    end
     local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
     if not rows then return end
     local layout = layoutFor(viewport, theme, kind, #rows)
@@ -1986,11 +3286,7 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    if not layout.sidePanel then
-      local backX, backY, backW, backH = fullViewportRect(viewport)
-      setBackdrop(theme)
-      love.graphics.rectangle("fill", backX, backY, backW, backH)
-    end
+    if not layout.sidePanel then drawPresenterBackdrop(theme, viewport) end
     local surface = theme.colors.surface
     if layout.sidePanel then
       surface = { surface[1], surface[2], surface[3], math.min(surface[4] or 1, 0.96) }
@@ -2003,15 +3299,61 @@ return function(mod)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
     setColor(theme.colors.textMuted)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
     local footer = layout.sidePanel and "A  select   B  back" or footerText or
       (kind == "choice" and "A  choose    B  cancel"
       or kind == "quantity" and "A  confirm    B  cancel"
       or "Arrow keys / A  select    B  back")
-    love.graphics.print(Strings(footer), layout.x + theme.spacing.lg,
-      layout.y + layout.h - layout.footer + 8)
+    drawHint(theme, Strings(footer), layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer + 8,
+      layout.w - theme.spacing.lg * 2)
     love.graphics.pop()
   end
+
+  local function drawModernStack(game, layers, viewport)
+    local theme = responsiveTheme(currentTheme(), viewport)
+    love.graphics.push("all")
+    love.graphics.origin()
+    for index, layer in ipairs(layers) do
+      local underKind = index > 1 and layers[index - 1].kind or nil
+      drawModern(game, layer.state, layer.kind, viewport, theme,
+        index > 1, underKind)
+    end
+    love.graphics.pop()
+  end
+
+  -- TitleState and its menu are flattened into the same classic canvas. A
+  -- whole-canvas clear would erase the logo and title Pokémon along with the
+  -- menu, so suppress only the ordinary title Menu's draw method. The state
+  -- still owns update/input/callbacks, and another mod's custom draw remains
+  -- untouched because only an unmodified Menu instance is decorated.
+  mod.hooks:wrap("ui.state.decorate", function(next, game, state, model)
+    local decorated = next(game, state, model)
+    if type(decorated) ~= "table" then decorated = state end
+    local under = game and game.stack and game.stack.top and game.stack:top()
+    local isTitleUnder = titleClass and under and under.screenId == "TitleState"
+      and inherits(classOf(under), titleClass)
+    if isTitleUnder and inherits(classOf(decorated), menuClass)
+        and type(decorated.titleUiBox) == "table"
+        and rawget(decorated, "draw") == nil then
+      local originalDraw = decorated.draw
+      decorated._gen1ModernTitleMenu = true
+      local function drawTitleMenu(self)
+        if option("hideOriginalUi", true) ~= false
+            and option("menuUi", true) ~= false then
+          local layers, complete = presentationStack(game)
+          if complete then
+            for _, layer in ipairs(layers) do
+              if layer.state == self then return end
+            end
+          end
+        end
+        return originalDraw(self)
+      end
+      decorated._gen1ModernTitleDraw = drawTitleMenu
+      decorated.draw = drawTitleMenu
+    end
+    return decorated
+  end, 100)
 
   -- render.zones is the last state-aware render hook before endFrame.  Cache
   -- its Game reference so render.compose can inspect this exact frame's top
@@ -2031,9 +3373,9 @@ return function(mod)
   mod.hooks:wrap("render.compose", function(next, renderer, ctx)
     local handled = next(renderer, ctx)
     local game = currentGame
-    local state, kind = topSupported(game)
+    local layers, complete, suppressCanvas = presentationStack(game)
     local hide = option("hideOriginalUi", true) ~= false
-    if handled ~= true and hide and suppressionSafe(game, state, kind)
+    if handled ~= true and hide and suppressCanvas and complete and #layers > 0
         and love and love.graphics and ctx and ctx.uiCanvas then
       love.graphics.push("all")
       love.graphics.setCanvas(ctx.uiCanvas)
@@ -2051,9 +3393,9 @@ return function(mod)
     next(game, viewport)
     if not (love and love.graphics) then return end
     spriteAnimationOn = option("spriteAnimation", true) ~= false
-    local state, kind = topSupported(game)
-    if state and kind then
-      drawModern(game, state, kind, viewportForTouchControls(game, viewport))
+    local layers, complete = presentationStack(game)
+    if complete and #layers > 0 then
+      drawModernStack(game, layers, viewportForTouchControls(game, viewport))
     end
   end, 100)
 end

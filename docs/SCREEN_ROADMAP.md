@@ -1,6 +1,6 @@
 # Gen1 Modern UI screen roadmap
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 This is the implementation matrix for built-in gen1recomp UI and the custom
 screens found in the currently installed mod set. It describes intended visual
@@ -27,18 +27,27 @@ errors, and capture prompts keep the classic UI. Version 0.3.0 implemented the
 first conservative guard: only one modern-owned UI layer (plus the overworld)
 may be suppressed; nested layers and `state.capture` retain vanilla context.
 Version 0.4.0 also rejects unknown instance-level `draw` replacements, with an
-explicit exception for the audited Modern Bag wrapper.
+explicit exception for the audited Modern Bag wrapper. Version 0.5.0 ships the
+stack-aware chain: every visible drawing state must have an enabled presenter,
+known modals render bottom-up above their modern parent, and any unknown layer
+retains the complete classic slice. It also rejects unknown class-level draw
+overrides and admits only the audited Modern Bag, Useful Dex, and Gen 3 Box
+structural adapters. The current 0.5.0 work also audits the released Bill's-PC
+root/child contract and the title Menu: Bill lists require verified full-stack
+ancestry, while the ordinary title Menu is suppressed independently so its
+shared title-art canvas is preserved.
 
-Future presenters should expose `layer = "screen" | "modal"` and an explicit
-suppression-safety result. A stack-aware presenter chain is P0 before broadening
-suppression.
+Future third-party presenters should expose `layer = "screen" | "modal"` and an
+explicit suppression-safety result. Adapter exceptions must remain narrower
+than their live semantic contract.
 
 ## Delivery phases
 
 - **P0 — safety and layering:** stack-aware presenter chain, TextBox and modal
-  primitives, custom-draw detection, failure fallback, and developer logging.
-- **P1 — daily menus:** Trainer Card, Controls, richer Bag/Shop/PC, Pokédex
-  list, and stabilization of the presenters already shipped.
+  primitives, custom-draw detection, and failure fallback are shipped. Adapter
+  error containment and optional developer logging remain.
+- **P1 — daily menus:** Trainer Card, richer Party/Bag/Shop/PC, Pokédex list,
+  and Bill's-PC lists are shipped; Controls and stabilization remain.
 - **P2 — spatial/editing screens:** Naming, Town Map/Fly/AREA, Move Learn,
   PicBox, reports, and the third-party adapter API.
 - **P3 — title/online/special:** title family, Link/Tournament, and adapters for
@@ -54,32 +63,32 @@ suppression.
 |---|---|---|---|
 | Generic menu | `mod.ui.Menu`; `items`, `index`, `scroll`, `screenId` | Shipped baseline | Preserve injected rows, disabled state, images, and `keepOpen`; retain vanilla when custom drawing is detected. |
 | Generic list | `mod.ui.ListMenu`; title/items/index/scroll/footer/dialogue/message/money/swap | Shipped baseline | Add details region, wrap/page hints, money/message areas, and swap marker without rebuilding row callbacks. |
-| TextBox/dialogue | `mod.ui.TextBox`; pages/typewriter/waiting/done/geometry | Vanilla | **P0.** Build a modal/screen dialogue presenter that reads already-revealed text and preserves typewriter/page state. |
-| YES/NO | `ChoiceBox`; `index`, `pending` | Standalone generic card | **P0.** Render as a modal above the modern underlying screen; never clear its context alone. |
-| Quantity | `QuantityBox`; `qty`, `max`, `unitPrice` | Standalone generic card | **P0.** Layer above Bag/Shop/PC and display total price. |
+| TextBox/dialogue | `mod.ui.TextBox`; pages/typewriter/waiting/done/geometry | Shipped | Reads only the revealed glyph prefix and preserves the original typewriter, waiting, page, sound, and callback ownership. |
+| YES/NO | `ChoiceBox`; `index`, `pending` | Shipped layered modal | Renders above a complete modern parent stack; pending timing remains engine-owned. |
+| Quantity | `QuantityBox`; `qty`, `max`, `unitPrice` | Shipped layered modal | Layers above Bag/Shop/PC and displays totals when unit price is available. |
 | Picture popup | `mod.ui.PicBox`; `image`, `text` | Vanilla | **P2.** Aspect-fit nearest-neighbor image modal plus caption. |
 | Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel and automatic third-party rows. |
-| Save/quit flow | Start row plus TextBox and ChoiceBox states | Partial | Completed by P0 dialogue/modal layering; test overwrite, saving, quit, and return-to-title. |
-| Trainer/badge card | `screenId="TrainerCard"`; player, money, play time, badges, portrait | Vanilla | **P1 first feature.** Responsive profile card, portrait, metadata, and scalable badge grid with optional custom badge art. |
-| Bag | `screenId="BagMenu"`; rows/item defs/counts/swap/money plus nested actions | Generic | **P1.** Counts, pockets, selection details, TM/move info, battle mode, and layered actions. Preserve Modern Bag, Bag 999, Item Shortcut, and reusable-machine rows. |
-| Shops | `screenId="ShopMenu"`; BUY/SELL rows, money, dialogue, quantities | Generic | **P1.** Product list + details, persistent money/clerk message, quantity and confirmation modal chain. |
-| Player item PC | `screenId="PlayerPC"`; nested lists/messages/quantities/confirms | Generic | **P1.** Share the commerce/list-details and modal architecture; handle live count removal. |
-| Bill's PC/classic boxes | `screenId="BoxMenu"`; mode, current box/capacity, mon lists/actions | Generic | **P1.** Box metadata and mon details; preserve STATS/action and release confirmations. |
+| Save/quit flow | Start row plus TextBox and ChoiceBox states | Stack-ready; QA needed | Dialogue/modal layering is shipped; test overwrite, saving, quit, and return-to-title branches before calling the family complete. |
+| Trainer/badge card | `screenId="TrainerCard"`; player ID/name, money, play time, badges, portrait | Shipped | Responsive profile card, five-digit Trainer ID, active portrait, live metadata, and scalable badge grid with optional custom badge art. |
+| Bag | `screenId="BagMenu"`; rows/item defs/counts/swap/money plus nested actions | Shipped specialized presenter | Live counts, pockets, BASE/SELL values, TM move/type/PP/value, swap markers, and layered actions. Continue compatibility QA with Modern Bag, Bag 999, Item Shortcut, and reusable machines. |
+| Shops | product `ListMenu`; `dialogue`, money, rows, quantities | Shipped capability presenter | Product list + BASE/SELL details, persistent money/clerk message, quantity and confirmation modal chain; root BUY/SELL remains generic. |
+| Player item PC | item `ListMenu`; `messageBox`, rows, quantities/confirms | Shipped capability presenter | Shares list-details/modal architecture and follows live count removal; root PC choices remain generic. |
+| Bill's PC/classic boxes | released `screenId="BoxMenu"` root plus opaque mon lists/actions | Shipped structural presenter | Root uses the modern menu; deposit/withdraw show sprite, HP/status, stats, and moves/PP. Release resolves current row position and retains native confirmation; unknown/reordered replacements stay classic. |
 | Gen 3 Box | `screenId="Gen3Box"`; mode/grid/held/party/boxes | Dedicated presenter | Shipped; retain square cells, held-mon card, aspect ratio, nearest filtering, and active sprite hooks. |
-| Party | `screenId="PartyMenu"`; party/submenu/swap/heal/TM/battle/pick-only | Dedicated presenter | Stabilize switching, healing, TM eligibility, pick-only, and battle-switch visual modes while retaining injected submenu rows. |
+| Party | `PartyMenu` class; party/submenu/swap/heal/TM/battle/pick-only | Shipped rich presenter | Selected-mon sprite, HP/status, stats, moves/PP plus live compact rows; retains healing/TM/pick/swap data and injected submenu rows. Direct callers without `screenId` are supported by class identity. |
 | Summary/status | `screenId="SummaryMenu"`; mon/page/sprite | Dedicated presenter | Stabilize compact landscape layout and continue sprite-resolver compatibility. |
 | Move learning | `screenId="MoveLearnMenu"`; mon/new move/selecting/move data | Vanilla | **P2.** Five-row replace/cancel view with PP/type details after modal layering exists. |
 | Evolution | `screenId="EvolutionState"`; old/new sprites, timer, cancel/done | Vanilla | Later full-sequence cosmetic presenter or intentionally remain vanilla; do not replace only part of its animation canvas. |
-| Pokédex list | `screenId="PokedexMenu"`; rows, ball/seen marker, values, filters | Generic | **P1.** Responsive list + selected-species preview while preserving unseen entries and Useful Dex sort/filter rebuilding. |
+| Pokédex list | `screenId="PokedexMenu"`; rows, ball/seen marker, values, filters | Shipped specialized presenter | Responsive list + selected-species preview while preserving unseen entries and Useful Dex sort/filter rebuilding. |
 | Pokédex entry | `screenId="DexEntryMenu"`; definition/sprite/view/page/stats/moves | Dedicated presenter | Shipped; maintain data/stats/moves variants and conditional UP/DOWN hints. |
-| Pokédex side menu | `Menu` layered above Pokédex | Top-only generic | **P0/P1.** Present as modal over the modern Pokédex; never suppress the list beneath it alone. |
+| Pokédex side menu | `Menu` layered above Pokédex | Shipped layered modal | Presents over the modern Pokédex only when the complete visible chain is modeled. |
 | Town Map / Fly / AREA | `screenId="TownMap"`; map image, locations, selection, fly/nests | Vanilla | **P2.** Full-window map, responsive banner/details, grid navigation, fly list, blinking nest markers. |
 | Options | `screenId="OptionsMenu"`; live descriptor rows | Dedicated rows | Shipped; allow stable-ID grouping only and never reorder unknown mod rows. |
 | Controls/bindings | `screenId="BindingsMenu"`; list fields plus `capture`/pending | Unsafe generic fallback | **P0 safety/P1 presenter.** Keep capture prompt vanilla now; later show logical control, existing bindings, reset/clear hints, and capture modal. |
 | Mod manager | `screenId="ManagerState"`; screen/tab/rows/current mod/overlays | Dedicated presenter | Shipped across list, profiles, errors, detail, options, permissions, and apply; keep explicit adapter. |
 | Quarantine report | `screenId="QuarantineReport"`; lines/offset/maxOffset | Vanilla | **P2.** Simple scrollable report with paging hints. |
 | Naming | `screenId="NamingScreen"`; glyph grid, row/col/case/maxLen | Vanilla | **P2.** Responsive character grid supporting modded glyph/address pages; preset menu remains layered. |
-| Title/Continue | Title menu over TitleState; Continue info save/title box | Partial/unsafe | **P3.** Build one complete title-family presenter before suppression; request stable ID for ContinueInfo if structural detection proves fragile. |
+| Title/Continue | ordinary title Menu over released TitleState; private ContinueInfo | Main Menu shipped; Continue classic | The title Menu draw is suppressed independently while preserving title art; any unknown overlay restores classic. ContinueInfo remains classic until it has a stable semantic presenter. |
 | Oak speech/intros | `OakSpeech`, `IntroMovie`, `YellowIntro`; art + TextBox/Menu/Naming | Vanilla | Leave cinematic canvas intact initially; revisit after dialogue and naming presenters. |
 | Battle | phase/queue/kind/player/enemy and battle screen variants | WIP, off | See battle section below. |
 | Link | direct `LinkState`; stage/index/address/code/network/trade data | Vanilla | **P3.** Request stable screen ID; cover host/join/code/compatibility/settings/trade/wait states. |
@@ -141,6 +150,7 @@ Each new surface needs:
    nearest-neighbor filtering.
 7. At least one relevant third-party mod compatibility pass.
 
-The next feature after the v0.3.0 suppression work should be the Trainer Card.
-It is self-contained, explicitly requested, and exercises responsive profile,
-image, metadata, and grid layout without battle or modal-stack complexity.
+The next implementation slice should focus on Move Learn, PicBox, Naming,
+Town Map/Fly/AREA, and title ContinueInfo. First complete released-game QA for
+the v0.5.0 dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC stack;
+any unmodeled branch must keep the classic UI.

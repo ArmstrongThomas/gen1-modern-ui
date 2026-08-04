@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.4.0 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.5.0 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -35,10 +35,26 @@ when the listing is enabled there.
 ## Highlights
 
 - Responsive portrait and landscape menus with full safe-window layouts.
+- Desktop-only floating panels keep the world visible, with the Start Menu
+  inset at the right edge; mobile retains its larger centered/full-backdrop
+  layouts. **DESKTOP FLOATING UI** can restore the previous desktop backdrop.
 - Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
   clears the UI canvas when a supported modern presenter safely owns the whole
   visible UI layer; nested or custom prompts retain their classic context.
 - Live rows and options, so other mods' menu entries remain visible.
+- Stack-aware dialogue, YES/NO, quantity, and action cards that preserve the
+  game's typewriter timing and callback/input ownership.
+- The in-game Start menu and title-screen main menu use the same floating
+  desktop presentation; title art is preserved independently.
+- Responsive Trainer Card, Pokédex list, Bag, Shop, Player PC, Party, and
+  Bill's PC presenters built from live state rather than replacement menus.
+- Party and Bill's PC Pokémon lists include active sprite-pack artwork, HP and
+  status, current stats, and the selected Pokémon's live moves/PP. Missing box
+  stats are calculated for display without mutating the save.
+- Bag and Shop details show the base purchase value and half-price sell value,
+  including TM move/type/PP/value data; Trainer Card includes the five-digit ID.
+- **MINIMAL UI** keeps the modern shell and live controls while removing
+  optional detail/preview panes for a closer-to-original information density.
 - Seven built-in themes spanning modern/classic, light/dark, opaque/glass
   styles, plus density controls and a public data-only theme API.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
@@ -56,10 +72,11 @@ authors. Sprite replacement packs such as **Gold_Silver_Sprites** are used when
 they are enabled. Unknown or unsupported screens remain vanilla instead of
 being forced through an incorrect layout.
 
-The render path stays inside released hooks. `render.zones` caches the live
-Game for the frame, `render.compose` lets downstream compositor hooks run and
+The presentation path stays inside released hooks. `ui.state.decorate`
+suppresses only the ordinary title Menu draw while retaining its shared title
+art, `render.zones` caches the live Game for the frame, `render.compose` lets downstream compositor hooks run and
 then optionally clears only `ctx.uiCanvas` before the normal engine composite,
-while `render.hud` draws the modern layer.
+while `render.hud` draws the complete modern screen/modal stack.
 The engine's virtual touch controls draw afterward, so they remain visible and
 interactive. If the presenter is unsupported or its surface option is off,
 the classic UI canvas is left untouched. The same fallback applies when a
@@ -106,8 +123,22 @@ $env:GEN1_UI_MAIN = (Resolve-Path 'mods/gen1_modern_ui/main.lua').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/compose_suppression
 ```
 
+Set `$env:GEN1_UI_SHOTS = '1'` before that command to write the responsive
+Bag, Pokédex, Trainer, Party, Bill's PC, Shop, PC, title, and dialogue/modal
+gallery to the LÖVE save directory for visual QA.
+
+After building, verify the actual archive through the same PhysFS mount path
+used by the launcher importer:
+
+```powershell
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.5.0.zip').Path
+& 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
+```
+
 To build the launcher-ready archive, double-click `sync_gen1_modern_ui.cmd` or
-run `Compress-Archive` over the contents of `mods/gen1_modern_ui`.
+run `build_gen1_modern_ui.ps1`. The packer puts `manifest.json` first at the
+archive root, writes portable forward-slash entry names, and omits editor
+placeholders so the same ZIP imports consistently on desktop and mobile.
 
 ## Automated releases
 
@@ -116,6 +147,8 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.4.1`) and push that commit to `main`. Each release includes a commit-based
+`0.5.1`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
-SHA-256 checksum.
+SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
+curated change log; the workflow uses that file as the release body and adds
+the generated archive checksum automatically.

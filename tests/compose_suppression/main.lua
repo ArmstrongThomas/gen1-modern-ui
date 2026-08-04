@@ -11,6 +11,11 @@ local function check(value, message)
   if not value then fail(message) end
 end
 
+function love.errorhandler(message)
+  io.stderr:write(tostring(message), "\n", debug.traceback(), "\n")
+  os.exit(1)
+end
+
 function love.load()
   local entryPath = os.getenv("GEN1_UI_MAIN")
   check(entryPath and entryPath ~= "", "GEN1_UI_MAIN is required")
@@ -18,6 +23,41 @@ function love.load()
   local hooks = {}
   local values = {}
   local schemas = {}
+  local menuDraws = 0
+  local menuClass = { draw = function() menuDraws = menuDraws + 1 end }
+  local listClass = { draw = function() end, isOpaque = true }
+  local choiceClass = { draw = function() end }
+  local quantityClass = { draw = function() end }
+  local textBoxClass = { draw = function() end }
+  local trainerCardClass = { draw = function() end }
+  local optionsClass = { draw = function() end }
+  local partyClass = { draw = function() end }
+  local summaryClass = { draw = function() end }
+  local dexEntryClass = { draw = function() end }
+  local managerClass = { draw = function() end }
+  local overworldClass = { draw = function() end, drawUI = function() end }
+  local titleClass = { draw = function() end, isOpaque = true }
+  local statsLibrary = {
+    calc = function(speciesDef, level)
+      local base = speciesDef.baseStats or {}
+      return {
+        hp = (base.hp or 10) + level + 10,
+        attack = (base.attack or 10) + level,
+        defense = (base.defense or 10) + level,
+        speed = (base.speed or 10) + level,
+        special = (base.special or 10) + level,
+      }
+    end,
+  }
+  package.loaded["src.ui.TrainerCard"] = trainerCardClass
+  package.loaded["src.ui.OptionsMenu"] = optionsClass
+  package.loaded["src.ui.PartyMenu"] = partyClass
+  package.loaded["src.ui.SummaryMenu"] = summaryClass
+  package.loaded["src.ui.DexEntryMenu"] = dexEntryClass
+  package.loaded["src.mods.ManagerState"] = managerClass
+  package.loaded["src.world.OverworldController"] = overworldClass
+  package.loaded["src.ui.TitleState"] = titleClass
+  package.loaded["src.pokemon.Stats"] = statsLibrary
   local mod = {
     hooks = {
       wrap = function(_, name, callback)
@@ -32,8 +72,9 @@ function love.load()
       get = function(_, key) return values[key] end,
     },
     ui = {
-      Menu = {}, ListMenu = {}, ChoiceBox = {}, QuantityBox = {},
-      Strings = function(value) return value end,
+      Menu = menuClass, ListMenu = listClass,
+      ChoiceBox = choiceClass, QuantityBox = quantityClass,
+      TextBox = textBoxClass,
     },
   }
 
@@ -84,13 +125,22 @@ function love.load()
 
   check(type(hooks["render.zones"]) == "function", "render.zones hook registered")
   check(type(hooks["render.compose"]) == "function", "render.compose hook registered")
+  check(type(hooks["render.hud"]) == "function", "render.hud hook registered")
+  check(type(hooks["ui.state.decorate"]) == "function",
+    "ui.state.decorate hook registered")
 
-  local state = { screenId = "OptionsMenu", rows = {}, index = 1 }
-  local overworld = {}
+  local state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
+    { __index = optionsClass })
+  local overworld = overworldClass
   local game = { overworld = overworld, stack = {
     states = { overworld, state },
     top = function(self) return self.states[#self.states] end,
-    visibleBase = function() return 1 end,
+    visibleBase = function(self)
+      for index = #self.states, 1, -1 do
+        if self.states[index].isOpaque then return index end
+      end
+      return 1
+    end,
   } }
   local zones = {}
   local returnedZones = hooks["render.zones"](
@@ -133,7 +183,7 @@ function love.load()
   check(alpha() == 1, "disabled presenter keeps the canvas")
 
   values.menuUi = true
-  local underlying = { screenId = "ListMenu" }
+  local underlying = { screenId = "ListMenu", draw = function() end }
   game.stack.states = { underlying, state }
   fill()
   compose(false)
@@ -152,6 +202,108 @@ function love.load()
   check(alpha() == 1, "unknown custom draw override keeps its classic UI")
   state.draw = nil
 
+  local customOptionsClass = setmetatable({ draw = function() end },
+    { __index = optionsClass })
+  state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
+    { __index = customOptionsClass })
+  game.stack.states = { overworld, state }
+  fill()
+  compose(false)
+  check(alpha() == 1, "class-level custom draw override keeps its classic UI")
+
+  state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
+    { __index = optionsClass })
+  overworld.emote = { pikaPic = "portrait.png" }
+  game.stack.states = { overworld, state }
+  fill()
+  compose(false)
+  check(alpha() == 1, "overworld Pikachu portrait keeps its classic UI")
+  overworld.emote = nil
+  overworld.poisonFlash = 4
+  fill()
+  compose(false)
+  check(alpha() == 1, "overworld poison flash keeps its classic UI")
+  overworld.poisonFlash = nil
+
+  local releasedDrawUI = overworld.drawUI
+  overworld.drawUI = function() end
+  fill()
+  compose(false)
+  check(alpha() == 0,
+    "additive overworld UI wrapper does not disable the Start/menu stack")
+  overworld.drawUI = releasedDrawUI
+  local releasedDraw = overworld.draw
+  overworld.draw = function() end
+  fill()
+  compose(false)
+  check(alpha() == 1, "replaced overworld world renderer keeps its classic UI")
+  overworld.draw = releasedDraw
+  local foreignOverworld = { draw = overworld.draw, drawUI = overworld.drawUI }
+  game.overworld = foreignOverworld
+  game.stack.states = { foreignOverworld, state }
+  fill()
+  compose(false)
+  check(alpha() == 1, "foreign overworld replacement keeps its classic UI")
+  game.overworld = overworld
+
+  local startState = setmetatable({ screenId = "StartMenu", items = {
+    { label = "POKéMON" }, { label = "ITEM" }, { label = "OPTION" },
+  }, index = 1, update = function() end }, { __index = menuClass })
+  game.stack.states = { overworld, startState }
+  fill()
+  compose(false)
+  check(alpha() == 0,
+    "released overworld plus ordinary StartMenu is suppressible")
+  startState.draw = function() end
+  fill()
+  compose(false)
+  check(alpha() == 1, "custom StartMenu draw remains classic")
+  startState.draw = nil
+
+  -- Title art shares the UI canvas with its private main Menu. The decorator
+  -- suppresses only that ordinary Menu draw while compose preserves the title
+  -- pixels and the HUD paints the modern floating menu.
+  local title = setmetatable({ screenId = "TitleState" }, { __index = titleClass })
+  game.stack.states = { title }
+  local titleMenu = setmetatable({ items = { { label = "NEW GAME" } }, index = 1,
+    titleUiBox = { 0, 0, 12, 5 } }, { __index = menuClass })
+  titleMenu = hooks["ui.state.decorate"](
+    function(_, value) return value end, game, titleMenu, nil)
+  game.stack.states = { title, titleMenu }
+  menuDraws = 0
+  titleMenu:draw()
+  check(menuDraws == 0, "modern title Menu suppresses only its classic draw")
+  fill()
+  compose(false)
+  check(alpha() == 1, "title artwork canvas is preserved")
+  game.stack.states = { title, titleMenu, { draw = function() end } }
+  menuDraws = 0
+  titleMenu:draw()
+  check(menuDraws == 1,
+    "title Menu restores its classic draw when an unknown overlay blocks presentation")
+
+  local bag = setmetatable({ screenId = "BagMenu", items = {}, index = 1 },
+    { __index = listClass })
+  local choice = setmetatable({ index = 1 }, { __index = choiceClass })
+  game.stack.states = { bag, choice }
+  fill()
+  compose(false)
+  check(alpha() == 0, "fully modeled Bag and choice stack is cleared")
+
+  local textBox = setmetatable({ pages = { { "HELLO" } }, pageIndex = 1,
+    lineIndex = 1, charIndex = 5, shown = { {} }, done = true },
+    { __index = textBoxClass })
+  game.stack.states = { overworld, textBox, choice }
+  fill()
+  compose(false)
+  check(alpha() == 0, "fully modeled dialogue and choice stack is cleared")
+
+  local unknown = { draw = function() end }
+  game.stack.states = { bag, unknown, choice }
+  fill()
+  compose(false)
+  check(alpha() == 1, "unknown state in a modeled stack keeps the classic UI")
+
   state = setmetatable({
     screenId = "BagMenu", items = {}, index = 1, modernBag = {},
     draw = function() end,
@@ -161,12 +313,220 @@ function love.load()
   compose(false)
   check(alpha() == 0, "recognized Modern Bag draw wrapper remains suppressible")
 
+  state = { screenId = "Gen3Box", mode = "box", row = 0, col = 0,
+    draw = function() end }
+  game.stack.states = { state }
+  fill()
+  compose(false)
+  check(alpha() == 0, "recognized Gen3 Box instance draw remains suppressible")
+
   state = { phase = "command", queue = {}, kind = "wild" }
   game.stack.states = { state }
-  game.stack.visibleBase = function() return 1 end
   fill()
   compose(false)
   check(alpha() == 1, "battle UI stays native while WIP presenter is off")
+
+  game.save = {
+    player = { name = "RED", id = 1 }, money = 1234, playTime = 3600,
+    inventory = { POTION = 2 }, pokedex = { seen = { TESTMON = true },
+      owned = { TESTMON = true } },
+    currentBox = 1, boxes = { {} },
+  }
+  game.data = {
+    items = {
+      POTION = { id = "POTION", name = "POTION", price = 300 },
+      TM_TEST = { id = "TM_TEST", name = "TM01", price = 3000,
+        machine = { kind = "TM", move = "TEST_MOVE" } },
+      KEY_TEST = { id = "KEY_TEST", name = "CARD KEY", price = 0,
+        keyItem = true, description = "Opens a locked door." },
+    },
+    moves = { TEST_MOVE = { id = "TEST_MOVE", name = "TEST MOVE",
+      type = "NORMAL", pp = 20 } },
+    pokemon = { TESTMON = { id = "TESTMON", name = "TESTMON", dex = 1,
+      types = { "NORMAL" }, baseStats = { hp = 30, attack = 25,
+        defense = 20, speed = 22, special = 18 } } },
+    constants = {},
+  }
+  local testMon = { species = "TESTMON", nickname = "BUDDY", level = 12,
+    hp = 31, status = nil, exp = 1234,
+    stats = { hp = 40, attack = 24, defense = 22, speed = 25, special = 20 },
+    moves = { { id = "TEST_MOVE", pp = 17 } } }
+  local boxedMon = { species = "TESTMON", nickname = "BOXED", level = 12,
+    hp = 31, status = nil, dvs = {}, statExp = {},
+    moves = { { id = "TEST_MOVE", pp = 17 } } }
+  game.save.party = { testMon }
+  game.save.boxes[1] = { boxedMon }
+  local viewport = { width = 640, height = 360,
+    safe = { x = 0, y = 0, width = 640, height = 360 } }
+  local portraitViewport = { width = 360, height = 640,
+    safe = { x = 0, y = 0, width = 360, height = 640 },
+    _gen1TouchVisible = true }
+  local mobileLandscapeViewport = { width = 640, height = 360,
+    safe = { x = 0, y = 0, width = 640, height = 360 },
+    _gen1TouchVisible = true }
+  local hudCanvases = {}
+  local captureHud = os.getenv("GEN1_UI_SHOTS") == "1"
+  local function renderHud(states, name, activeViewport)
+    activeViewport = activeViewport or viewport
+    local key = activeViewport.width .. "x" .. activeViewport.height
+    local hudCanvas = hudCanvases[key]
+    if not hudCanvas then
+      hudCanvas = love.graphics.newCanvas(activeViewport.width, activeViewport.height)
+      hudCanvases[key] = hudCanvas
+    end
+    game.stack.states = states
+    love.graphics.setCanvas(hudCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    hooks["render.hud"](function() end, game, activeViewport)
+    love.graphics.setCanvas()
+    if captureHud and name then
+      hudCanvas:newImageData():encode("png", "gen1_ui_" .. name .. ".png")
+    end
+    return hudCanvas
+  end
+  local function pixelAlpha(canvas, x, y)
+    local _, _, _, a = canvas:newImageData():getPixel(x, y)
+    return a
+  end
+  bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
+  bag.footer = "¥1234"
+  local desktopBag = renderHud({ bag }, "bag")
+  check(pixelAlpha(desktopBag, 0, 0) == 0,
+    "desktop floating presenter leaves the world area transparent")
+  values.desktopFloating = false
+  local backedDesktopBag = renderHud({ bag }, nil)
+  check(pixelAlpha(backedDesktopBag, 0, 0) > 0,
+    "desktop floating option off restores the themed backdrop")
+  values.desktopFloating = true
+  local mobileBag = renderHud({ bag }, "bag_portrait", portraitViewport)
+  check(pixelAlpha(mobileBag, 0, 0) > 0,
+    "mobile presenter retains the full-screen themed backdrop")
+  bag.items = { { label = "TM01", right = "x1", value = "TM_TEST" } }
+  renderHud({ bag }, "bag_tm_value")
+  bag.items = { { label = "CARD KEY", right = "x1", value = "KEY_TEST" } }
+  renderHud({ bag }, "bag_key_value")
+  bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
+  values.minimalUi = true
+  renderHud({ bag }, "bag_minimal")
+  values.minimalUi = false
+
+  local startMenu = setmetatable({ screenId = "StartMenu", index = 4,
+    items = {
+      { label = "POKéDEX" }, { label = "POKéMON" }, { label = "ITEM" },
+      { label = "RED" }, { label = "SAVE" }, { label = "OPTION" },
+      { label = "LINK" }, { label = "MODS" }, { label = "RET" },
+      { label = "SPRITE STYLE" }, { label = "SPAWN AMOUNT" },
+    } }, { __index = menuClass })
+  local desktopMenu = renderHud({ startMenu }, "start_menu_floating")
+  check(pixelAlpha(desktopMenu, 10, 180) == 0
+      and pixelAlpha(desktopMenu, 610, 180) > 0,
+    "desktop start menu floats at the right with outside breathing room")
+  local mobileMenu = renderHud({ startMenu }, "start_menu_mobile_landscape",
+    mobileLandscapeViewport)
+  check(pixelAlpha(mobileMenu, 0, 0) > 0,
+    "mobile landscape start menu keeps the non-floating layout")
+  renderHud({ title, titleMenu }, "title_main_menu")
+
+  local dex = setmetatable({ screenId = "PokedexMenu", title = "POKéDEX",
+    items = { { label = "001 TESTMON", value = "TESTMON", ball = true } },
+    index = 1, scroll = 0, pageJump = true, footer = "SEEN 1  OWN 1" },
+    { __index = listClass })
+  renderHud({ dex }, "pokedex")
+  renderHud({ dex }, "pokedex_portrait", portraitViewport)
+  values.minimalUi = true
+  renderHud({ dex }, "pokedex_minimal")
+  values.minimalUi = false
+
+  local party = setmetatable({ screenId = "PartyMenu", game = game,
+    index = 1, party = game.save.party }, { __index = partyClass })
+  renderHud({ party }, "party_rich")
+  renderHud({ party }, "party_rich_portrait", portraitViewport)
+  values.minimalUi = true
+  renderHud({ party }, "party_minimal")
+  values.minimalUi = false
+  party.submenu = true
+  party.subIndex = 9
+  party.subItems = {
+    { label = "STATS", onSelect = function() end },
+    { label = "CUT", onSelect = function() end },
+    { label = "FLY", onSelect = function() end },
+    { label = "SURF", onSelect = function() end },
+    { label = "STRENGTH", onSelect = function() end },
+    { label = "FLASH", onSelect = function() end },
+    { label = "TELEPORT", onSelect = function() end },
+    { label = "MOD ACTION", onSelect = function() end },
+    { label = "CANCEL", onSelect = function() end },
+  }
+  renderHud({ party }, "party_injected_actions")
+  party.submenu, party.subItems = nil, nil
+
+  local boxRootItems = {}
+  for index = 1, 4 do
+    boxRootItems[index] = { label = "BOX ACTION " .. index, keepOpen = true,
+      onSelect = function() end }
+  end
+  boxRootItems[5] = { label = "SEE YA!" }
+  local boxRoot = setmetatable({ screenId = "BoxMenu", game = game,
+    index = 1, noSound = true, items = boxRootItems }, { __index = menuClass })
+  local boxList = setmetatable({ game = game, title = "BOX 1 (WITHDRAW)",
+    index = 1, scroll = 0, items = { { label = "BOXED :L12", value = 1 } } },
+    { __index = listClass })
+  renderHud({ boxRoot, boxList }, "box_withdraw_rich")
+  check(boxedMon.stats == nil,
+    "Bill PC derives display stats without mutating the boxed save record")
+  boxRoot.index = 2
+  boxList.title = "PARTY (DEPOSIT)"
+  renderHud({ boxRoot, boxList }, "box_deposit_rich")
+  local secondMon = { species = "TESTMON", nickname = "SECOND", level = 9,
+    hp = 20, stats = { hp = 20, attack = 15, defense = 15, speed = 15,
+      special = 15 }, moves = {} }
+  game.save.boxes[1] = { boxedMon, secondMon }
+  boxRoot.index = 3
+  boxList.title = "BOX 1 (RELEASE)"
+  boxList.items = {
+    { label = "BOXED :L12", value = 1 },
+    -- ListMenu:removeCurrent intentionally leaves this released payload stale.
+    { label = "SECOND :L9", value = 3 },
+  }
+  renderHud({ boxRoot, boxList }, "box_release_stale_payload")
+  fill()
+  compose(false)
+  check(alpha() == 0,
+    "Bill release list remains modeled when retained row payloads are stale")
+
+  local trainer = setmetatable({ screenId = "TrainerCard", game = game },
+    { __index = trainerCardClass })
+  renderHud({ trainer }, "trainer")
+  renderHud({ trainer }, "trainer_portrait", portraitViewport)
+
+  local shop = setmetatable({ title = "BUY", dialogue = true,
+    money = function() return 1234 end, footer = "What would you like?",
+    items = { { label = "POTION", right = "¥300", value = "POTION" } },
+    index = 1, scroll = 0 }, { __index = listClass })
+  renderHud({ shop }, "shop")
+  shop.items = { { label = "TM01", right = "¥3000", value = "TM_TEST" } }
+  renderHud({ shop }, "shop_portrait", portraitViewport)
+  shop.items = { { label = "POTION", right = "¥300", value = "POTION" } }
+  values.minimalUi = true
+  renderHud({ shop }, "shop_minimal")
+  values.minimalUi = false
+
+  local pc = setmetatable({ title = "WITHDRAW", messageBox = true,
+    footer = "Withdraw how many?",
+    items = { { label = "POTION", right = "x2", value = "POTION" } },
+    index = 1, scroll = 0 }, { __index = listClass })
+  renderHud({ pc }, "pc")
+  renderHud({ pc }, "pc_portrait", portraitViewport)
+
+  textBox.choice = true
+  choice.anchor = "bottom"
+  renderHud({ overworld, textBox, choice }, "dialogue_choice")
+  renderHud({ overworld, textBox, choice }, "dialogue_choice_portrait",
+    portraitViewport)
+
+  if captureHud then
+    print("compose suppression shots: " .. love.filesystem.getSaveDirectory())
+  end
 
   print("compose suppression test: PASS")
   love.event.quit(0)
