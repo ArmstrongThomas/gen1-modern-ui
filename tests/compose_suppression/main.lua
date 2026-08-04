@@ -25,7 +25,13 @@ function love.load()
   local values = {}
   local schemas = {}
   local menuDraws = 0
-  local menuClass = { draw = function() menuDraws = menuDraws + 1 end }
+  local menuClass = {
+    draw = function() menuDraws = menuDraws + 1 end,
+    new = function(_, items, opts)
+      return setmetatable({ items = items, onCancel = opts and opts.onCancel },
+        { __index = menuClass })
+    end,
+  }
   local listClass = { draw = function() end, isOpaque = true }
   local choiceClass = { draw = function() end }
   local quantityClass = { draw = function() end }
@@ -105,6 +111,14 @@ function love.load()
   end
   check(minimalRow and minimalRow.default == false,
     "minimal UI defaults to the richer presentation")
+  local modMenusRow
+  for _, schema in ipairs(schemas) do
+    for _, row in ipairs(schema) do
+      if row.key == "startMenuModMenus" then modMenusRow = row break end
+    end
+  end
+  check(modMenusRow and modMenusRow.default == true,
+    "Start menu mod grouping defaults to enabled")
   check(type(themeRow.description) == "string" and themeRow.description ~= "",
     "mod settings expose option descriptions")
   local expectedThemes = {
@@ -171,6 +185,28 @@ function love.load()
   end
   check(#shortcutItems == 3 and shortcutFound,
     "Start menu exposes the direct UI settings shortcut")
+  local modMenuRow = { id = "example.dexnav", label = "DEXNAV",
+    onSelect = function() end }
+  local groupedItems = hooks["ui.start_menu.items"](
+    function(_, list) list[#list + 1] = modMenuRow return list end, game,
+    { { label = "OPTION" }, { label = "MODS" } })
+  local groupedFound, leaked = false, false
+  for _, item in ipairs(groupedItems) do
+    if item.id == "gen1_modern_ui.mod_menus" then groupedFound = true end
+    if item.id == "example.dexnav" then leaked = true end
+  end
+  check(groupedFound and not leaked,
+    "Start menu groups rows appended by other mods")
+  values.startMenuModMenus = false
+  local flatItems = hooks["ui.start_menu.items"](
+    function(_, list) list[#list + 1] = modMenuRow return list end, game,
+    { { label = "OPTION" }, { label = "MODS" } })
+  local flatFound = false
+  for _, item in ipairs(flatItems) do
+    if item.id == "example.dexnav" then flatFound = true break end
+  end
+  check(flatFound, "Start menu grouping can be disabled")
+  values.startMenuModMenus = true
   check(type(hooks["input.step"]) == "function", "Start fast-jump hook registered")
   local jumpMenu = setmetatable({ screenId = "StartMenu", startCloses = true, index = 1,
     items = { {}, {}, {}, {}, {}, {}, {}, {} },
@@ -216,6 +252,11 @@ function love.load()
   local function alpha()
     local data = canvas:newImageData()
     local _, _, _, a = data:getPixel(0, 0)
+    return a
+  end
+  local function alphaAt(x, y)
+    local data = canvas:newImageData()
+    local _, _, _, a = data:getPixel(x, y)
     return a
   end
   local function compose(nextResult)
@@ -321,12 +362,12 @@ function love.load()
   startState.draw = nil
 
   -- Title art shares the UI canvas with its private main Menu. The decorator
-  -- suppresses only that ordinary Menu draw while compose preserves the title
-  -- pixels and the HUD paints the modern floating menu.
+  -- suppresses only that ordinary Menu draw while compose vacates its small
+  -- canvas rectangle and preserves the title pixels around it.
   local title = setmetatable({ screenId = "TitleState" }, { __index = titleClass })
   game.stack.states = { title }
   local titleMenu = setmetatable({ items = { { label = "NEW GAME" } }, index = 1,
-    titleUiBox = { 0, 0, 12, 5 } }, { __index = menuClass })
+    titleUiBox = { 0, 0, 0, 0 } }, { __index = menuClass })
   titleMenu = hooks["ui.state.decorate"](
     function(_, value) return value end, game, titleMenu, nil)
   game.stack.states = { title, titleMenu }
@@ -335,7 +376,8 @@ function love.load()
   check(menuDraws == 0, "modern title Menu suppresses only its classic draw")
   fill()
   compose(false)
-  check(alpha() == 1, "title artwork canvas is preserved")
+  check(alphaAt(0, 0) == 0 and alphaAt(15, 15) == 1,
+    "title menu rectangle is cleared while surrounding artwork is preserved")
   game.stack.states = { title, titleMenu, { draw = function() end } }
   menuDraws = 0
   titleMenu:draw()

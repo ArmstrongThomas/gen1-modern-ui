@@ -681,6 +681,8 @@ return function(mod)
       description = "Legacy compatibility setting. Use LAYOUT STYLE for new installs.", },
     { key = "startMenuShortcut", label = "START UI SETTINGS", type = "toggle", default = true,
       description = "Add a direct UI SETTINGS entry to the in-game Start menu.", },
+    { key = "startMenuModMenus", label = "START MOD MENUS", type = "toggle", default = true,
+      description = "Group menu entries added by other mods under one MOD MENUS entry.", },
     { key = "startMenuFastJump", label = "START MENU FAST JUMP", type = "toggle", default = true,
       description = "Let left/right directional presses jump five rows in the Start menu.", },
     -- Keep the richer presentation as the first-run experience. Existing
@@ -784,15 +786,67 @@ return function(mod)
     return manager
   end
 
+  local function openModMenus(game, items)
+    if not (game and mod.ui and mod.ui.Menu and type(mod.ui.Menu.new) == "function") then
+      return
+    end
+    local rows = {}
+    for _, item in ipairs(items or {}) do rows[#rows + 1] = item end
+    local menu = mod.ui.Menu.new(game, rows, {
+      tx = 8, ty = 1, tw = 12,
+      onCancel = function() mod.ui.push(game, "StartMenu") end,
+    })
+    game.stack:push(menu)
+  end
+
   -- The shortcut is additive and anchored on a stable label. It remains a
-  -- normal Start-menu row, so other mods' rows and the existing Back path are
-  -- untouched. Older clients without ManagerState/openOptions simply open the
-  -- ordinary manager and retain full compatibility.
+  -- normal Start-menu row, so the existing callbacks and Back path stay
+  -- engine-owned. Older clients without ManagerState/openOptions simply open
+  -- the ordinary manager and retain full compatibility.
   mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
+    local original = {}
+    for _, item in ipairs(items or {}) do original[item] = true end
     local out = next(game, items)
-    if type(out) ~= "table" or option("startMenuShortcut", true) == false then
+    if type(out) ~= "table" then
       return out
     end
+
+    -- There is no required mod-id field on this hook, so use object identity
+    -- for rows appended by another hook. This keeps the grouping opt-in at the
+    -- presentation layer without rewriting labels or guessing at vanilla rows.
+    local canGroupModMenus = mod.ui and mod.ui.Menu
+      and type(mod.ui.Menu.new) == "function"
+    if option("startMenuModMenus", true) ~= false and canGroupModMenus then
+      local added, addedSet, hasOriginal = {}, {}, false
+      for _, item in ipairs(out) do
+        if type(item) == "table" then
+          if original[item] then
+            hasOriginal = true
+          elseif item.id ~= "gen1_modern_ui.options"
+              and item.id ~= "gen1_modern_ui.mod_menus" then
+            added[#added + 1] = item
+            addedSet[item] = true
+          end
+        end
+      end
+      if #added > 0 and hasOriginal then
+        for index = #out, 1, -1 do
+          if addedSet[out[index]] then table.remove(out, index) end
+        end
+        local grouped = {
+          id = "gen1_modern_ui.mod_menus",
+          label = Strings("MOD MENUS"),
+          onSelect = function() openModMenus(game, added) end,
+        }
+        if mod.ui and type(mod.ui.insertBefore) == "function" then
+          mod.ui.insertBefore(out, "MODS", grouped)
+        else
+          table.insert(out, grouped)
+        end
+      end
+    end
+
+    if option("startMenuShortcut", true) == false then return out end
     for _, item in ipairs(out) do
       if type(item) == "table" and item.id == "gen1_modern_ui.options" then
         return out
@@ -1249,6 +1303,54 @@ return function(mod)
       end
     end
     return layers, #layers > 0, not preserveUiCanvas
+  end
+
+  -- TitleState draws its artwork and its native Menu into the same 160x144
+  -- UI canvas.  Unlike ordinary screens, clearing that canvas would erase the
+  -- logo and title Pokémon too.  The title menu publishes an inclusive tile
+  -- rectangle (`titleUiBox`), so vacate only that region before the normal
+  -- renderer composites the canvas.  This keeps the original title art while
+  -- removing the duplicate native Continue/New Game/Option menu underneath
+  -- the modern presenter.
+  local function titleMenuCanvasRect(game, layers)
+    if not game or not titleClass or type(layers) ~= "table" then return nil end
+    local states = game.stack and game.stack.states
+    if type(states) ~= "table" then return nil end
+    local hasTitle = false
+    for _, visible in ipairs(states) do
+      if visible and visible.screenId == "TitleState"
+          and inherits(classOf(visible), titleClass) then
+        hasTitle = true
+        break
+      end
+    end
+    if not hasTitle then return nil end
+    for _, layer in ipairs(layers) do
+      local state = layer and layer.state
+      local box = state and state.titleUiBox
+      if layer and layer.kind == "menu" and type(box) == "table"
+          and #box >= 4 then
+        local tx1, ty1 = tonumber(box[1]), tonumber(box[2])
+        local tx2, ty2 = tonumber(box[3]), tonumber(box[4])
+        if tx1 and ty1 and tx2 and ty2 and tx2 >= tx1 and ty2 >= ty1 then
+          return tx1 * 8, ty1 * 8,
+            (tx2 - tx1 + 1) * 8, (ty2 - ty1 + 1) * 8
+        end
+      end
+    end
+    return nil
+  end
+
+  local function clearCanvasRect(canvas, x, y, w, h)
+    if not (canvas and love and love.graphics and love.graphics.setCanvas
+        and love.graphics.setScissor and love.graphics.clear) then return end
+    love.graphics.push("all")
+    love.graphics.setCanvas(canvas)
+    if love.graphics.origin then love.graphics.origin() end
+    love.graphics.setScissor(x, y, w, h)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setScissor()
+    love.graphics.pop()
   end
 
   local function optionValue(game, row)
@@ -2573,12 +2675,19 @@ return function(mod)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(theme.density.panelMax or 780, 980))
     local party = state.party or (game.save and game.save.party) or {}
     local rows = monDisplayRows(game, party, state)
     local selected = clamp(state.index or 1, 1, math.max(1, #party))
     local minimal = option("minimalUi", false) == true
+    local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
+      or Strings("POKéMON  %d", #party)
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      math.max(theme.density.panelMax or 780, 980))
+    if minimal then
+      local footer = Strings("A  choose   B  back")
+      panelW = math.min(panelW, contentWidthFor(theme, rows, partyTitle,
+        footer, math.min(250, w - gutter * 2), math.min(680, w - gutter * 2)))
+    end
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
     local compactH = headerH + footerH + math.min(#rows, 6) *
@@ -2607,8 +2716,6 @@ return function(mod)
     drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
-      or Strings("POKéMON  %d", #party)
     drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
       partyTitle)
     local listLayout = { x = listX, y = listY, w = listW, h = listH,
@@ -2672,9 +2779,16 @@ return function(mod)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
+    local minimal = option("minimalUi", false) == true
+    local boxTitle = state.title or Strings("PC BOX")
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 980))
-    local minimal = option("minimalUi", false) == true
+    if minimal then
+      local footer = action == "RELEASE" and "A  release    B  back"
+        or Strings("A  %s / stats    B  back", (action or "choose"):lower())
+      panelW = math.min(panelW, contentWidthFor(theme, rows, boxTitle,
+        footer, math.min(250, w - gutter * 2), math.min(760, w - gutter * 2)))
+    end
     local compactH = theme.typography.title + theme.typography.caption
       + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
       + spacing.lg * 3
@@ -2705,7 +2819,7 @@ return function(mod)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     drawHeader(theme, { x = px, y = py, w = panelW, radius = theme.radii.md },
-      state.title or Strings("PC BOX"))
+      boxTitle)
     local save = game.save or {}
     local box = save.boxes and save.boxes[save.currentBox or 1] or {}
     local context = action == "DEPOSIT"
@@ -2869,6 +2983,11 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 900))
     local minimalBag = option("minimalUi", false) == true
+    if minimalBag then
+      panelW = math.min(panelW, contentWidthFor(theme, rows, title,
+        footerText or "A  use   B  back", math.min(250, w - gutter * 2),
+        math.min(760, w - gutter * 2)))
+    end
     local compactBagH = theme.typography.title + theme.typography.caption
       + math.min(#rows, 7) * math.min(theme.density.rowHeight, 54)
       + spacing.lg * 3
@@ -3004,6 +3123,11 @@ return function(mod)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
       math.max(theme.density.panelMax or 780, 900))
     local minimalContext = option("minimalUi", false) == true
+    if minimalContext then
+      panelW = math.min(panelW, contentWidthFor(theme, rows, title,
+        footerText or "A  choose   B  back", math.min(250, w - gutter * 2),
+        math.min(760, w - gutter * 2)))
+    end
     local compactContextH = theme.typography.title + theme.typography.caption * 2
       + math.min(#rows, 6) * math.min(theme.density.rowHeight, 54)
       + spacing.lg * 4
@@ -3834,12 +3958,17 @@ return function(mod)
     local game = currentGame
     local layers, complete, suppressCanvas = presentationStack(game)
     local hide = option("hideOriginalUi", true) ~= false
-    if handled ~= true and hide and suppressCanvas and complete and #layers > 0
+    if handled ~= true and hide and complete and #layers > 0
         and love and love.graphics and ctx and ctx.uiCanvas then
-      love.graphics.push("all")
-      love.graphics.setCanvas(ctx.uiCanvas)
-      love.graphics.clear(0, 0, 0, 0)
-      love.graphics.pop()
+      if suppressCanvas then
+        love.graphics.push("all")
+        love.graphics.setCanvas(ctx.uiCanvas)
+        love.graphics.clear(0, 0, 0, 0)
+        love.graphics.pop()
+      else
+        local tx, ty, tw, th = titleMenuCanvasRect(game, layers)
+        if tx then clearCanvasRect(ctx.uiCanvas, tx, ty, tw, th) end
+      end
     end
     return handled
   end, 100)

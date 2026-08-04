@@ -145,6 +145,15 @@ Expose a small semantic registration API keyed by stable `screenId`:
 - No callbacks or input ownership in the adapter; those remain on the state.
 - Adapter errors immediately retain the classic UI for that frame.
 
+## Start-menu and settings follow-up
+
+The `START MOD MENUS` option now groups rows appended by other mods beneath a
+single Start-menu entry while preserving their original descriptors and
+callbacks. Keep this grouping conservative because the released hook does not
+require every row to carry a mod identifier. The next settings polish should
+add category headers or collapsible sections to Gen1 Modern UI's own options
+without reordering or grouping unknown rows supplied by other authors.
+
 ## Definition of done per presenter
 
 Each new surface needs:
@@ -159,7 +168,7 @@ Each new surface needs:
 7. At least one relevant third-party mod compatibility pass.
 
 The next implementation slice should focus on UI/font/dialogue scaling and its
-responsive reflow, then Move Learn, PicBox, Naming, Town Map/Fly/AREA, and
-title ContinueInfo. First complete released-game QA for
+responsive reflow, settings category polish, then Move Learn, PicBox, Naming,
+Town Map/Fly/AREA, and title ContinueInfo. First complete released-game QA for
 the v0.5.0 dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC stack;
 any unmodeled branch must keep the classic UI.
