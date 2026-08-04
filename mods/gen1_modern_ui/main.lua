@@ -1450,19 +1450,26 @@ return function(mod)
       local start = ((state.page or 1) - 1) * 10 + 1
       local lineGap = bodyFont:getHeight() + spacing.sm
       local remaining = math.max(0, #rows - start + 1)
+      local requested = math.min(10, remaining)
       -- Keep the footer as a hard layout boundary.  Dex move pages can expose
       -- a tenth row (TM/HM); without reserving this space the final row can
       -- collide with the navigation hint on short landscape displays.
+      local contentBottom = footerY - spacing.sm - bodyFont:getHeight()
+      if requested > 1 then
+        local compressedGap = (contentBottom - heroY) / (requested - 1)
+        lineGap = math.min(lineGap, compressedGap)
+      end
+      lineGap = math.max(bodyFont:getHeight() + 1, lineGap)
       local maxVisible = math.max(1,
-        math.floor((footerY - spacing.sm - heroY) / lineGap))
+        math.floor((contentBottom - heroY) / lineGap) + 1)
       local visible = math.min(10, remaining, maxVisible)
       for offset = 0, visible - 1 do
         local row = rows[start + offset]
         love.graphics.print(truncate(row, maxW), tx, heroY + offset * lineGap)
       end
-      if visible < math.min(10, remaining) then
+      if visible < requested then
         setColor(theme.colors.textMuted)
-        love.graphics.print("...", tx, footerY - lineGap)
+        love.graphics.print("...", tx, footerY - captionFont:getHeight() - spacing.sm)
         setColor(theme.colors.text)
       end
     else
