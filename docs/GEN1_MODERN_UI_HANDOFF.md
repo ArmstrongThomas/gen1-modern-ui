@@ -193,8 +193,8 @@ classic UI is suppressed independently.
 - The battle adapter reads public battler, phase, move, and message fields. Its
   `battleUiWip` toggle is WIP and defaults off; other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
-  `startMenuFastJump`,
-`dialogueUi`, `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
+  `startMenuFastJump`, `startMenuQuickView`, `startMenuInset`, `dialogueUi`,
+  `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
   options. `desktopFloating` remains only as a migration field for old saves.
 - Every option schema row includes a short description. The modern manager
   presents it as a non-destructive help card when SELECT is pressed on that

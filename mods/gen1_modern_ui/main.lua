@@ -1738,6 +1738,10 @@ return function(mod)
       description = "Group menu entries added by other mods under one MOD MENUS entry.", },
     { key = "startMenuFastJump", label = "START MENU FAST JUMP", type = "toggle", default = true,
       description = "Let left/right directional presses jump five rows in the Start menu.", },
+    { key = "startMenuQuickView", label = "START MENU PARTY VIEW", type = "toggle", default = false,
+      description = "Show a compact party summary beside the Start menu in adaptive or floating layouts.", },
+    { key = "startMenuInset", label = "SIDE MENU INSET", type = "number", min = 0, max = 50, step = 10, default = 0,
+      description = "Move floating side menus toward the center on wide displays. 0 keeps them at the edge; 50 centers them.", },
     -- Keep the richer presentation as the first-run experience. Existing
     -- saves retain a player's explicit choice through the normal option store.
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
@@ -2216,6 +2220,7 @@ return function(mod)
     hideOriginalUi = "appearance",
     startMenuShortcut = "navigation", startMenuModMenus = "navigation",
     startMenuFastJump = "navigation",
+    startMenuQuickView = "navigation", startMenuInset = "navigation",
     dialogueUi = "presenters", menuUi = "presenters", pokemonUi = "presenters",
     managerUi = "presenters", spriteAnimation = "presenters", battleUiWip = "presenters",
     desktopFloating = "advanced", __reset = "advanced",
@@ -3402,8 +3407,19 @@ return function(mod)
     local contentH = header + footer + visible * rowHeight
     local panelH = math.min(h - gutter * 2, contentH)
     panelH = math.max(1, panelH)
+    local sidePanelInset = clamp(tonumber(option("startMenuInset", 0)) or 0,
+      0, 50) / 50
+    local sidePanelX = x + w - panelW - gutter
+    if sidePanel then
+      -- At 0% retain the established edge dock. At 50% use the available
+      -- horizontal travel to place the side menu at the viewport center;
+      -- intermediate 10% steps are useful on ultrawide displays without
+      -- changing the layout contract for ordinary windows.
+      local centerTravel = math.max(0, (w - panelW) / 2 - gutter)
+      sidePanelX = sidePanelX - centerTravel * sidePanelInset
+    end
     return {
-      x = sidePanel and (x + w - panelW - gutter) or x + (w - panelW) / 2,
+      x = sidePanel and sidePanelX or x + (w - panelW) / 2,
       y = y + (h - panelH) / 2,
       w = panelW, h = panelH, rowHeight = rowHeight,
       header = header, footer = footer, visible = visible,
@@ -4678,11 +4694,18 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 860))
+      panelMaxWidth(theme, 720))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 620))
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local titleFont = font(fontCache, theme.typography.title)
+    local headerH = textHeight(titleFont) + spacing.lg
+    local rowH = textHeight(bodyFont) + spacing.md
+    local footerH = textHeight(captionFont) + spacing.lg
+    local contentH = rowH * 3 + spacing.lg
     local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.15, 500, 640))
+      headerH + contentH + footerH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local landscape = panelW > panelH * 1.15
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -4693,129 +4716,37 @@ return function(mod)
       radius = theme.radii.md }
     drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
 
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = theme.typography.caption + spacing.lg
-    local contentY = py + headerH
-    local contentH = panelH - headerH - footerH
-    local profileH = landscape and math.min(contentH * 0.38, 170)
-      or math.min(contentH * 0.34, 210)
-    local portraitSize = math.max(72, math.min(profileH - spacing.md * 2,
-      landscape and 128 or panelW * 0.26))
-    local portraitX = px + panelW - spacing.lg - portraitSize
-    local portraitY = contentY + spacing.md
-    setColor(colors.surfaceRaised)
-    love.graphics.rectangle("fill", portraitX, portraitY, portraitSize, portraitSize,
-      theme.radii.sm)
-    local portrait = paletteRuntime.worldImage(game, state.pic)
-    if portrait then
-      drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
-        portraitSize - spacing.sm * 2, portraitSize - spacing.sm * 2)
-    end
-
     local save = game.save or {}
     local player = save.player or {}
     local playTime = math.floor(save.playTime or 0)
-    local profileX = px + spacing.lg
-    local profileW = math.max(80, portraitX - profileX - spacing.lg)
-    local profileFont = font(fontCache, theme.typography.body)
-    love.graphics.setFont(profileFont)
-    local profile = {
+    local fields = {
       { Strings("NAME"), player.name or "RED" },
-      { Strings("ID"), ("%05d"):format(tonumber(player.id) or 0) },
-      { Strings("MONEY"), ("¥%d"):format(save.money or 0) },
       { Strings("TIME"), ("%d:%02d"):format(math.floor(playTime / 3600),
           math.floor(playTime / 60) % 60) },
+      { Strings("MONEY"), ("¥%d"):format(save.money or 0) },
     }
-    local profileGap = math.max(26,
-      math.min(44, (profileH - spacing.md * 2) / #profile))
+    local contentY = py + headerH
+    local labelFont = bodyFont
+    local valueFont = bodyFont
+    love.graphics.setFont(labelFont)
     local labelWidth = 0
-    for _, row in ipairs(profile) do
-      labelWidth = math.max(labelWidth, profileFont:getWidth(row[1]))
+    for _, row in ipairs(fields) do
+      labelWidth = math.max(labelWidth, labelFont:getWidth(row[1]))
     end
-    local valueX = profileX + labelWidth + spacing.md
-    for index, row in ipairs(profile) do
-      local ry = contentY + spacing.md + (index - 1) * profileGap
+    local valueX = px + spacing.lg + labelWidth + spacing.md
+    local valueMax = math.max(24, px + panelW - spacing.lg - valueX)
+    for index, row in ipairs(fields) do
+      local rowY = contentY + spacing.sm + (index - 1) * rowH
+      setColor(index == 1 and (colors.surfaceRaised or colors.surface)
+        or colors.surface)
+      love.graphics.rectangle("fill", px + spacing.lg, rowY,
+        panelW - spacing.lg * 2, rowH - 1, theme.radii.sm)
       setColor(colors.textMuted)
-      drawText(row[1], profileX, ry)
+      drawText(row[1], px + spacing.lg + spacing.sm,
+        rowY + (rowH - textHeight(labelFont)) / 2)
       setColor(colors.text)
-      drawText(truncate(row[2], math.max(20,
-        profileX + profileW - valueX)), valueX, ry)
-    end
-
-    local badges = game.data and game.data.constants and game.data.constants.badges
-    if type(badges) ~= "table" or #badges == 0 then
-      badges = {
-        { id = "BOULDERBADGE" }, { id = "CASCADEBADGE" },
-        { id = "THUNDERBADGE" }, { id = "RAINBOWBADGE" },
-        { id = "SOULBADGE" }, { id = "MARSHBADGE" },
-        { id = "VOLCANOBADGE" }, { id = "EARTHBADGE" },
-      }
-    end
-    local inventory = save.inventory or {}
-    local ownedCount = 0
-    for _, badge in ipairs(badges) do
-      if inventory[badge.item or badge.id] then ownedCount = ownedCount + 1 end
-    end
-    local gridY = contentY + profileH + spacing.sm
-    local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
-    setColor(colors.textMuted)
-    drawText(Strings("BADGES  %d/%d", ownedCount, #badges),
-      px + spacing.lg, gridY)
-    gridY = gridY + theme.typography.caption + spacing.sm
-    gridH = math.max(1, contentY + contentH - gridY)
-    local baseCols = landscape and 4 or 2
-    local maxRows = math.max(1, math.floor((gridH + spacing.sm) / 34))
-    local cols = math.max(baseCols, math.ceil(#badges / maxRows))
-    cols = math.max(1, math.min(cols, #badges))
-    local gridRows = math.max(1, math.ceil(#badges / cols))
-    local gap = spacing.sm
-    local cellW = (panelW - spacing.lg * 2 - gap * (cols - 1)) / cols
-    local cellH = math.max(1, (gridH - gap * (gridRows - 1)) / gridRows)
-
-    for index, badge in ipairs(badges) do
-      local col, row = (index - 1) % cols, math.floor((index - 1) / cols)
-      local cx = px + spacing.lg + col * (cellW + gap)
-      local cy = gridY + row * (cellH + gap)
-      local owned = inventory[badge.item or badge.id] and true or false
-      setColor(owned and colors.surfaceRaised or colors.surface)
-      love.graphics.rectangle("fill", cx, cy, cellW, cellH, theme.radii.sm)
-      setColor(owned and colors.accent or colors.divider)
-      love.graphics.rectangle("line", cx + 0.5, cy + 0.5,
-        cellW - 1, cellH - 1, theme.radii.sm)
-
-      local icon = imageFor(badge.icon or badge.image)
-      local artSize = math.max(20, math.min(cellH - spacing.sm * 2, cellW * 0.34))
-      if icon then
-        drawImageFit(icon, cx + spacing.sm, cy + (cellH - artSize) / 2,
-          artSize, artSize)
-      else
-        local sheet = owned and state.badges or state.faces
-        local quad = sheet and sheet.quads and sheet.quads[index - 1]
-        if sheet and sheet.img and quad then
-          local image = prepareImage(sheet.img)
-          local ok, qx, qy, qw, qh = pcall(quad.getViewport, quad)
-          if ok and qw and qh then
-            local scale = math.min(artSize / qw, artSize / qh)
-            setColor({ 1, 1, 1, 1 })
-            love.graphics.draw(image, quad,
-              cx + spacing.sm + (artSize - qw * scale) / 2,
-              cy + (cellH - qh * scale) / 2, 0, scale, scale)
-          end
-        else
-          setColor(owned and colors.accent or colors.divider)
-          love.graphics.circle("line", cx + spacing.sm + artSize / 2,
-            cy + cellH / 2, artSize * 0.34)
-        end
-      end
-      local badgeName = safeText(badge.name or badge.id or ("BADGE " .. index))
-        :gsub("_", " "):gsub("BADGE$", "")
-      local labelX = cx + spacing.sm + artSize + spacing.sm
-      love.graphics.setFont(font(fontCache, theme.typography.caption))
-      setColor(owned and colors.text or colors.textMuted)
-      drawText(truncate(("%d  %s"):format(index, badgeName),
-        math.max(20, cx + cellW - spacing.sm - labelX)), labelX,
-        cy + (cellH - theme.typography.caption) / 2)
+      drawFittedText(row[2], valueX,
+        rowY + (rowH - textHeight(valueFont)) / 2, valueMax, valueFont)
     end
 
     setColor(colors.divider)
@@ -4888,6 +4819,87 @@ return function(mod)
       rows[1] = { label = Strings("No POKéMON!"), enabled = false }
     end
     return rows
+  end
+
+  -- The Start menu remains the navigation owner, but an optional companion
+  -- card can expose the most frequently checked party facts without opening
+  -- Party. Keep it informational: no second cursor or callback is introduced
+  -- and the native StartMenu continues to own every transition.
+  function mod._gen1ModernSpecialPresenters.drawStartMenuQuickView(
+      game, state, viewport, theme, menuLayout)
+    if option("startMenuQuickView", false) ~= true
+        or layoutStyle(viewport) == "full"
+        or not (state and state.screenId == "StartMenu" and menuLayout) then
+      return
+    end
+    local x, y, w, h = presenterRect(viewport)
+    if w <= h * 1.20 then return end
+    local party = state.party or (game and game.save and game.save.party) or {}
+    if type(party) ~= "table" or #party == 0 then return end
+
+    local spacing, colors = theme.spacing, theme.colors
+    local gap = spacing.lg
+    local rightEdge = menuLayout.x - gap
+    local panelX = x + gap
+    local availableW = rightEdge - panelX
+    if availableW < 220 then return end
+    local panelW = math.min(availableW, clamp(w * 0.26, 260, 380))
+    local bodyFont = font(fontCache, theme.typography.body)
+    local titleFont = font(fontCache, theme.typography.title)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local rowH = math.max(minimumRowHeight(theme) * 0.78,
+      textHeight(bodyFont) + spacing.sm)
+    local headerH = textHeight(titleFont) + spacing.md + spacing.sm
+    local maxH = math.max(1, h - spacing.lg * 2)
+    local overflowH = textHeight(captionFont) + spacing.xs
+    local visible = math.min(#party, math.max(1,
+      math.floor((maxH - headerH - spacing.lg - overflowH) / rowH)))
+    local panelH = math.min(maxH, headerH + visible * rowH + spacing.lg
+      + (#party > visible and overflowH or 0))
+    local panelY = clamp(menuLayout.y, y + spacing.lg,
+      y + h - panelH - spacing.lg)
+    local layout = { x = panelX, y = panelY, w = panelW, h = panelH,
+      radius = theme.radii.md }
+
+    drawHeader(theme, layout, Strings("PARTY"))
+    local valueFont = bodyFont
+    love.graphics.setFont(bodyFont)
+    for index = 1, visible do
+      local mon = party[index]
+      local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+      local stats = displayStats(game, mon, true)
+      local maxHP = tonumber(stats.hp) or tonumber(mon.maxHp) or 0
+      local currentHP = tonumber(mon.hp)
+      if currentHP == nil then currentHP = maxHP end
+      currentHP = clamp(currentHP, 0, math.max(maxHP, currentHP, 1))
+      local name = mon.nickname or (def and def.name) or mon.species or "POKEMON"
+      local value = (mon.level and ("Lv %d"):format(mon.level) or "")
+        .. (maxHP > 0 and ("  %d/%d"):format(currentHP, maxHP) or "")
+      local rowY = panelY + headerH + (index - 1) * rowH
+      setColor(colors.surfaceRaised or colors.surface)
+      love.graphics.rectangle("fill", panelX + spacing.sm, rowY,
+        panelW - spacing.sm * 2, rowH - 2, theme.radii.sm)
+      local leftX = panelX + spacing.md
+      local rightInset = panelX + panelW - spacing.md
+      local valueWidth = valueFont:getWidth(value)
+      local valueMax = math.max(24, panelW * 0.50 - spacing.sm)
+      valueWidth = math.min(valueWidth, valueMax)
+      local valueX = rightInset - valueWidth
+      local nameMax = math.max(24, valueX - leftX - spacing.sm)
+      setColor(colors.text)
+      drawFittedText(name, leftX,
+        rowY + (rowH - textHeight(bodyFont)) / 2, nameMax, bodyFont)
+      setColor(colors.textMuted)
+      drawFittedText(value, valueX,
+        rowY + (rowH - textHeight(bodyFont)) / 2, valueMax, bodyFont)
+    end
+    if visible < #party then
+      love.graphics.setFont(captionFont)
+      setColor(colors.textMuted)
+      drawText(Strings("%d more in party", #party - visible),
+        panelX + spacing.md,
+        panelY + headerH + visible * rowH + spacing.xs)
+    end
   end
 
   local function healthPalette(theme)
@@ -7949,6 +7961,10 @@ return function(mod)
     drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
+    if kind == "menu" and state and state.screenId == "StartMenu" then
+      mod._gen1ModernSpecialPresenters.drawStartMenuQuickView(
+        game, state, viewport, theme, layout)
+    end
     love.graphics.pop()
   end
 

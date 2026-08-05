@@ -77,9 +77,9 @@ than their live semantic contract.
 | YES/NO | `ChoiceBox`; `index`, `pending` | Shipped layered modal | Renders above a complete modern parent stack; pending timing remains engine-owned. |
 | Quantity | `QuantityBox`; `qty`, `max`, `unitPrice` | Shipped layered modal | Layers above Bag/Shop/PC and displays totals when unit price is available. |
 | Picture popup | `mod.ui.PicBox`; `image`, `text` | Dedicated presenter | Aspect-fit nearest-neighbor image card plus wrapped caption; native close/callback flow remains authoritative. |
-| Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel, group third-party/UI settings rows under MOD MENUS, and support SELECT pin/unpin for direct shortcuts. |
+| Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel, group third-party/UI settings rows under MOD MENUS, support SELECT pin/unpin, and optionally show a compact party quick view beside floating/adaptive layouts. |
 | Save/quit flow | Start row plus TextBox and ChoiceBox states | Stack-ready; QA needed | Dialogue/modal layering is shipped; test overwrite, saving, quit, and return-to-title branches before calling the family complete. |
-| Trainer/badge card | `screenId="TrainerCard"`; player ID/name, money, play time, badges, portrait | Shipped | Responsive profile card, five-digit Trainer ID, active portrait, live metadata, and scalable badge grid with optional custom badge art. |
+| Trainer card | `screenId="TrainerCard"`; player name, money, play time | Shipped | Compact content-sized card focused on the three most useful trainer facts. |
 | Bag | `screenId="BagMenu"`; rows/item defs/counts/swap/money plus nested actions | Shipped specialized presenter | Live counts, pockets, BASE/SELL values, TM move/type/PP/value, swap markers, and layered actions. Continue compatibility QA with Modern Bag, Bag 999, Item Shortcut, and reusable machines. |
 | Shops | product `ListMenu`; `dialogue`, money, rows, quantities | Shipped capability presenter | Product list + BASE/SELL details, persistent money/clerk message, quantity and confirmation modal chain; root BUY/SELL remains generic. |
 | Player item PC | item `ListMenu`; `messageBox`, rows, quantities/confirms | Shipped capability presenter | Shares list-details/modal architecture and follows live count removal; root PC choices remain generic. |
@@ -153,9 +153,10 @@ Expose a small semantic registration API keyed by stable `screenId`:
 The `START MOD MENUS` option now groups rows appended by other mods beneath a
 single Start-menu entry while preserving their original descriptors and
 callbacks. Keep this grouping conservative because the released hook does not
-require every row to carry a mod identifier. The next settings polish should
-add category headers or collapsible sections to Gen1 Modern UI's own options
-without reordering or grouping unknown rows supplied by other authors.
+require every row to carry a mod identifier. Gen1 Modern UI's own options are
+already organized into expandable Appearance, Navigation, Presenters, and
+Advanced categories; new Start-menu controls belong in Navigation without
+reordering or grouping unknown rows supplied by other authors.
 
 ## Definition of done per presenter
 

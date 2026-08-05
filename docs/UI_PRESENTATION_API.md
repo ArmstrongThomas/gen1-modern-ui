@@ -282,9 +282,11 @@ remain compatible with existing saves and tools.
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
 toggle is independent from the `layoutStyle`, `panelOpacity`,
-`foregroundOpacity`, `startMenuShortcut`, `startMenuFastJump`, `dialogueUi`, generic
-`menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by
-the mod options.
+`foregroundOpacity`, `startMenuShortcut`, `startMenuFastJump`,
+`startMenuQuickView`, `startMenuInset`, `dialogueUi`, generic `menuUi`,
+`pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by the mod
+options. The Start-menu quick view is off by default; `startMenuInset` is a
+0–50% Navigation setting in 10% steps, with 0% retaining edge docking.
 
 On portrait phones the presenter scales typography and row density modestly.
 Gen 3 Box cells remain square and reserve a caption strip for name/level text;

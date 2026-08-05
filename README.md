@@ -85,6 +85,10 @@ when the listing is enabled there.
 - **START MENU FAST JUMP** lets a left/right touch-button press (or the same
   directional input from a keyboard/controller) jump five rows in the Start
   menu, with normal up/down navigation unchanged.
+- **START MENU PARTY VIEW** is an opt-in, minimal quick reference for nickname,
+  level, and current/max HP beside the floating or adaptive Start menu. On
+  ultrawide displays, **SIDE MENU INSET** moves that side panel toward center in
+  10% steps without changing the default edge-docked layout.
 - Experimental **TOUCH / CLICK UI** and **DRAG UI PANELS** both default off.
   When enabled, touch and mouse pointers can hover, tap modern rows and modal
   cards, scroll long lists by touch-drag, and drag panel chrome through the
@@ -133,7 +137,8 @@ when the listing is enabled there.
   status, current stats, and the selected Pokémon's live moves/PP. Missing box
   stats are calculated for display without mutating the save.
 - Bag and Shop details show the base purchase value and half-price sell value,
-  including TM move/type/PP/value data; Trainer Card includes the five-digit ID.
+  including TM move/type/PP/value data; Trainer Card is a compact name, play
+  time, and money card.
 - **MINIMAL UI** is off by default. When enabled, it keeps the modern shell and
   live controls while removing optional detail/preview panes and recomputing a
   genuinely compact layout. Party, PC, Bag, Shop, and context panels now size
