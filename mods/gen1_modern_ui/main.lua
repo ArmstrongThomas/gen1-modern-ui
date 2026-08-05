@@ -4694,18 +4694,11 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 720))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 620))
-    local bodyFont = font(fontCache, theme.typography.body)
-    local captionFont = font(fontCache, theme.typography.caption)
-    local titleFont = font(fontCache, theme.typography.title)
-    local headerH = textHeight(titleFont) + spacing.lg
-    local rowH = textHeight(bodyFont) + spacing.md
-    local footerH = textHeight(captionFont) + spacing.lg
-    local contentH = rowH * 3 + spacing.lg
+      panelMaxWidth(theme, 860))
     local panelH = math.min(h - gutter * 2,
-      headerH + contentH + footerH)
+      scaledPanelHeight(theme, w > h * 1.15, 500, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local landscape = panelW > panelH * 1.15
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -4716,37 +4709,129 @@ return function(mod)
       radius = theme.radii.md }
     drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
 
+    local headerH = theme.typography.title + spacing.lg
+    local footerH = theme.typography.caption + spacing.lg
+    local contentY = py + headerH
+    local contentH = panelH - headerH - footerH
+    local profileH = landscape and math.min(contentH * 0.38, 170)
+      or math.min(contentH * 0.34, 210)
+    local portraitSize = math.max(72, math.min(profileH - spacing.md * 2,
+      landscape and 128 or panelW * 0.26))
+    local portraitX = px + panelW - spacing.lg - portraitSize
+    local portraitY = contentY + spacing.md
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", portraitX, portraitY, portraitSize, portraitSize,
+      theme.radii.sm)
+    local portrait = prepareImage(state.pic)
+    if portrait then
+      drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
+        portraitSize - spacing.sm * 2, portraitSize - spacing.sm * 2)
+    end
+
     local save = game.save or {}
     local player = save.player or {}
     local playTime = math.floor(save.playTime or 0)
-    local fields = {
+    local profileX = px + spacing.lg
+    local profileW = math.max(80, portraitX - profileX - spacing.lg)
+    local profileFont = font(fontCache, theme.typography.body)
+    love.graphics.setFont(profileFont)
+    local profile = {
       { Strings("NAME"), player.name or "RED" },
+      { Strings("ID"), ("%05d"):format(tonumber(player.id) or 0) },
+      { Strings("MONEY"), ("¥%d"):format(save.money or 0) },
       { Strings("TIME"), ("%d:%02d"):format(math.floor(playTime / 3600),
           math.floor(playTime / 60) % 60) },
-      { Strings("MONEY"), ("¥%d"):format(save.money or 0) },
     }
-    local contentY = py + headerH
-    local labelFont = bodyFont
-    local valueFont = bodyFont
-    love.graphics.setFont(labelFont)
+    local profileGap = math.max(26,
+      math.min(44, (profileH - spacing.md * 2) / #profile))
     local labelWidth = 0
-    for _, row in ipairs(fields) do
-      labelWidth = math.max(labelWidth, labelFont:getWidth(row[1]))
+    for _, row in ipairs(profile) do
+      labelWidth = math.max(labelWidth, profileFont:getWidth(row[1]))
     end
-    local valueX = px + spacing.lg + labelWidth + spacing.md
-    local valueMax = math.max(24, px + panelW - spacing.lg - valueX)
-    for index, row in ipairs(fields) do
-      local rowY = contentY + spacing.sm + (index - 1) * rowH
-      setColor(index == 1 and (colors.surfaceRaised or colors.surface)
-        or colors.surface)
-      love.graphics.rectangle("fill", px + spacing.lg, rowY,
-        panelW - spacing.lg * 2, rowH - 1, theme.radii.sm)
+    local valueX = profileX + labelWidth + spacing.md
+    for index, row in ipairs(profile) do
+      local ry = contentY + spacing.md + (index - 1) * profileGap
       setColor(colors.textMuted)
-      drawText(row[1], px + spacing.lg + spacing.sm,
-        rowY + (rowH - textHeight(labelFont)) / 2)
+      love.graphics.print(row[1], profileX, ry)
       setColor(colors.text)
-      drawFittedText(row[2], valueX,
-        rowY + (rowH - textHeight(valueFont)) / 2, valueMax, valueFont)
+      love.graphics.print(truncate(row[2], math.max(20,
+        profileX + profileW - valueX)), valueX, ry)
+    end
+
+    local badges = game.data and game.data.constants and game.data.constants.badges
+    if type(badges) ~= "table" or #badges == 0 then
+      badges = {
+        { id = "BOULDERBADGE" }, { id = "CASCADEBADGE" },
+        { id = "THUNDERBADGE" }, { id = "RAINBOWBADGE" },
+        { id = "SOULBADGE" }, { id = "MARSHBADGE" },
+        { id = "VOLCANOBADGE" }, { id = "EARTHBADGE" },
+      }
+    end
+    local inventory = save.inventory or {}
+    local ownedCount = 0
+    for _, badge in ipairs(badges) do
+      if inventory[badge.item or badge.id] then ownedCount = ownedCount + 1 end
+    end
+    local gridY = contentY + profileH + spacing.sm
+    local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    setColor(colors.textMuted)
+    love.graphics.print(Strings("BADGES  %d/%d", ownedCount, #badges),
+      px + spacing.lg, gridY)
+    gridY = gridY + theme.typography.caption + spacing.sm
+    gridH = math.max(1, contentY + contentH - gridY)
+    local baseCols = landscape and 4 or 2
+    local maxRows = math.max(1, math.floor((gridH + spacing.sm) / 34))
+    local cols = math.max(baseCols, math.ceil(#badges / maxRows))
+    cols = math.max(1, math.min(cols, #badges))
+    local gridRows = math.max(1, math.ceil(#badges / cols))
+    local gap = spacing.sm
+    local cellW = (panelW - spacing.lg * 2 - gap * (cols - 1)) / cols
+    local cellH = math.max(1, (gridH - gap * (gridRows - 1)) / gridRows)
+
+    for index, badge in ipairs(badges) do
+      local col, row = (index - 1) % cols, math.floor((index - 1) / cols)
+      local cx = px + spacing.lg + col * (cellW + gap)
+      local cy = gridY + row * (cellH + gap)
+      local owned = inventory[badge.item or badge.id] and true or false
+      setColor(owned and colors.surfaceRaised or colors.surface)
+      love.graphics.rectangle("fill", cx, cy, cellW, cellH, theme.radii.sm)
+      setColor(owned and colors.accent or colors.divider)
+      love.graphics.rectangle("line", cx + 0.5, cy + 0.5,
+        cellW - 1, cellH - 1, theme.radii.sm)
+
+      local icon = imageFor(badge.icon or badge.image)
+      local artSize = math.max(20, math.min(cellH - spacing.sm * 2, cellW * 0.34))
+      if icon then
+        drawImageFit(icon, cx + spacing.sm, cy + (cellH - artSize) / 2,
+          artSize, artSize)
+      else
+        local sheet = owned and state.badges or state.faces
+        local quad = sheet and sheet.quads and sheet.quads[index - 1]
+        if sheet and sheet.img and quad then
+          local image = prepareImage(sheet.img)
+          local ok, qx, qy, qw, qh = pcall(quad.getViewport, quad)
+          if ok and qw and qh then
+            local scale = math.min(artSize / qw, artSize / qh)
+            setColor({ 1, 1, 1, 1 })
+            love.graphics.draw(image, quad,
+              cx + spacing.sm + (artSize - qw * scale) / 2,
+              cy + (cellH - qh * scale) / 2, 0, scale, scale)
+          end
+        else
+          setColor(owned and colors.accent or colors.divider)
+          love.graphics.circle("line", cx + spacing.sm + artSize / 2,
+            cy + cellH / 2, artSize * 0.34)
+        end
+      end
+      local badgeName = safeText(badge.name or badge.id or ("BADGE " .. index))
+        :gsub("_", " "):gsub("BADGE$", "")
+      local labelX = cx + spacing.sm + artSize + spacing.sm
+      love.graphics.setFont(font(fontCache, theme.typography.caption))
+      setColor(owned and colors.text or colors.textMuted)
+      love.graphics.print(truncate(("%d  %s"):format(index, badgeName),
+        math.max(20, cx + cellW - spacing.sm - labelX)), labelX,
+        cy + (cellH - theme.typography.caption) / 2)
     end
 
     setColor(colors.divider)

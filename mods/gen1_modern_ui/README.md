@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.7.8 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.7.9 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -230,7 +230,7 @@ compact.
 The Pokédex list keeps the live selection, scroll/filter rows, seen/owned
 markers, and Useful Dex rebuilds while adding a selected-species preview.
 Trainer Card uses the already-resolved player portrait, shows the canonical
-five-digit Trainer ID, and supports runtime badge definitions including
+five-digit Trainer ID, money, play time, and badge progress, and supports runtime badge definitions including
 optional custom badge art. Party and released Bill's-PC deposit/withdraw lists
 show the selected Pokémon's active front sprite, HP/status, current stats, and
 live move PP while retaining injected Party action rows. Box records that do
