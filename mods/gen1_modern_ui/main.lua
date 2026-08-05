@@ -459,7 +459,7 @@ local function textCharacters(value)
   local chars = {}
   if utf8TextLibrary and type(utf8TextLibrary.codes) == "function"
       and type(utf8TextLibrary.char) == "function" then
-    for codepoint in utf8TextLibrary.codes(value) do
+    for _, codepoint in utf8TextLibrary.codes(value) do
       chars[#chars + 1] = utf8TextLibrary.char(codepoint)
     end
   else
@@ -781,6 +781,126 @@ local function inherits(class, target, seen)
   return mt and inherits(mt.__index, target, seen) or false
 end
 
+-- The stock naming grid has no numeric glyphs. Keep both original letter
+-- pages intact and add two compact number rows immediately before the
+-- page-switch row. This uses the host's existing grid navigation and confirm
+-- callbacks, so Name Rater and trainer naming still finish through their
+-- original onDone handlers. If another mod already supplies digits (RBY MMO
+-- does), leave its page untouched.
+local NAMING_NUMBER_ROWS = {
+  { "1", "2", "3", "4", "5" },
+  { "6", "7", "8", "9", "0" },
+}
+
+local function namingGridHasDigit(grid)
+  if type(grid) ~= "table" then return false end
+  for _, row in ipairs(grid) do
+    if type(row) == "table" then
+      for _, cell in ipairs(row) do
+        if cell == "0" or cell == "1" or cell == "2"
+            or cell == "3" or cell == "4" or cell == "5"
+            or cell == "6" or cell == "7" or cell == "8"
+            or cell == "9" then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+local function namingGridHasLowercase(grid)
+  if type(grid) ~= "table" then return false end
+  for _, row in ipairs(grid) do
+    if type(row) == "table" then
+      for _, cell in ipairs(row) do
+        if type(cell) == "string" and cell:match("^[a-z]$") then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+local function namingGridWithNumbers(grid)
+  if type(grid) ~= "table" or #grid == 0 then return grid end
+  local hasDigit = namingGridHasDigit(grid)
+  local caseRow = #grid
+  for rowIndex, row in ipairs(grid) do
+    if type(row) == "table" then
+      if #row == 1 and (row[1] == "lower case"
+          or row[1] == "UPPER CASE" or row[1] == "lower"
+          or row[1] == "UPPER" or row[1] == "123"
+          or row[1] == "ABC") then
+        caseRow = rowIndex
+      end
+    end
+  end
+
+  -- RBY MMO labels the uppercase page's case-switch row `123` and its
+  -- numeric page's return row `ABC`. Those labels are meaningful to its
+  -- original renderer, but the engine's NamingScreen only recognizes the
+  -- semantic `lower case` / `UPPER CASE` labels when locating the switch.
+  -- Normalize the labels while preserving the row's position and callback
+  -- behavior. This also keeps the modern presenter from advertising a
+  -- button that looks like a digits page but actually toggles case.
+  local normalized = {}
+  for rowIndex, row in ipairs(grid) do
+    if type(row) == "table" and #row == 1 then
+      local label = row[1]
+      if label == "123" then
+        normalized[rowIndex] = { "lower case" }
+      elseif label == "ABC" then
+        normalized[rowIndex] = { "UPPER CASE" }
+      end
+    end
+    if not normalized[rowIndex] then normalized[rowIndex] = row end
+  end
+  if hasDigit then return normalized end
+
+  local augmented = {}
+  for rowIndex, row in ipairs(normalized) do
+    if rowIndex == caseRow then
+      for _, numberRow in ipairs(NAMING_NUMBER_ROWS) do
+        augmented[#augmented + 1] = numberRow
+      end
+    end
+    augmented[#augmented + 1] = row
+  end
+  return augmented
+end
+
+local function normalizedScreenId(value)
+  return type(value) == "string"
+    and value:lower():gsub("[^a-z0-9]", "") or ""
+end
+
+local function isRbyMmoProfileState(state)
+  if type(state) ~= "table" then return false end
+  return normalizedScreenId(state.screenId):find("rbymmoprofile", 1, true) ~= nil
+    and type(state.player) == "table"
+end
+
+local function isRbyMmoRankState(state)
+  if type(state) ~= "table" then return false end
+  local id = normalizedScreenId(state.screenId)
+  return id:find("rbymmorank", 1, true) ~= nil
+    and (type(state.offset) == "number" or type(state.client) == "table"
+      or type(state.rows) == "table")
+end
+
+local function isRbyMmoCharacterPickState(state)
+  if type(state) ~= "table" or type(state.screenId) ~= "string" then
+    return false
+  end
+  local id = normalizedScreenId(state.screenId)
+  -- RBY MMO registers this screen as RbyMmoCharPick. Keep the stable id as
+  -- the primary seam so an unrelated CHARACTER list is never commandeered.
+  return id:find("rbymmocharpick", 1, true) ~= nil
+    and type(state.items) == "table" and type(state.index) == "number"
+end
+
 return function(mod)
   local okStrings, engineStrings = pcall(require, "src.core.Strings")
   local function fallbackStrings(value, ...)
@@ -844,6 +964,18 @@ return function(mod)
       return safeText(state.page)
     elseif kind == "dex_entry" then
       return safeText(state.view)
+    elseif kind == "move_learn" then
+      return tostring(state.selecting) .. ":" .. tostring(state.index)
+    elseif kind == "naming" then
+      local glyphCount = type(state.glyphs) == "table" and #state.glyphs or 0
+      -- Cursor movement is the interaction being tracked here; row/column
+      -- must not invalidate a pointer capture between press and release.
+      return table.concat({ tostring(state.lower), tostring(glyphCount),
+        tostring(state.grid or state.gridRows) }, ":")
+    elseif kind == "town_map" then
+      return tostring(state.mode) .. ":" .. tostring(state.sel)
+    elseif kind == "quarantine_report" then
+      return tostring(state.offset)
     elseif kind == "choice" then
       return tostring(state.pending)
     elseif kind == "bag" then
@@ -1078,6 +1210,69 @@ return function(mod)
     return nil
   end
 
+  -- Presenter helpers are declared in stages below; initialize the shared
+  -- table before the image helpers attach the RBYMMO portrait adapter.
+  mod._gen1ModernSpecialPresenters = mod._gen1ModernSpecialPresenters or {}
+  mod._gen1ModernSpecialPresenters._qolLocationBanner =
+    mod._gen1ModernSpecialPresenters._qolLocationBanner or {}
+
+  -- RBYMMO exposes the selected avatar as a sprite id.  The host's merged
+  -- sprite catalog owns the actual sheet, so keep this adapter independent
+  -- of RBYMMO's private Chars module and crop its front-facing 16x16 pose.
+  -- The returned descriptor is deliberately shared by the profile, rank,
+  -- and Town Map presenters so a sheet is loaded only once.
+  function mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, spriteId)
+    if type(spriteId) ~= "string" then return nil end
+    local sprites = game and game.data and game.data.sprites
+    local record = type(sprites) == "table" and sprites[spriteId] or nil
+    local imageValue = type(record) == "table"
+      and (record.image or record.path or record.texture) or nil
+    if not imageValue then return nil end
+    local cache = mod._gen1ModernSpecialPresenters._rbyMmoPortraitCache
+    if type(cache) ~= "table" then
+      cache = {}
+      mod._gen1ModernSpecialPresenters._rbyMmoPortraitCache = cache
+    end
+    local cacheKey = tostring(imageValue)
+    if cache[cacheKey] == false then return nil end
+    if cache[cacheKey] then return cache[cacheKey] end
+    local image = imageFor(imageValue)
+    if not image or not love.graphics.newQuad then
+      cache[cacheKey] = false
+      return nil
+    end
+    local okW, imageW = pcall(function() return image:getWidth() end)
+    local okH, imageH = pcall(function() return image:getHeight() end)
+    if not okW or not okH or not imageW or not imageH
+        or imageW < 16 or imageH < 16 then
+      cache[cacheKey] = false
+      return nil
+    end
+    local okQuad, quad = pcall(love.graphics.newQuad, 0, 0, 16, 16,
+      imageW, imageH)
+    if not okQuad or not quad then
+      cache[cacheKey] = false
+      return nil
+    end
+    cache[cacheKey] = { image = image, quad = quad, width = 16, height = 16 }
+    return cache[cacheKey]
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawImageFitRegion(image, x, y,
+      w, h)
+    if type(image) ~= "table" or not image.image or not image.quad then
+      return drawImageFit(image, x, y, w, h)
+    end
+    local iw, ih = image.width or 16, image.height or 16
+    if w <= 0 or h <= 0 or iw <= 0 or ih <= 0 then return false end
+    local scale = math.min(w / iw, h / ih)
+    setColor({ 1, 1, 1, 1 })
+    love.graphics.draw(image.image, image.quad,
+      x + (w - iw * scale) / 2, y + (h - ih * scale) / 2,
+      0, scale, scale)
+    return true
+  end
+
   local function themeAssetFor(value)
     local image = imageFor(value)
     if image then return image end
@@ -1166,7 +1361,7 @@ return function(mod)
   end
 
   local function currentTheme(viewport)
-    local usePixelFont = option("pixelFont", true) ~= false
+    local usePixelFont = option("pixelFont", false) == true
     fontCache._usePixel = usePixelFont
     local base = themes[option("theme", "gen1_modern_ui:classic_mono")]
       or themes["gen1_modern_ui:classic_mono"] or themes.default
@@ -1335,8 +1530,8 @@ return function(mod)
     { key = "fontScale", label = "FONT SCALE", type = "choice",
       description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
       choices = percentChoices(80, 200, true), default = "100" },
-    { key = "pixelFont", label = "PIXEL ART FONT", type = "toggle", default = true,
-      description = "Use gen1recomp's multilingual Plain Pixel font on its crisp 15-pixel raster grid. Older builds and missing glyphs fall back safely to the system font.", },
+    { key = "pixelFont", label = "PIXEL ART FONT", type = "toggle", default = false,
+      description = "Enable the experimental multilingual Plain Pixel font on its crisp 15-pixel raster grid. Older builds and missing glyphs fall back safely to the system font.", },
     { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
       description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
       choices = { { "INHERIT", "inherit" }, { "110%", "110" },
@@ -1372,10 +1567,10 @@ return function(mod)
     -- saves retain a player's explicit choice through the normal option store.
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
       description = "Use a compact presentation with fewer previews and less extra detail.", },
-    { key = "pointerUi", label = "TOUCH / CLICK UI", type = "toggle", default = true,
-      description = "Enable row/grid hover and taps, global mouse A/B, and contextual arrow, SELECT, and START buttons.", },
-    { key = "dragPanels", label = "DRAG UI PANELS", type = "toggle", default = true,
-      description = "Allow touch or mouse dragging to reposition modern panels. Positions are saved per screen family.", },
+    { key = "pointerUi", label = "TOUCH / CLICK UI", type = "toggle", default = false,
+      description = "Enable experimental row/grid hover and taps, global mouse A/B, and contextual arrow, SELECT, and START buttons.", },
+    { key = "dragPanels", label = "DRAG UI PANELS", type = "toggle", default = false,
+      description = "Allow experimental touch or mouse dragging to reposition modern panels. Requires TOUCH / CLICK UI; positions are saved per screen family.", },
     { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true,
       description = "Use modern text boxes, choices, quantities, and confirmation prompts.", },
     { key = "menuUi", label = "MENU UI", type = "toggle", default = true,
@@ -1456,6 +1651,13 @@ return function(mod)
   local partyClass = optionalClass("src.ui.PartyMenu")
   local summaryClass = optionalClass("src.ui.SummaryMenu")
   local dexEntryClass = optionalClass("src.ui.DexEntryMenu")
+  mod._gen1ModernSpecialClasses = {
+    moveLearn = optionalClass("src.ui.MoveLearnMenu"),
+    picBox = optionalClass("src.ui.PicBox"),
+    naming = optionalClass("src.ui.NamingScreen"),
+    townMap = optionalClass("src.ui.TownMap"),
+    quarantineReport = optionalClass("src.ui.QuarantineReport"),
+  }
   local managerClass = optionalClass("src.mods.ManagerState")
   local titleClass = optionalClass("src.ui.TitleState")
   -- LinkState is a released custom state rather than a Menu/ListMenu.  Keep
@@ -1555,12 +1757,18 @@ return function(mod)
   end
 
   local function pinMap()
-    if type(pinCache) == "table" then return pinCache end
     local ok, stored = false, nil
     if mod.save and type(mod.save.get) == "function" then
       ok, stored = pcall(mod.save.get, mod.save, "startMenuPins", {})
     end
-    pinCache = ok and type(stored) == "table" and stored or {}
+    -- Read the backing bucket again instead of permanently retaining the
+    -- table from the first save slot.  The engine can replace modSave when a
+    -- player continues, starts a new game, or hot-reloads a session.
+    if ok and type(stored) == "table" then
+      pinCache = stored
+    elseif type(pinCache) ~= "table" then
+      pinCache = {}
+    end
     return pinCache
   end
 
@@ -1905,6 +2113,12 @@ return function(mod)
     if not pendingPress(input, "select") then return end
     local item = top.items[top.index]
     if togglePinned(item) ~= nil then
+      -- Pins are presentation preferences, but mod.save is backed by the
+      -- current game save. Flush immediately so a client restart does not
+      -- discard a deliberate SELECT pin/unpin action.
+      if game.save and type(game.writeSave) == "function" then
+        pcall(game.writeSave, game)
+      end
       -- SELECT is a presentation-only pin action. Leave A/arrow callbacks to
       -- the engine so every source mod keeps its normal menu behavior.
       consumePending(input, { select = true })
@@ -2081,10 +2295,41 @@ return function(mod)
       or id:match("Settings$") ~= nil
   end
 
+  local function isNamingState(state)
+    if type(state) ~= "table" then
+      return false
+    end
+    local id = type(state.screenId) == "string"
+      and state.screenId:lower() or ""
+    -- Name Rater itself pushes the engine's ordinary NamingScreen. Mods such
+    -- as RBY MMO wrap that instance's draw method to adjust the naming field,
+    -- which must remain a modeled naming screen rather than falling through
+    -- the unknown-draw safety guard. Keep the class check narrow so arbitrary
+    -- screens named "NamingScreen" cannot opt into this presenter by id alone.
+    local namingClass = mod._gen1ModernSpecialClasses
+      and mod._gen1ModernSpecialClasses.naming
+    local isBuiltinNaming = namingClass
+      and inherits(classOf(state), namingClass)
+    if not isBuiltinNaming and not id:find("namerater", 1, true)
+        and not id:find("nickname", 1, true) then
+      return false
+    end
+    local hasGrid = type(state.grid) == "function"
+      or type(state.grid) == "table" or type(state.gridRows) == "table"
+    return hasGrid and type(state.glyphs) == "table"
+      and type(state.row) == "number" and type(state.col) == "number"
+  end
+
   local function kindFor(state)
     if not state then return nil end
     local id = state.screenId
     local class = classOf(state)
+    -- RBY MMO's profile and leaderboard are plain local classes rather than
+    -- engine widgets. Their stable screen ids and public payloads are the
+    -- compatibility seam; do not rely on the mod's private class identity.
+    if isRbyMmoProfileState(state) then return "rby_mmo_profile" end
+    if isRbyMmoRankState(state) then return "rby_mmo_rank" end
+    if isRbyMmoCharacterPickState(state) then return "rby_mmo_char_pick" end
     if isLinkState(state) then return "link" end
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
@@ -2099,6 +2344,28 @@ return function(mod)
     if isGen3Box(state) then return "gen3_box" end
     if id == "DexEntryMenu" and ((dexEntryClass and inherits(class, dexEntryClass))
         or isUsefulDexEntry(state)) then return "dex_entry" end
+    if id == "MoveLearnMenu" and mod._gen1ModernSpecialClasses.moveLearn
+        and inherits(class, mod._gen1ModernSpecialClasses.moveLearn) then
+      return "move_learn"
+    end
+    if id == "PicBox" and mod._gen1ModernSpecialClasses.picBox
+        and inherits(class, mod._gen1ModernSpecialClasses.picBox) then
+      return "pic_box"
+    end
+    if mod._gen1ModernSpecialClasses.naming
+        and inherits(class, mod._gen1ModernSpecialClasses.naming) then
+      return "naming"
+    end
+    if isNamingState(state) then return "naming" end
+    if id == "TownMap" and mod._gen1ModernSpecialClasses.townMap
+        and inherits(class, mod._gen1ModernSpecialClasses.townMap) then
+      return "town_map"
+    end
+    if id == "QuarantineReport"
+        and mod._gen1ModernSpecialClasses.quarantineReport
+        and inherits(class, mod._gen1ModernSpecialClasses.quarantineReport) then
+      return "quarantine_report"
+    end
     if isOptionRowsScreen(state) then return "mod_options" end
     if id == "TrainerCard" and trainerCardClass
         and inherits(class, trainerCardClass) then return "trainer_card" end
@@ -2142,6 +2409,12 @@ return function(mod)
         or kind == "box_mon_list" then
       return option("pokemonUi", true) ~= false
     end
+    if kind == "move_learn" or kind == "pic_box" or kind == "naming"
+        or kind == "town_map" or kind == "quarantine_report"
+        or kind == "rby_mmo_profile" or kind == "rby_mmo_rank"
+        or kind == "rby_mmo_char_pick" then
+      return option("menuUi", true) ~= false
+    end
     return option("menuUi", true) ~= false
   end
 
@@ -2158,6 +2431,9 @@ return function(mod)
         and type(state.modernBag) == "table" then return true end
     if kind == "gen3_box" and isGen3Box(state) then return true end
     if kind == "dex_entry" and isUsefulDexEntry(state) then return true end
+    if kind == "naming" and isNamingState(state) then return true end
+    if kind == "rby_mmo_profile" or kind == "rby_mmo_rank"
+        or kind == "rby_mmo_char_pick" then return true end
     if kind == "box_root" and isBoxRoot(state) then return true end
     if kind == "menu" and state._gen1ModernTitleMenu == true
         and rawget(state, "draw") == state._gen1ModernTitleDraw then return true end
@@ -2179,6 +2455,15 @@ return function(mod)
     if kind == "summary" then return summaryClass end
     if kind == "trainer_card" then return trainerCardClass end
     if kind == "dex_entry" then return dexEntryClass end
+    if kind == "move_learn" then return mod._gen1ModernSpecialClasses.moveLearn end
+    if kind == "pic_box" then return mod._gen1ModernSpecialClasses.picBox end
+    if kind == "naming" then return mod._gen1ModernSpecialClasses.naming end
+    if kind == "town_map" then return mod._gen1ModernSpecialClasses.townMap end
+    if kind == "quarantine_report" then
+      return mod._gen1ModernSpecialClasses.quarantineReport
+    end
+    if kind == "rby_mmo_profile" or kind == "rby_mmo_rank" then return nil end
+    if kind == "rby_mmo_char_pick" then return listClass end
     if kind == "mod_manager" then return managerClass end
     return nil
   end
@@ -2293,6 +2578,102 @@ return function(mod)
         syncStateVisibility(game, state)
       end
     end
+  end
+
+  -- Quality of Life's location banner is intentionally a visual-only overlay
+  -- attached to the overworld. Read the same saved option it reads, but keep
+  -- the presenter independent of that mod's private banner state. This lets
+  -- Modern UI replace the classic Font.drawBox without requiring QOL to
+  -- expose an implementation detail as a public API.
+  function mod._gen1ModernSpecialPresenters.qolLocationDuration(game)
+    local options = game and game.save and game.save.options
+    local modOptions = options and options.modOptions
+    local bucket = type(modOptions) == "table"
+      and modOptions.quality_of_life or nil
+    local value = type(bucket) == "table"
+      and bucket.qol_location_banners or nil
+    if value == true then return 2 end
+    value = tonumber(value)
+    return value and value > 0 and value or 0
+  end
+
+  function mod._gen1ModernSpecialPresenters.qolLocationName(game, mapId, map)
+    local field = game and game.data and game.data.field
+    local townMap = field and field.townMap
+    local locations = townMap and (townMap.locations or townMap)
+    local entry = type(locations) == "table" and locations[mapId] or nil
+    local name = type(entry) == "table" and (entry.name or entry.label) or nil
+    local maps = game and game.data and game.data.maps
+    local def = map and map.def or (maps and maps[mapId])
+    if not name and def and type(def.label) == "string" then
+      name = def.label:gsub("(%l)(%u)", "%1 %2")
+    end
+    return safeText(name or tostring(mapId):gsub("_", " ")):upper()
+  end
+
+  function mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
+      game, suppress)
+    local world = mod.world
+    local ow = world and type(world.overworld) == "function"
+      and world:overworld() or nil
+    local overlay = ow and rawget(ow, "__qolLocationBannerOverlay") or nil
+    if type(overlay) ~= "table" then return end
+    local savedKey = "__gen1ModernQolOriginalDraw"
+    if suppress then
+      if rawget(overlay, savedKey) == nil then
+        rawset(overlay, savedKey, rawget(overlay, "draw"))
+      end
+      overlay.draw = function() end
+    else
+      local original = rawget(overlay, savedKey)
+      if original ~= nil then
+        overlay.draw = original
+        rawset(overlay, savedKey, nil)
+      end
+    end
+  end
+
+  if mod.events and type(mod.events.on) == "function" then
+    -- QOL uses the default priority. Register after it so its overlay has
+    -- already been created; we can then mirror its setting and neutralize the
+    -- classic draw function before the first modern frame is presented.
+    mod.events:on("map.entered", function(event)
+      local game = currentGame or (mod.world and mod.world.game)
+      local banner = mod._gen1ModernSpecialPresenters._qolLocationBanner
+      local world = mod.world
+      local ow = world and type(world.overworld) == "function"
+        and world:overworld() or nil
+      banner.name, banner.expiresAt, banner.overworld = nil, nil, nil
+      if not game or not ow or type(event) ~= "table" or not event.mapId
+          or event.mapId == "ROCK_TUNNEL_POKECENTER" then
+        mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(game, false)
+        return
+      end
+      local duration =
+        mod._gen1ModernSpecialPresenters.qolLocationDuration(game)
+      local overlay = rawget(ow, "__qolLocationBannerOverlay")
+      if duration <= 0 or type(overlay) ~= "table" then
+        mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(game, false)
+        return
+      end
+      local name = mod._gen1ModernSpecialPresenters.qolLocationName(
+        game, event.mapId, event.map)
+      -- Match QOL's small de-duplication guard: a same-name map transition
+      -- does not flash a second banner until a different location is seen.
+      if banner.lastName == name then
+        mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(game, false)
+        return
+      end
+      banner.lastName = name
+      banner.name = name
+      banner.expiresAt = (love.timer and love.timer.getTime
+        and love.timer.getTime() or 0) + duration
+      banner.overworld = ow
+      local modernWorld = option("menuUi", true) ~= false
+        and option("hideOriginalUi", true) ~= false
+      mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
+        game, modernWorld)
+    end, -10)
   end
 
   -- `input.step` runs before the active state's update.  Screens pushed by a
@@ -3289,21 +3670,27 @@ return function(mod)
     local x, y, w, h = presenterRect(viewport)
     local landscape = w > h * 1.2
     local gutter = theme.spacing.lg
+    -- Dialogue is a reading surface, so give it a little more horizontal
+    -- breathing room than the compact list cards.  Keep the padding here in
+    -- lockstep with drawDialogue below so wrapping and the painted text use
+    -- the same usable width.
+    local paddingX = theme.spacing.xl
+    local paddingY = theme.spacing.lg
     local body = font(fontCache, theme.typography.body)
     local widest = 0
     for _, line in ipairs(completeDialogueLines(state) or {}) do
       widest = math.max(widest, body:getWidth(line))
     end
     local uiScale = theme.scale and theme.scale.ui or 1
-    local maxWidth = landscape and math.min(760 * uiScale, w * 0.70)
+    local maxWidth = landscape and math.min(900 * uiScale, w * 0.84)
       or math.min(620 * uiScale, w - gutter * 2)
-    local minWidth = math.min(landscape and 280 or 260, maxWidth)
-    local width = clamp(widest + gutter * 2, minWidth, maxWidth)
+    local minWidth = math.min(landscape and 400 or 340, maxWidth)
+    local width = clamp(widest + paddingX * 2, minWidth, maxWidth)
     -- TextBox pages in the released engine normally expose two visible lines.
     -- Size to the live wrapped content instead of reserving five lines for
     -- every message; longer page models can still grow up to five lines.
     local lineGap = textHeight(body) + theme.spacing.xs
-    local available = math.max(1, width - gutter * 2)
+    local available = math.max(1, width - paddingX * 2)
     local desiredLines = 0
     for _, line in ipairs(completeDialogueLines(state)) do
       desiredLines = desiredLines + #wrappedLines(line, available, body)
@@ -3312,8 +3699,8 @@ return function(mod)
     -- Keep the card large enough for the revealed text and footer, but do not
     -- let a chrome-only minimum create a tall empty box when UI SCALE is high
     -- and FONT SCALE is intentionally smaller.
-    local contentHeight = lineGap * desiredLines + theme.spacing.lg * 2
-    local minimumHeight = lineGap * 2 + theme.spacing.lg * 2
+    local contentHeight = lineGap * desiredLines + paddingY * 2
+    local minimumHeight = lineGap * 2 + paddingY * 2
     local height = math.max(minimumHeight, contentHeight)
     if reserveKind then
       local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
@@ -3335,23 +3722,27 @@ return function(mod)
 
     local body = font(fontCache, theme.typography.body)
     love.graphics.setFont(body)
-    local available = panelW - spacing.lg * 2
+    local paddingX = spacing.xl
+    local paddingY = spacing.lg
+    local available = panelW - paddingX * 2
     local lines = wrappedDialogueLines(state, body, available)
     local lineGap = textHeight(body) + spacing.xs
-    local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2) / lineGap))
+    local maxLines = math.max(1, math.floor((panelH - paddingY * 2) / lineGap))
     while #lines > maxLines do table.remove(lines, 1) end
-    local textY = py + spacing.lg
+    local textY = py + paddingY
     setColor(colors.text)
     for index, line in ipairs(lines) do
-      love.graphics.print(line, px + spacing.lg, textY + (index - 1) * lineGap)
+      love.graphics.print(line, px + paddingX, textY + (index - 1) * lineGap)
     end
 
     local ready = state.waiting or (state.done and not state.choice
       and not state.auto and not state.stay)
     if ready and not state.choice then
+      local indicator = "..."
       setColor(colors.accent)
-      love.graphics.print("v", px + panelW - spacing.lg - 8,
-        py + panelH - spacing.md - textHeight(body))
+      love.graphics.print(indicator,
+        px + panelW - paddingX - body:getWidth(indicator),
+        py + panelH - paddingY - textHeight(body))
     end
     return { x = px, y = py, w = panelW, h = panelH }
   end
@@ -4915,12 +5306,20 @@ return function(mod)
     local detailFont = font(fontCache, theme.typography.caption)
     local detailLineGap = textHeight(detailFont) + spacing.xs
     local detailLines = 0
+    local previewOwnedText
+    if kind == "shop_list" and previewItemId
+        and game.save and type(game.save.inventory) == "table" then
+      local quantity = math.max(0, math.floor(
+        tonumber(game.save.inventory[previewItemId]) or 0))
+      previewOwnedText = Strings("HAVE x%d", quantity)
+    end
     local function countDetail(text)
       if text and text ~= "" then
         detailLines = detailLines + #wrappedLines(text, previewInfoW, detailFont)
       end
     end
     if previewSource and previewSource.right then countDetail(previewSource.right) end
+    countDetail(previewOwnedText)
     if previewDef and previewDef.machine then
       local move = game.data.moves and game.data.moves[previewDef.machine.move]
       countDetail(Strings("%s  %s", previewDef.machine.kind or "TM",
@@ -5017,8 +5416,19 @@ return function(mod)
       local infoY = titleBottom + spacing.sm
       local detailFont = love.graphics.getFont()
       local detailMax = math.max(24, detailX + cardW - spacing.lg - infoX)
+      local ownedText
+      if kind == "shop_list" and itemId
+          and game.save and type(game.save.inventory) == "table" then
+        local quantity = math.max(0, math.floor(
+          tonumber(game.save.inventory[itemId]) or 0))
+        ownedText = Strings("HAVE x%d", quantity)
+      end
       if source and source.right then
         infoY = drawWrappedText(source.right, infoX, infoY, detailMax,
+          detailFont, theme.typography.caption + spacing.xs)
+      end
+      if ownedText then
+        infoY = drawWrappedText(ownedText, infoX, infoY, detailMax,
           detailFont, theme.typography.caption + spacing.xs)
       end
       if def and def.machine then
@@ -5400,6 +5810,1247 @@ return function(mod)
     end
     drawHintIfUseful(theme, Strings(footer), px + spacing.lg, footerY,
       panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  mod._gen1ModernSpecialPresenters = mod._gen1ModernSpecialPresenters or {}
+
+  function mod._gen1ModernSpecialPresenters.drawMoveLearn(game, state, viewport, theme)
+    if state.selecting ~= true then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local body = font(fontCache, theme.typography.body)
+    local titleFont = font(fontCache, theme.typography.title)
+    local caption = font(fontCache, theme.typography.caption)
+    local moves = state.mon and type(state.mon.moves) == "table"
+      and state.mon.moves or {}
+    local moveDefs = game.data and game.data.moves or {}
+    local rows = {}
+    for _, move in ipairs(moves) do
+      local moveId = type(move) == "table" and move.id or move
+      local def = moveDefs[moveId] or {}
+      rows[#rows + 1] = { label = def.name or moveId or "MOVE",
+        value = def.type and safeText(def.type) or "" }
+    end
+    rows[#rows + 1] = { label = Strings("CANCEL"), value = "" }
+    local panelW = math.min(w - spacing.lg * 2,
+      math.max(320, contentWidthFor(theme, rows, "FORGET A MOVE", nil,
+        320, math.min(700, w - spacing.lg * 2))))
+    local rowH = math.max(textHeight(body) + spacing.md,
+      math.min(62, theme.density.rowHeight * 0.78))
+    local headerH = textHeight(titleFont) + textHeight(body) + spacing.xl
+    local footerH = textHeight(caption) + spacing.md
+    local panelH = math.min(h - spacing.lg * 2,
+      headerH + #rows * rowH + footerH + spacing.lg * 2)
+    rowH = math.max(textHeight(body) + spacing.sm,
+      (panelH - headerH - footerH - spacing.lg * 2) / math.max(1, #rows))
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local selected = clamp(state.index or 1, 1, #rows)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    love.graphics.print("FORGET A MOVE", px + spacing.lg, py + spacing.md)
+    local newDef = moveDefs[state.newMoveId] or {}
+    setColor(colors.textMuted)
+    love.graphics.setFont(body)
+    drawFittedText("NEW MOVE  " .. safeText(newDef.name or state.newMoveId),
+      px + spacing.lg, py + spacing.md + textHeight(titleFont) + spacing.sm,
+      panelW - spacing.lg * 2, body)
+
+    local rowY = py + spacing.lg + headerH
+    for index, row in ipairs(rows) do
+      local ry = rowY + (index - 1) * rowH
+      registerPointerRegion(px + spacing.sm, ry, panelW - spacing.sm * 2,
+        rowH - 2, { rowIndex = index, selectionField = "index",
+          selectionState = state, rowCount = #rows, activate = true,
+          interactive = true, dragHandle = false })
+      setColor(index == selected and colors.selected or colors.surfaceRaised)
+      love.graphics.rectangle("fill", px + spacing.sm, ry,
+        panelW - spacing.sm * 2, rowH - 2, theme.radii.sm)
+      setColor(index == selected and colors.text or colors.textMuted)
+      love.graphics.setFont(body)
+      love.graphics.print(safeText(row.label), px + spacing.lg,
+        ry + (rowH - textHeight(body)) / 2 - 1)
+      if row.value ~= "" then
+        local valueW = body:getWidth(row.value)
+        love.graphics.print(row.value, px + panelW - spacing.lg - valueW,
+          ry + (rowH - textHeight(body)) / 2 - 1)
+      end
+    end
+    setColor(colors.textMuted)
+    love.graphics.setFont(caption)
+    drawHintIfUseful(theme, "A  replace   B  cancel", px + spacing.lg,
+      py + panelH - footerH + spacing.sm, panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawPicBox(game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local body = font(fontCache, theme.typography.body)
+    local image = imageFor(state.image)
+    local caption = safeText(state.text)
+    local maxW = math.min(w - spacing.lg * 2, 720)
+    local panelW = math.min(maxW, math.max(300,
+      body:getWidth(caption) + spacing.lg * 2))
+    local artSize = math.min(320, panelW - spacing.lg * 2,
+      h * 0.42)
+    local captionLines = caption ~= "" and wrappedLines(caption,
+      panelW - spacing.lg * 2, body) or {}
+    local lineGap = textHeight(body) + spacing.xs
+    local panelH = math.min(h - spacing.lg * 2,
+      textHeight(titleFont) + artSize + #captionLines * lineGap
+        + spacing.lg * 4)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local cardH = math.max(1, panelH - textHeight(titleFont) -
+      #captionLines * lineGap - spacing.lg * 3)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    registerPointerRegion(px, py, panelW, panelH, {
+      role = "picbox", action = "a", interactive = true, dragHandle = false,
+    })
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    love.graphics.print("PICTURE", px + spacing.lg, py + spacing.md)
+    local artY = py + textHeight(titleFont) + spacing.lg
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", px + spacing.lg, artY,
+      panelW - spacing.lg * 2, cardH, theme.radii.md)
+    if image then
+      drawImageFit(image, px + spacing.lg, artY,
+        panelW - spacing.lg * 2, cardH, 1)
+    else
+      setColor(colors.textMuted)
+      love.graphics.setFont(body)
+      drawFittedText("IMAGE UNAVAILABLE", px + spacing.lg,
+        artY + (cardH - textHeight(body)) / 2,
+        panelW - spacing.lg * 2, body)
+    end
+    setColor(colors.text)
+    love.graphics.setFont(body)
+    for index, line in ipairs(captionLines) do
+      love.graphics.print(line, px + spacing.lg,
+        artY + cardH + spacing.md + (index - 1) * lineGap)
+    end
+    love.graphics.pop()
+  end
+
+  -- RBY MMO exposes these as plain local classes, so they cannot share the
+  -- engine's TrainerCard/ListMenu presenters. Keep the adapter semantic and
+  -- read only the public payload sent by the mod: profile/player for the
+  -- card, and client/entries/offset for the leaderboard.
+  function mod._gen1ModernSpecialPresenters.drawRbyMmoProfile(
+      game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local player = state.player or {}
+    local card = type(player.profile) == "table" and player.profile or nil
+    local own = player.money ~= nil
+    local rows = card and (own and 4 or 3) or 1
+    local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
+      panelMaxWidth(theme, 760))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 720))
+    local compact = w > h * 1.15
+    local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
+    local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
+    local heroH = compact and 76 or math.max(92, math.min(150, panelW * 0.25))
+    local rowH = math.max(textHeight(bodyFont) + spacing.sm,
+      compact and 32 or 42)
+    local panelH = math.min(h - spacing.lg * 2,
+      headerH + heroH + rows * rowH + footerH
+        + (compact and spacing.md * 2 or spacing.lg * 3))
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local contentX = px + spacing.lg
+    local contentW = panelW - spacing.lg * 2
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    drawFittedText("TRAINER PROFILE", contentX, py + spacing.md,
+      contentW, titleFont)
+
+    local heroY = py + headerH
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", contentX, heroY, contentW, heroH,
+      theme.radii.sm)
+    local portrait =
+      mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, player.sprite)
+      or imageFor(player.portrait or player.image or player.icon)
+    local artSize = math.min(heroH - spacing.md * 2, 92)
+    local artX = contentX + spacing.md
+    if portrait then
+      mod._gen1ModernSpecialPresenters.drawImageFitRegion(portrait, artX,
+        heroY + (heroH - artSize) / 2, artSize, artSize)
+    else
+      setColor(colors.selected)
+      love.graphics.circle("fill", artX + artSize / 2,
+        heroY + heroH / 2, artSize * 0.34)
+      setColor(colors.text)
+      love.graphics.setFont(titleFont)
+      local initial = safeText(player.name or "?"):sub(1, 1):upper()
+      love.graphics.print(initial,
+        artX + (artSize - titleFont:getWidth(initial)) / 2,
+        heroY + (heroH - textHeight(titleFont)) / 2)
+    end
+    local infoX = artX + artSize + spacing.md
+    local infoW = math.max(24, contentX + contentW - spacing.md - infoX)
+    setColor(colors.text)
+    love.graphics.setFont(bodyFont)
+    drawFittedText(player.name or "UNKNOWN", infoX, heroY + spacing.md,
+      infoW, bodyFont)
+    local spriteName = safeText(player.sprite or "TRAINER")
+      :gsub("_", " "):gsub("^SPRITE%s*", "")
+    setColor(colors.textMuted)
+    drawFittedText(spriteName, infoX,
+      heroY + spacing.md + textHeight(bodyFont) + spacing.xs,
+      infoW, bodyFont)
+    if not card then
+      drawWrappedText(own and "NO SAVE DATA." or "NO CARD SENT.", infoX,
+        heroY + spacing.md + textHeight(bodyFont) * 2 + spacing.sm,
+        infoW, captionFont, textHeight(captionFont) + spacing.xs)
+    end
+
+    local function pair(label, value, row, column)
+      local gap = spacing.md
+      local colW = (contentW - gap) / 2
+      local rx = contentX + (column - 1) * (colW + gap)
+      local ry = heroY + heroH + spacing.sm + (row - 1) * rowH
+      setColor(colors.textMuted)
+      love.graphics.setFont(captionFont)
+      love.graphics.print(label, rx, ry + spacing.xs)
+      setColor(colors.text)
+      love.graphics.setFont(bodyFont)
+      drawFittedText(value, rx, ry + spacing.xs + textHeight(captionFont),
+        colW, bodyFont)
+    end
+
+    if card then
+      local playtime = math.max(0, tonumber(card.playtime) or 0)
+      pair("ID NO", ("%05d"):format(tonumber(card.idNo) or 0), 1, 1)
+      pair("TIME", ("%d:%02d"):format(math.floor(playtime / 3600),
+        math.floor(playtime / 60) % 60), 1, 2)
+      pair("BADGES", tostring(tonumber(card.badges) or 0), 2, 1)
+      pair("RANK", tostring(tonumber(player.points) or 0), 2, 2)
+      pair("SEEN", tostring(tonumber(card.seen) or 0), 3, 1)
+      pair("OWNED", tostring(tonumber(card.owned) or 0), 3, 2)
+      if own then
+        pair("MONEY", ("Y%d"):format(tonumber(player.money) or 0), 4, 1)
+      end
+    end
+
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", contentX,
+      py + panelH - footerH, contentW, themeMetric(theme, "divider", 1))
+    setColor(colors.textMuted)
+    drawHintIfUseful(theme, "A / B  back", contentX,
+      py + panelH - footerH + spacing.xs, contentW)
+    love.graphics.pop()
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawRbyMmoRank(
+      game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local client = state.client
+    local rows = type(state.rows) == "table" and state.rows or nil
+    local asked, seen, ranked = false, false, true
+    if not rows and client and type(client.ranking) == "function" then
+      local ok, result, requested, received = pcall(client.ranking, client)
+      if ok then rows, asked, seen = result, requested, received end
+    end
+    if type(rows) ~= "table" and type(state.entries) == "function" then
+      local ok, result = pcall(state.entries, state)
+      if ok then rows = result end
+    end
+    rows = type(rows) == "table" and rows or {}
+    if client and type(client.isRanked) == "function" then
+      local ok, result = pcall(client.isRanked, client)
+      if ok then ranked = result == true end
+    elseif state.ranked ~= nil then
+      ranked = state.ranked == true
+    end
+    local visible = 6
+    local offset = clamp(math.floor(tonumber(state.offset) or 0), 0,
+      math.max(0, #rows - visible))
+    local compact = w > h * 1.15
+    local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
+      panelMaxWidth(theme, 720))
+    local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
+    local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
+    local rowH = math.max(textHeight(bodyFont) + spacing.xs,
+      compact and 36 or 52)
+    local rowCount = math.min(visible, math.max(1, #rows))
+    local panelH = math.min(h - spacing.lg * 2,
+      headerH + rowCount * rowH + footerH
+        + (compact and spacing.md * 2 or spacing.lg * 2))
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local contentX = px + spacing.lg
+    local contentW = panelW - spacing.lg * 2
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    love.graphics.print("RANK", contentX, py + spacing.md)
+
+    local function emptyMessage()
+      if not asked and client then
+        return "NOT IN A GAME.\nJOIN ONE FIRST."
+      end
+      if not ranked then
+        return "THAT NAME IS TAKEN ON THIS HUB.\nPICK ANOTHER NAME."
+      end
+      if not seen and client then return "ASKING THE HUB..." end
+      return "NOBODY HAS WON A BATTLE HERE YET."
+    end
+
+    if #rows == 0 then
+      setColor(colors.textMuted)
+      drawWrappedText(emptyMessage(), contentX, py + headerH + spacing.md,
+        contentW, bodyFont, textHeight(bodyFont) + spacing.xs)
+    else
+      for slot = 1, math.min(visible, #rows - offset) do
+        local row = rows[offset + slot]
+        local ry = py + headerH + (slot - 1) * rowH
+        local selected = slot == 1 and offset > 0
+        setColor(selected and colors.selected or colors.surfaceRaised)
+        love.graphics.rectangle("fill", contentX, ry, contentW, rowH - 3,
+          theme.radii.sm)
+        local place = tostring(offset + slot)
+        local points = tostring(row.points or row.score or 0)
+        local name = safeText(row.name or row.player or "UNKNOWN")
+        local portrait =
+          mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, row.sprite)
+          or imageFor(row.portrait or row.image or row.icon)
+        local artSize = math.max(24, math.min(40, rowH - spacing.sm * 2))
+        local artX = contentX + spacing.sm
+        if portrait then
+          mod._gen1ModernSpecialPresenters.drawImageFitRegion(portrait, artX,
+            ry + (rowH - artSize) / 2, artSize, artSize)
+        else
+          setColor(colors.selected)
+          love.graphics.circle("fill", artX + artSize / 2,
+            ry + rowH / 2, artSize * 0.34)
+        end
+        local nameX = artX + artSize + spacing.sm
+        local pointsW = bodyFont:getWidth(points)
+        local placeW = bodyFont:getWidth(place)
+        setColor(selected and colors.text or colors.textMuted)
+        love.graphics.setFont(captionFont)
+        love.graphics.print(place, contentX + spacing.sm, ry + spacing.sm)
+        love.graphics.setFont(bodyFont)
+        drawFittedText(name, nameX, ry + (rowH - textHeight(bodyFont)) / 2,
+          math.max(24, contentX + contentW - spacing.lg - pointsW
+            - spacing.md - nameX), bodyFont)
+        love.graphics.print(points, contentX + contentW - spacing.lg - pointsW,
+          ry + (rowH - textHeight(bodyFont)) / 2)
+      end
+    end
+
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", contentX,
+      py + panelH - footerH, contentW, themeMetric(theme, "divider", 1))
+    setColor(colors.textMuted)
+    local footer = (#rows > visible or offset > 0)
+      and "UP/DOWN  scroll   A / B  back" or "A / B  back"
+    drawHintIfUseful(theme, footer, contentX,
+      py + panelH - footerH + spacing.xs, contentW)
+    love.graphics.pop()
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawRbyMmoCharacterPick(
+      game, state, viewport, theme)
+    local rows, selected, scroll, title, footerText = rowsFor(game, state, "list")
+    if not rows then return end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local landscape = w > h * 1.05
+    local gutter = spacing.lg
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      panelMaxWidth(theme, 820))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 820))
+    local headerH = textHeight(titleFont) + spacing.lg
+    local footerH = textHeight(captionFont) + spacing.md
+    local rowH = minimumRowHeight(theme)
+    local detailMinH = math.max(170,
+      textHeight(bodyFont) * 2 + 96 + spacing.lg * 3)
+    local detailW = landscape
+      and math.min(scaledPanelWidth(theme, 330), panelW * 0.42) or 0
+    local desiredRows = math.max(1, math.min(#rows, landscape and 8 or 5))
+    local desiredListH = desiredRows * rowH
+    local desiredContentH = landscape
+      and math.max(desiredListH, detailMinH)
+      or detailMinH + spacing.sm + desiredListH
+    local panelH = math.min(h - gutter * 2,
+      headerH + footerH + desiredContentH + spacing.lg * 2)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local detailH = not landscape and math.min(detailMinH,
+      math.max(1, panelH - headerH - footerH - spacing.sm - rowH)) or 0
+    local listW = panelW - detailW - (detailW > 0 and spacing.sm or 0)
+    local listY = py + headerH + (detailH > 0 and detailH + spacing.sm or 0)
+    local listH = math.max(1, py + panelH - footerH - listY)
+    local visible = math.max(1, math.min(#rows, math.floor(listH / rowH)))
+    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    if selected <= scroll then scroll = selected - 1 end
+    if selected > scroll + visible then scroll = selected - visible end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH,
+      radius = theme.radii.lg }, title or "CHARACTER")
+
+    local row = selectedListRow(rows, selected)
+    local source = row and row.source
+    local spriteId = source and (source.value or source.sprite)
+    local portrait = mod._gen1ModernSpecialPresenters.rbyMmoPortrait(
+      game, spriteId) or imageFor(source and (source.image or source.icon))
+    if detailW > 0 or detailH > 0 then
+      local detailX = detailW > 0 and (px + panelW - detailW) or px
+      local detailY = py + headerH
+      local cardW = detailW > 0 and detailW or panelW
+      local cardH = detailW > 0 and listH or detailH
+      setColor(colors.surfaceRaised)
+      love.graphics.rectangle("fill", detailX + spacing.sm, detailY,
+        cardW - spacing.sm * 2, cardH, theme.radii.sm)
+      local contentX = detailX + spacing.lg
+      local contentW = math.max(24, cardW - spacing.lg * 2)
+      setColor(colors.text)
+      love.graphics.setFont(bodyFont)
+      drawFittedText(row and row.label or "CHARACTER", contentX,
+        detailY + spacing.md, contentW, bodyFont)
+      local artSize = math.max(32, math.min(112,
+        cardH - textHeight(bodyFont) - spacing.lg * 3))
+      local artX = detailX + (cardW - artSize) / 2
+      local artY = detailY + textHeight(bodyFont) + spacing.lg
+      if portrait then
+        mod._gen1ModernSpecialPresenters.drawImageFitRegion(portrait,
+          artX, artY, artSize, artSize)
+      else
+        setColor(colors.selected)
+        love.graphics.circle("fill", artX + artSize / 2,
+          artY + artSize / 2, artSize * 0.34)
+        setColor(colors.text)
+        local initial = safeText(row and row.label or "?"):sub(1, 1):upper()
+        love.graphics.setFont(titleFont)
+        love.graphics.print(initial,
+          artX + (artSize - titleFont:getWidth(initial)) / 2,
+          artY + (artSize - textHeight(titleFont)) / 2)
+      end
+      setColor(colors.textMuted)
+      love.graphics.setFont(captionFont)
+      local spriteName = safeText(spriteId):gsub("^SPRITE_", "")
+        :gsub("_", " ")
+      drawFittedText(spriteName, contentX,
+        detailY + cardH - spacing.lg - textHeight(captionFont),
+        contentW, captionFont)
+    end
+
+    local listLayout = { x = px, y = listY, w = listW, h = listH,
+      rowHeight = rowH, header = 0, footer = 0, visible = visible,
+      radius = theme.radii.sm, sidePanel = false }
+    drawRows(theme, listLayout, rows, selected, scroll, game)
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
+    setColor(colors.textMuted)
+    drawHintIfUseful(theme, footerText or "A  choose   B  back",
+      px + spacing.lg, py + panelH - footerH + spacing.xs,
+      panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  mod._gen1ModernSpecialPresenters.namingGridUpper = {
+    { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
+    { "J", "K", "L", "M", "N", "O", "P", "Q", "R" },
+    { "S", "T", "U", "V", "W", "X", "Y", "Z", " " },
+    { "×", "(", ")", ":", ";", "[", "]", "<PK>", "<MN>" },
+    { "-", "?", "!", "♂", "♀", "/", ".", ",", "ED" },
+    { "1", "2", "3", "4", "5" },
+    { "6", "7", "8", "9", "0" },
+    { "lower case" },
+  }
+
+  function mod._gen1ModernSpecialPresenters.namingGrid(state)
+    local source = state and state.grid
+    local result
+    local function validNamingGrid(grid)
+      if type(grid) ~= "table" or #grid == 0 then return false end
+      for _, row in ipairs(grid) do
+        if type(row) ~= "table" or #row == 0 then return false end
+      end
+      return true
+    end
+    if type(source) == "function" then
+      local ok, value = pcall(source, state)
+      if ok then result = value end
+    elseif type(source) == "table" then
+      result = source
+    elseif type(state and state.gridRows) == "table" then
+      result = state.gridRows
+    end
+    if validNamingGrid(result) then return result end
+    if not state or not state.lower then
+      return mod._gen1ModernSpecialPresenters.namingGridUpper
+    end
+    local lower = {}
+    for rowIndex, row in ipairs(
+        mod._gen1ModernSpecialPresenters.namingGridUpper) do
+      lower[rowIndex] = {}
+      for colIndex, cell in ipairs(row) do
+        lower[rowIndex][colIndex] = cell:lower()
+      end
+    end
+    lower[#lower][1] = "UPPER CASE"
+    return lower
+  end
+
+  mod.hooks:wrap("ui.naming.grid", function(next, grid, ctxInfo)
+    local out = next(grid, ctxInfo)
+    -- RBY MMO uses the lower-case flag for its numeric page. Reuse the host's
+    -- lower-case base page in that state, then add numbers to it, preserving
+    -- both capabilities without requiring a third state in NamingScreen.
+    if type(ctxInfo) == "table" and ctxInfo.lower
+        and namingGridHasDigit(out) and namingGridHasLowercase(grid) then
+      return namingGridWithNumbers(grid)
+    end
+    return namingGridWithNumbers(out)
+  end, 100)
+
+  function mod._gen1ModernSpecialPresenters.drawNaming(game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local body = font(fontCache, theme.typography.body)
+    local caption = font(fontCache, theme.typography.caption)
+    local grid = mod._gen1ModernSpecialPresenters.namingGrid(state)
+    local function namingTarget()
+      local target = state and (state.mon or state.pokemon or state.targetMon
+        or state.subject)
+      if type(target) == "table" then
+        return safeText(target.nickname or target.name or target.species)
+      end
+      return safeText(state and (state.targetName or state.monName
+        or state.currentName or state.nickname))
+    end
+    local function namingCellLabel(cell)
+      local label = safeText(cell)
+      if label == "lower case" then return "lower" end
+      if label == "UPPER CASE" then return "UPPER" end
+      if label == "<PK>" then return "PK" end
+      if label == "<MN>" then return "MN" end
+      return label
+    end
+    local maxCols, maxLabelWidth = 1, 0
+    for _, row in ipairs(grid) do
+      if type(row) == "table" then
+        maxCols = math.max(maxCols, #row)
+        for _, cell in ipairs(row) do
+          maxLabelWidth = math.max(maxLabelWidth,
+            body:getWidth(namingCellLabel(cell)))
+        end
+      end
+    end
+    -- Keep the card footprint stable when RBY MMO supplies its compact
+    -- uppercase page (seven rows after the numeric rows are inserted) while
+    -- the engine's lowercase page has eight. Reserve the common eight-row
+    -- rhythm instead of making the panel jump when SELECT changes case.
+    local layoutRows = math.max(#grid, 8)
+    maxLabelWidth = math.max(maxLabelWidth, body:getWidth("lower case"),
+      body:getWidth("UPPER CASE"), body:getWidth("<MN>"))
+    local maxLen = math.max(1, tonumber(state.maxLen) or 10)
+    local glyphs = type(state.glyphs) == "table" and state.glyphs or {}
+    -- NamingScreen treats `default` as a confirm-time fallback. Rename
+    -- callers (including Name Rater-style mods) expect it to be the editable
+    -- starting value instead, so seed the live glyph buffer once when one is
+    -- supplied. This keeps B/delete and the native callback semantics intact.
+    if state._gen1ModernNamingSeeded ~= true then
+      local seed = state.default or state.initialName or state.currentName
+        or state.nickname
+      local target = state.mon or state.pokemon or state.targetMon
+        or state.subject
+      if not seed and type(target) == "table" then
+        seed = target.nickname
+      end
+      if #glyphs == 0 and seed ~= nil and safeText(seed) ~= "" then
+        local seedChars = textCharacters(safeText(seed))
+        for index = 1, math.min(maxLen, #seedChars) do
+          glyphs[index] = seedChars[index]
+        end
+      end
+      state._gen1ModernNamingSeeded = true
+    end
+    local targetName = namingTarget()
+    local currentName = safeText(state.currentName or state.existingName
+      or state.default)
+    local targetLine = targetName ~= "" and ("FOR  " .. targetName) or ""
+    if targetLine == "" and currentName ~= "" then
+      targetLine = "CURRENT  " .. currentName
+    end
+    local availableW = math.max(1, w - spacing.lg * 2)
+    local gridFont = body
+    local cellW = math.max(body:getWidth("W") + spacing.sm * 2,
+      maxLabelWidth + spacing.sm * 2)
+    local desiredW = maxCols * cellW + spacing.lg * 2
+    if desiredW > availableW then
+      gridFont = caption
+      maxLabelWidth = 0
+      for _, row in ipairs(grid) do
+        for _, cell in ipairs(row) do
+          maxLabelWidth = math.max(maxLabelWidth,
+            gridFont:getWidth(namingCellLabel(cell)))
+        end
+      end
+      cellW = math.max(gridFont:getWidth("W") + spacing.sm * 2,
+        maxLabelWidth + spacing.sm * 2)
+      desiredW = maxCols * cellW + spacing.lg * 2
+    end
+    local panelW = math.min(availableW, math.max(420, desiredW))
+    cellW = math.max(1, (panelW - spacing.lg * 2) / maxCols)
+    local titleH = textHeight(titleFont)
+    local targetH = targetLine ~= "" and textHeight(caption) + spacing.xs or 0
+    local slotH = math.max(textHeight(body) + spacing.sm, 28)
+    local footerH = textHeight(caption) + spacing.md
+    local headerH = spacing.lg + titleH + targetH + spacing.sm + slotH
+      + spacing.lg
+    local desiredCellH = math.max(textHeight(gridFont) + spacing.sm, 36)
+    local desiredH = headerH + layoutRows * desiredCellH + footerH + spacing.lg
+    local panelH = math.min(h - spacing.lg * 2, desiredH)
+    local gridH = math.max(textHeight(gridFont) + 2,
+      panelH - headerH - footerH - spacing.lg)
+    local cellH = math.max(textHeight(gridFont) + 2,
+      gridH / layoutRows)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local title = safeText(state.title or "YOUR NAME?")
+    local typedCount = #glyphs
+    local counter = ("%d/%d"):format(typedCount, maxLen)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    drawFittedText(title, px + spacing.lg, py + spacing.md,
+      panelW - spacing.lg * 2, titleFont)
+    local headerY = py + spacing.md + titleH
+    if targetLine ~= "" then
+      setColor(colors.textMuted)
+      love.graphics.setFont(caption)
+      drawFittedText(targetLine, px + spacing.lg, headerY + spacing.xs,
+        panelW - spacing.lg * 2, caption)
+      headerY = headerY + targetH
+    end
+
+    local slotsY = headerY + spacing.sm
+    local slotGap = spacing.xs
+    local slotW = (panelW - spacing.lg * 2 - (maxLen - 1) * slotGap)
+      / maxLen
+    local slotFont = body
+    if slotW < body:getWidth("W") + spacing.sm * 2 then slotFont = caption end
+    for index = 1, maxLen do
+      local sx = px + spacing.lg + (index - 1) * (slotW + slotGap)
+      setColor(index <= typedCount and colors.selected or colors.surfaceRaised)
+      love.graphics.rectangle("fill", sx, slotsY, slotW, slotH,
+        theme.radii.sm)
+      local glyph = glyphs[index] and safeText(glyphs[index]) or "-"
+      setColor(index <= typedCount and colors.text or colors.textMuted)
+      love.graphics.setFont(slotFont)
+      drawFittedText(glyph, sx + (slotW - slotFont:getWidth(glyph)) / 2,
+        slotsY + (slotH - textHeight(slotFont)) / 2, slotW, slotFont)
+    end
+    setColor(colors.textMuted)
+    love.graphics.setFont(caption)
+    local counterW = caption:getWidth(counter)
+    love.graphics.print(counter, px + panelW - spacing.lg - counterW,
+      slotsY + slotH + spacing.xs)
+
+    local gridY = py + headerH
+    for rowIndex, row in ipairs(grid) do
+      if type(row) == "table" then
+        local isCaseRow = #row == 1
+        for colIndex, cell in ipairs(row) do
+          local rowW = isCaseRow and (cellW * maxCols) or cellW
+          local cx = px + spacing.lg
+            + (isCaseRow and 0 or (colIndex - 1) * cellW)
+          local cy = gridY + (rowIndex - 1) * cellH
+          registerPointerRegion(cx + 1, cy + 1, rowW - 2, cellH - 2, {
+            namingRow = rowIndex, namingCol = colIndex,
+            activate = true, interactive = true, dragHandle = false,
+          })
+          local selected = state.row == rowIndex and state.col == colIndex
+          setColor(selected and colors.selected or colors.surfaceRaised)
+          love.graphics.rectangle("fill", cx + 1, cy + 1,
+            rowW - 2, cellH - 2, theme.radii.sm)
+          local label = namingCellLabel(cell)
+          local renderedLabel = Strings(label)
+          local labelW = isCaseRow and rowW - spacing.sm * 2
+            or cellW - spacing.xs * 2
+          local cellTextFont = gridFont
+          if cellTextFont:getWidth(renderedLabel) > labelW
+              and caption:getWidth(renderedLabel) <= labelW then
+            cellTextFont = caption
+          end
+          setColor(selected and colors.text or colors.textMuted)
+          love.graphics.setFont(cellTextFont)
+          drawFittedText(renderedLabel, isCaseRow
+            and (cx + (rowW - cellTextFont:getWidth(renderedLabel)) / 2)
+            or (cx + spacing.xs),
+            cy + (cellH - textHeight(cellTextFont)) / 2,
+            isCaseRow and rowW - spacing.sm * 2
+              or cellW - spacing.xs * 2, cellTextFont)
+        end
+      end
+    end
+    setColor(colors.textMuted)
+    love.graphics.setFont(caption)
+    drawHintIfUseful(theme, "A  choose   B  delete   SELECT  case   START  done",
+      px + spacing.lg, py + panelH - footerH + spacing.sm,
+      panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  function mod._gen1ModernSpecialPresenters.townMapMarker(loc)
+    if not loc or not loc.x or not loc.y then return nil end
+    return loc.x * 8 + 16, loc.y * 8 + 8
+  end
+
+  function mod._gen1ModernSpecialPresenters.rbyMmoExports()
+    if type(mod.find) ~= "function" then return nil end
+    local ok, handle = pcall(mod.find, "rby_mmo")
+    if not ok or type(handle) ~= "table" then return nil end
+    return type(handle.exports) == "table" and handle.exports or nil
+  end
+
+  function mod._gen1ModernSpecialPresenters.townMapPartyMarkers(state)
+    local sources = {
+      state.partyMarkers, state.partyMembers, state.partyLocations,
+      state.players,
+    }
+    if type(state.party) == "table" then
+      sources[#sources + 1] = state.party.members or state.party
+    end
+    local byMap = type(state.byMap) == "table" and state.byMap or {}
+    local markers, seen, seenIds = {}, {}, {}
+    local function add(raw, mapKey)
+      if type(raw) ~= "table" then return end
+      local location = raw.location or raw.loc or raw.townMap or raw.map
+      local mapId = raw.mapId or raw.mapID or raw.locationId
+        or raw.townMapId or (type(raw.map) == "string" and raw.map)
+        or (type(mapKey) == "string" and mapKey)
+      local loc
+      if type(location) == "table" then
+        loc = location
+      elseif type(location) == "string" or type(location) == "number" then
+        loc = byMap[location] or byMap[tostring(location)]
+      elseif type(mapId) == "string" or type(mapId) == "number" then
+        loc = byMap[mapId] or byMap[tostring(mapId)]
+      end
+      if not loc and raw.x ~= nil and raw.y ~= nil then loc = raw end
+      local markerId = raw.id or raw.playerId or raw.userId
+      if not loc or loc.x == nil or loc.y == nil or seen[raw]
+          or (markerId ~= nil and seenIds[markerId]) then return end
+      seen[raw] = true
+      if markerId ~= nil then seenIds[markerId] = true end
+      local rawSprite = raw.sprite
+      local rawImage = raw.image or raw.icon or raw.portrait
+      -- Older integrations sometimes put a drawable in `sprite`, while
+      -- RBYMMO uses that field for a catalog id. Preserve both shapes.
+      if not rawImage and type(rawSprite) ~= "string" then rawImage = rawSprite end
+      markers[#markers + 1] = {
+        loc = loc, image = rawImage,
+        sprite = type(rawSprite) == "string" and rawSprite or nil,
+        name = raw.name or raw.playerName or raw.nickname,
+        color = raw.color,
+      }
+    end
+    for _, source in ipairs(sources) do
+      if type(source) == "table" then
+        for key, raw in pairs(source) do add(raw, key) end
+      end
+    end
+
+    -- RBYMMO deliberately keeps its live party and roster behind public
+    -- exports rather than copying them onto TownMap state. Read those
+    -- exports when present so the modern presenter does not suppress the
+    -- mod's native map marker along with the classic UI. `party()` includes
+    -- the local player, while `players()` contains remote roster entries;
+    -- intersecting them means only the travelling partner is drawn.
+    local exports = mod._gen1ModernSpecialPresenters.rbyMmoExports()
+    if exports and type(exports.party) == "function"
+        and type(exports.players) == "function" then
+      local okParty, party = pcall(exports.party)
+      local okPlayers, players = pcall(exports.players)
+      if okParty and okPlayers and type(party) == "table"
+          and type(players) == "table" then
+        local partyIds = {}
+        for _, member in ipairs(party) do
+          if type(member) == "table" and member.id ~= nil then
+            partyIds[member.id] = true
+          end
+        end
+        for _, player in ipairs(players) do
+          if type(player) == "table" and player.id ~= nil
+              and partyIds[player.id] then
+            add({ id = player.id, name = player.name, map = player.map,
+              sprite = player.sprite,
+              image = player.image or player.icon or player.portrait,
+              color = player.color }, player.id)
+          end
+        end
+      end
+    end
+    return markers
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawTownMapBackground(state, x, y, w, h)
+    local bg = state.bg
+    local fallbackScale = math.min(w / 160, h / 144)
+    local fallbackW, fallbackH = 160 * fallbackScale, 144 * fallbackScale
+    local fallbackX = x + (w - fallbackW) / 2
+    local fallbackY = y + (h - fallbackH) / 2
+    if type(bg) ~= "table" or not bg.img or type(bg.map) ~= "table"
+        or type(bg.quads) ~= "table" then
+      return false, fallbackX, fallbackY, fallbackScale
+    end
+    local scale = math.min(w / 160, h / 144)
+    local mapW, mapH = 160 * scale, 144 * scale
+    local ox, oy = x + (w - mapW) / 2, y + (h - mapH) / 2
+    prepareImage(bg.img)
+    setColor({ 1, 1, 1, 1 })
+    -- Drawing every tile directly at a fractional destination lets the
+    -- rasterizer round adjacent tile edges differently.  At some scales that
+    -- exposes a one-pixel seam between otherwise touching tiles.  Compose the
+    -- complete 20x18 map at native pixels first, then scale that one image.
+    -- Nearest filtering is already applied by prepareImage and is also set on
+    -- the intermediate canvas so the map stays crisp at every UI scale.
+    local cache = mod._gen1ModernSpecialPresenters._townMapBackgroundCache
+    if type(cache) ~= "table" then
+      cache = setmetatable({}, { __mode = "k" })
+      mod._gen1ModernSpecialPresenters._townMapBackgroundCache = cache
+    end
+    local canvas = cache[bg]
+    if not canvas and love.graphics.newCanvas then
+      local okCanvas, target = pcall(love.graphics.newCanvas, 160, 144)
+      if okCanvas and target then
+        love.graphics.push("all")
+        love.graphics.setCanvas(target)
+        love.graphics.clear(0, 0, 0, 0)
+        love.graphics.origin()
+        for index, tile in ipairs(bg.map) do
+          local quad = bg.quads[tile]
+          if quad then
+            local col = (index - 1) % 20
+            local row = math.floor((index - 1) / 20)
+            love.graphics.draw(bg.img, quad, col * 8, row * 8)
+          end
+        end
+        love.graphics.setCanvas()
+        love.graphics.pop()
+        canvas = prepareImage(target)
+        cache[bg] = canvas
+      end
+    end
+    if canvas then
+      love.graphics.draw(canvas, ox, oy, 0, scale, scale)
+    else
+      -- Compatibility fallback for older LÖVE builds without canvases.  It
+      -- still rounds the tile origins, which avoids the most common hairline
+      -- gap while retaining the original renderer's behavior.
+      for index, tile in ipairs(bg.map) do
+        local quad = bg.quads[tile]
+        if quad then
+          local col = (index - 1) % 20
+          local row = math.floor((index - 1) / 20)
+          love.graphics.draw(bg.img, quad,
+            math.floor(ox + col * 8 * scale + 0.5),
+            math.floor(oy + row * 8 * scale + 0.5), 0, scale, scale)
+        end
+      end
+    end
+    return true, ox, oy, scale
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawTownMap(game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local body = font(fontCache, theme.typography.body)
+    local caption = font(fontCache, theme.typography.caption)
+    local landscape = w > h * 1.2
+    local title = state.fly and "FLY TO" or state.nestSpecies and "AREA" or "TOWN MAP"
+    local panelW = math.min(w - spacing.lg * 2,
+      landscape and 900 or math.max(340, w - spacing.lg * 2))
+    local panelH = math.min(h - spacing.lg * 2, landscape and 650 or 760)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local topH = textHeight(titleFont) + spacing.xl
+    local footerH = textHeight(caption) + spacing.md
+    local detailW = landscape and math.min(270, panelW * 0.32) or panelW - spacing.lg * 2
+    local mapW = landscape and panelW - detailW - spacing.xl * 2
+      or panelW - spacing.lg * 2
+    local mapH = landscape and panelH - topH - footerH - spacing.lg * 2
+      or math.min(mapW * 0.72, panelH - topH - footerH - spacing.lg * 3)
+    mapH = math.max(100, mapH)
+    local mapX = px + spacing.lg
+    local mapY = py + topH
+    local locs = type(state.locs) == "table" and state.locs or {}
+    local selected = locs[state.sel or 1]
+    local partyMarkers =
+      mod._gen1ModernSpecialPresenters.townMapPartyMarkers(state)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    love.graphics.print(title, px + spacing.lg, py + spacing.md)
+
+    setColor(colors.surfaceRaised)
+    love.graphics.rectangle("fill", mapX, mapY, mapW, mapH, theme.radii.md)
+    local hasMap, mapOriginX, mapOriginY, mapScale =
+      mod._gen1ModernSpecialPresenters.drawTownMapBackground(
+      state, mapX, mapY, mapW, mapH)
+    if not hasMap then
+      setColor(colors.surface)
+      love.graphics.rectangle("fill", mapX, mapY, mapW, mapH, theme.radii.md)
+    end
+    if hasMap or state.mode == "grid" then
+      -- RBYMMO and similar integrations can expose party members as public
+      -- map markers. Draw those before the native location cursor/player dot
+      -- so the selected-location indicator remains readable on top.
+      for _, marker in ipairs(partyMarkers) do
+        local markerX, markerY =
+          mod._gen1ModernSpecialPresenters.townMapMarker(marker.loc)
+        if markerX and mapScale then
+          local cellX = mapOriginX + markerX * mapScale
+          local cellY = mapOriginY + markerY * mapScale
+          local cellSize = 8 * mapScale
+          local image =
+            mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, marker.sprite)
+            or imageFor(marker.image)
+          if image then
+            mod._gen1ModernSpecialPresenters.drawImageFitRegion(image, cellX,
+              cellY, cellSize, cellSize)
+          else
+            setColor(marker.color or colors.accent)
+            love.graphics.circle("fill", cellX + cellSize / 2,
+              cellY + cellSize / 2, math.max(2, cellSize * 0.34))
+            setColor(colors.text)
+            love.graphics.setLineWidth(math.max(1, math.floor(mapScale + 0.5)))
+            love.graphics.circle("line", cellX + cellSize / 2,
+              cellY + cellSize / 2, math.max(2, cellSize * 0.34))
+            love.graphics.setLineWidth(1)
+          end
+          local markerName = safeText(marker.name)
+          if markerName ~= "" then
+            local labelH = textHeight(caption) + spacing.xs * 2
+            local labelW = math.min(mapW,
+              caption:getWidth(markerName) + spacing.sm * 2)
+            local labelX = math.max(mapX,
+              math.min(mapX + mapW - labelW,
+                cellX + cellSize / 2 - labelW / 2))
+            local labelY = cellY - labelH - spacing.xs
+            if labelY < mapY then labelY = cellY + cellSize + spacing.xs end
+            setColor(colors.surface)
+            love.graphics.rectangle("fill", labelX, labelY, labelW, labelH,
+              theme.radii.xs or theme.radii.sm)
+            setColor(colors.text)
+            love.graphics.setFont(caption)
+            drawFittedText(markerName, labelX + spacing.xs,
+              labelY + spacing.xs, labelW - spacing.xs * 2, caption)
+          end
+        end
+      end
+      for index, loc in ipairs(locs) do
+        local mx, my = mod._gen1ModernSpecialPresenters.townMapMarker(loc)
+        if mx and mapScale then
+          -- TownMap:markerXY returns the top-left of the location's 8x8
+          -- screen cell. Keep the cell origin separate from its center: the
+          -- old presenter used the origin as a circle center and then drew a
+          -- fixed 18px cursor around it, producing the same small up/left
+          -- drift at every UI/window scale.
+          local cellX = mapOriginX + mx * mapScale
+          local cellY = mapOriginY + my * mapScale
+          local cellSize = 8 * mapScale
+          local centerX = cellX + cellSize / 2
+          local centerY = cellY + cellSize / 2
+          registerPointerRegion(cellX, cellY, cellSize, cellSize, {
+            selectionState = state, selectionField = "sel",
+            selectionIndex = index, rowCount = #locs, activate = true,
+            interactive = true, dragHandle = false,
+          })
+          if index == state.sel then
+            -- Use a scale-aware double outline so the selected location reads
+            -- against both pale routes and dark map areas, including custom
+            -- themes whose accent is intentionally subtle.
+            local outline = math.max(1, math.floor(mapScale + 0.5))
+            setColor(colors.text)
+            love.graphics.setLineWidth(outline + 2)
+            love.graphics.rectangle("line", cellX, cellY, cellSize, cellSize)
+            setColor(colors.accent)
+            love.graphics.setLineWidth(outline)
+            love.graphics.rectangle("line", cellX, cellY, cellSize, cellSize)
+            love.graphics.setLineWidth(1)
+          end
+          if state.playerLoc == loc then
+            setColor(colors.text)
+            love.graphics.circle("fill", centerX, centerY,
+              math.max(2, 3 * mapScale))
+          end
+          if state.nestSpecies and state.nests then
+            for _, nest in ipairs(state.nests) do
+              if nest == loc then
+                setColor(colors.accent)
+                love.graphics.circle("fill", centerX, centerY,
+                  math.max(2, 4 * mapScale))
+              end
+            end
+          end
+        end
+      end
+    else
+      local listY = mapY + spacing.md
+      local rowH = math.max(textHeight(body) + spacing.md, 42)
+      for index, loc in ipairs(locs) do
+        local ry = listY + (index - 1) * rowH
+        if ry + rowH > mapY + mapH then break end
+        registerPointerRegion(mapX + spacing.sm, ry, mapW - spacing.sm * 2,
+          rowH - 2, { selectionState = state, selectionField = "sel",
+            selectionIndex = index, rowCount = #locs, activate = true,
+            interactive = true, dragHandle = false })
+        setColor(index == state.sel and colors.selected or colors.surfaceRaised)
+        love.graphics.rectangle("fill", mapX + spacing.sm, ry,
+          mapW - spacing.sm * 2, rowH - 2, theme.radii.sm)
+        setColor(index == state.sel and colors.text or colors.textMuted)
+        love.graphics.setFont(body)
+        love.graphics.print(safeText(loc.name), mapX + spacing.lg,
+          ry + (rowH - textHeight(body)) / 2)
+      end
+    end
+
+    local infoX = landscape and mapX + mapW + spacing.xl or mapX
+    local infoY = landscape and mapY or mapY + mapH + spacing.md
+    local infoW = landscape and detailW or mapW
+    if selected then
+      setColor(colors.text)
+      love.graphics.setFont(body)
+      drawFittedText(state.fly and ("TO " .. safeText(selected.name))
+        or safeText(selected.name), infoX, infoY, infoW, body)
+      local names = {}
+      local named = {}
+      for _, marker in ipairs(partyMarkers) do
+        local sameLocation = marker.loc == selected
+          or (marker.loc and selected and marker.loc.name == selected.name
+            and marker.loc.x == selected.x and marker.loc.y == selected.y)
+        local markerName = safeText(marker.name)
+        if sameLocation and markerName ~= "" and not named[markerName] then
+          named[markerName] = true
+          names[#names + 1] = markerName
+        end
+      end
+      if #names > 0 then
+        setColor(colors.textMuted)
+        love.graphics.setFont(caption)
+        drawWrappedText("Players here:\n" .. table.concat(names, "\n"),
+          infoX, infoY + textHeight(body) + spacing.sm, infoW, caption,
+          textHeight(caption) + spacing.xs)
+      end
+      if state.nestSpecies then
+        setColor(colors.textMuted)
+        love.graphics.setFont(caption)
+        local noteY = infoY + textHeight(body) + spacing.sm
+        if #names > 0 then
+          noteY = noteY + (#names + 1) * (textHeight(caption) + spacing.xs)
+        end
+        drawWrappedText("Blinking markers show where this species can be found.",
+          infoX, noteY, infoW, caption,
+          textHeight(caption) + spacing.xs)
+      end
+    end
+    setColor(colors.textMuted)
+    love.graphics.setFont(caption)
+    local footer = state.fly and "UP/DOWN  choose   A  fly   B  back"
+      or state.nestSpecies and "A  close   B  back"
+      or "ARROWS  move   A  view   B  back"
+    drawHintIfUseful(theme, footer, px + spacing.lg,
+      py + panelH - footerH + spacing.sm, panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawQolLocationBanner(
+      game, viewport, theme)
+    local banner = mod._gen1ModernSpecialPresenters._qolLocationBanner
+    if type(banner) ~= "table" or safeText(banner.name) == "" then
+      return false
+    end
+    local world = mod.world
+    local ow = world and type(world.overworld) == "function"
+      and world:overworld() or nil
+    local now = love.timer and love.timer.getTime
+      and love.timer.getTime() or 0
+    if banner.overworld ~= ow or (banner.expiresAt and now >= banner.expiresAt)
+        or mod._gen1ModernSpecialPresenters.qolLocationDuration(game) <= 0 then
+      banner.name, banner.expiresAt, banner.overworld = nil, nil, nil
+      return false
+    end
+
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.caption)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local name = safeText(banner.name)
+    local maxW = math.max(1, w - spacing.lg * 2)
+    local nameW = bodyFont:getWidth(name)
+    local minW = math.min(maxW, scaledPanelWidth(theme, 220))
+    local panelW = math.min(maxW, math.max(minW,
+      nameW + spacing.xl * 2))
+    local panelH = textHeight(titleFont) + textHeight(bodyFont)
+      + spacing.lg * 2 + spacing.sm
+    local px = x + (w - panelW) / 2
+    -- Location notices use the same lower-card placement as dialogue. This
+    -- keeps them out of the playfield's top edge and makes the transition
+    -- between a map notice and an actual TextBox feel intentional.
+    local py = y + h - panelH - spacing.lg
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH,
+      theme.radii.md)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.md)
+    setColor(colors.textMuted)
+    love.graphics.setFont(titleFont)
+    local title = "LOCATION"
+    love.graphics.print(title,
+      px + (panelW - titleFont:getWidth(title)) / 2,
+      py + spacing.sm)
+    setColor(colors.text)
+    love.graphics.setFont(bodyFont)
+    local nameText = truncate(name, panelW - spacing.lg * 2, bodyFont)
+    love.graphics.print(nameText,
+      px + (panelW - bodyFont:getWidth(nameText)) / 2,
+      py + spacing.sm + textHeight(titleFont) + spacing.xs)
+    love.graphics.pop()
+    return true
+  end
+
+  function mod._gen1ModernSpecialPresenters.drawQuarantineReport(game, state,
+      viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local body = font(fontCache, theme.typography.body)
+    local caption = font(fontCache, theme.typography.caption)
+    local lines = type(state.lines) == "table" and state.lines or {}
+    local maxOffset = 0
+    if type(state.maxOffset) == "function" then
+      local ok, value = pcall(state.maxOffset, state)
+      if ok and tonumber(value) then maxOffset = math.max(0, value) end
+    end
+    local offset = clamp(tonumber(state.offset) or 0, 0, maxOffset)
+    local visible = math.min(13, #lines)
+    local rowH = textHeight(body) + spacing.xs
+    local widest = body:getWidth("LOAD REPORT")
+    for index = 1, visible do
+      widest = math.max(widest,
+        body:getWidth(safeText(lines[offset + index] or "")))
+    end
+    local panelW = math.min(w - spacing.lg * 2,
+      math.max(360, widest + spacing.lg * 2))
+    local footerH = textHeight(caption) + spacing.md
+    local panelH = math.min(h - spacing.lg * 2,
+      textHeight(titleFont) + visible * rowH + footerH + spacing.lg * 3)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local contentY = py + spacing.lg + textHeight(titleFont) + spacing.sm
+    local footerY = py + panelH - footerH
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    registerPointerRegion(px, py, panelW, panelH, {
+      role = "quarantine_report", action = "a", interactive = true,
+      dragHandle = false,
+    })
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    love.graphics.print("LOAD REPORT", px + spacing.lg, py + spacing.md)
+    setColor(colors.textMuted)
+    love.graphics.setFont(body)
+    for index = 1, visible do
+      local line = lines[offset + index]
+      if line and line ~= "" then
+        love.graphics.print(safeText(line), px + spacing.lg,
+          contentY + (index - 1) * rowH)
+      end
+    end
+    if offset > 0 then
+      setColor(colors.accent)
+      love.graphics.print("^", px + panelW - spacing.lg - body:getWidth("^"),
+        contentY)
+    end
+    if offset < maxOffset then
+      setColor(colors.accent)
+      love.graphics.print("v", px + panelW - spacing.lg - body:getWidth("v"),
+        contentY + math.max(0, visible - 1) * rowH)
+    end
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg, footerY,
+      panelW - spacing.lg * 2, themeMetric(theme, "divider", 1))
+    setColor(colors.textMuted)
+    love.graphics.setFont(caption)
+    local footer = maxOffset > 0 and "UP/DOWN  scroll   A/B  continue"
+      or "A/B  continue"
+    drawHintIfUseful(theme, footer, px + spacing.lg,
+      footerY + spacing.sm, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
@@ -5838,6 +7489,42 @@ return function(mod)
       drawDialogue(state, viewport, theme, game, overKind, overState)
       return
     end
+    if kind == "move_learn" then
+      mod._gen1ModernSpecialPresenters.drawMoveLearn(game, state, viewport, theme)
+      return
+    end
+    if kind == "pic_box" then
+      mod._gen1ModernSpecialPresenters.drawPicBox(game, state, viewport, theme)
+      return
+    end
+    if kind == "naming" then
+      mod._gen1ModernSpecialPresenters.drawNaming(game, state, viewport, theme)
+      return
+    end
+    if kind == "town_map" then
+      mod._gen1ModernSpecialPresenters.drawTownMap(game, state, viewport, theme)
+      return
+    end
+    if kind == "quarantine_report" then
+      mod._gen1ModernSpecialPresenters.drawQuarantineReport(
+        game, state, viewport, theme)
+      return
+    end
+    if kind == "rby_mmo_profile" then
+      mod._gen1ModernSpecialPresenters.drawRbyMmoProfile(
+        game, state, viewport, theme)
+      return
+    end
+    if kind == "rby_mmo_rank" then
+      mod._gen1ModernSpecialPresenters.drawRbyMmoRank(
+        game, state, viewport, theme)
+      return
+    end
+    if kind == "rby_mmo_char_pick" then
+      mod._gen1ModernSpecialPresenters.drawRbyMmoCharacterPick(
+        game, state, viewport, theme)
+      return
+    end
     if asModal or kind == "choice" or kind == "quantity" then
       drawModalRows(game, state, kind, viewport, theme, underKind, underState)
       return
@@ -5932,7 +7619,7 @@ return function(mod)
   -- "Nothing here" card and hid the page that was just opened.
   local function isModalLayer(kind)
     return kind == "menu" or kind == "list" or kind == "choice"
-      or kind == "quantity" or kind == "text"
+      or kind == "quantity" or kind == "text" or kind == "pic_box"
   end
 
   -- A/B are available globally through the mouse buttons, but a few screens
@@ -5979,6 +7666,22 @@ return function(mod)
       end
     elseif kind == "bag" and type(state.modernBag) == "table" then
       add("left"); add("right")
+    elseif kind == "naming" then
+      add("select"); add("start")
+    elseif kind == "town_map" then
+      if state.mode == "grid" and not state.fly and not state.nestSpecies then
+        add("left"); add("right")
+      end
+      add("up"); add("down")
+    elseif kind == "quarantine_report" then
+      if tonumber(state.offset) and type(state.maxOffset) == "function" then
+        local ok, maxOffset = pcall(state.maxOffset, state)
+        if ok and tonumber(maxOffset) and maxOffset > 0 then
+          add("up"); add("down")
+        end
+      end
+    elseif kind == "rby_mmo_rank" then
+      add("up"); add("down")
     end
 
     if state.pageJump then add("left"); add("right") end
@@ -6016,7 +7719,7 @@ return function(mod)
   end
 
   local function drawPointerControls(theme, context)
-    if option("pointerUi", true) == false or not context
+    if option("pointerUi", false) ~= true or not context
         or not context.primaryPanel
         or (context.viewport and context.viewport._gen1TouchVisible) then
       return
@@ -6222,6 +7925,10 @@ return function(mod)
     if region.gridRow ~= nil and region.gridCol ~= nil then
       return ("grid:%s:%s:%s"):format(owner, region.gridRow, region.gridCol)
     end
+    if region.namingRow ~= nil and region.namingCol ~= nil then
+      return ("naming:%s:%s:%s"):format(owner, region.namingRow,
+        region.namingCol)
+    end
     if region.selectionField and region.selectionIndex ~= nil then
       return ("selection:%s:%s:%s"):format(owner,
         region.selectionField, region.selectionIndex)
@@ -6265,6 +7972,11 @@ return function(mod)
     local state = region and (region.selectionState or region.state)
     if not state or not region
         or not pointerRuntime.regionAlive(game or currentGame, region) then return false end
+    if region.namingRow ~= nil and region.namingCol ~= nil then
+      local row = math.max(1, math.floor(tonumber(region.namingRow) or 1))
+      local col = math.max(1, math.floor(tonumber(region.namingCol) or 1))
+      return pcall(function() state.row, state.col = row, col end)
+    end
     if region.gridRow ~= nil and region.gridCol ~= nil then
       local rows = math.max(1, tonumber(region.gridRows) or region.gridRow + 1)
       local cols = math.max(1, tonumber(region.gridCols) or region.gridCol + 1)
@@ -6316,12 +8028,13 @@ return function(mod)
   end
 
   local function updatePointerHover(region, game)
-    if region and not pointerRuntime.regionAlive(game or currentGame, region) then
-      region = nil
+      if region and not pointerRuntime.regionAlive(game or currentGame, region) then
+        region = nil
     end
     hoveredPointer = region
     if region and region.interactive ~= false
         and (region.rowIndex ~= nil or region.selectionField ~= nil
+          or region.namingRow ~= nil
           or (region.gridRow ~= nil and region.gridCol ~= nil)) then
       -- Hovering a row is the mouse equivalent of moving the native cursor.
       -- Selection remains owned by the live state, so the next draw naturally
@@ -6390,10 +8103,13 @@ return function(mod)
     end
     if region.action then return tapGameButton(game, region.action) end
     local hasSelection = region.rowIndex ~= nil or region.selectionField ~= nil
+      or region.namingRow ~= nil
       or (region.gridRow ~= nil and region.gridCol ~= nil)
     local selected = not hasSelection or setPointerSelection(region, nil, game)
     if not selected then return false end
     local canActivate = region.activate == true or region.rowIndex ~= nil
+      or region.namingRow ~= nil
+      or (region.gridRow ~= nil and region.gridCol ~= nil)
       or region.kind == "text" or region.kind == "quantity"
     if not canActivate then return false end
     return tapGameButton(game, "a")
@@ -6414,7 +8130,7 @@ return function(mod)
     end
     local phase = pointer.phase
     local key = pointerCaptureKey(pointer)
-    if option("pointerUi", true) == false or not pointerInputReady() then
+    if option("pointerUi", false) ~= true or not pointerInputReady() then
       -- A setting or compatibility change can happen in the middle of a
       -- gesture. Never leave that pointer's old capture waiting to fire when
       -- click support is enabled again later.
@@ -6509,7 +8225,7 @@ return function(mod)
       end
 
       local panelDrag = region.dragHandle == true
-      if option("dragPanels", true) ~= false and panelDrag
+      if option("dragPanels", false) == true and panelDrag
           and (math.abs(totalX) >= threshold or math.abs(totalY) >= threshold) then
         capture.moved = true
         capture.panelMoved = true
@@ -6671,6 +8387,16 @@ return function(mod)
     if not (love and love.graphics) then return end
     spriteAnimationOn = option("spriteAnimation", true) ~= false
     local layers, complete = presentationStack(game)
+    local topState = game and game.stack and game.stack.top
+      and game.stack:top() or nil
+    local modernWorld = option("menuUi", true) ~= false
+      and option("hideOriginalUi", true) ~= false
+    local overworldActive = game and game.overworld
+      and topState == game.overworld
+    local modernOwnsQolBanner = modernWorld
+      and (overworldActive or (complete and #layers > 0))
+    mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
+      game, modernOwnsQolBanner)
     if complete and #layers > 0 then
       drawModernStack(game, layers, viewportForTouchControls(game, viewport))
     else
@@ -6681,6 +8407,12 @@ return function(mod)
       end
       pointerRuntime.topState = nil
       hoveredPointer = nil
+      if overworldActive and modernWorld then
+        mod._gen1ModernSpecialPresenters.drawQolLocationBanner(
+          game, viewportForTouchControls(game, viewport),
+          responsiveTheme(currentTheme(viewport), viewport,
+            responsiveThemeCache))
+      end
     end
   end, 100)
 end

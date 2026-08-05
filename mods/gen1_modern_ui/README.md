@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.7.5 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.7.6 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -38,12 +38,13 @@ custom engine checkout or a patched binary.
 
 - Keyboard and controller navigation remain vanilla because the overlay does
   not replace states or consume their input.
-- TouchControls remain the first refusal for virtual buttons. On hosts that
-  expose `input.pointer` and `mod.input`, supported modern rows and dialogue
-  cards accept touch or mouse taps; a tap selects the live row and sends the
-  normal source-safe `A` action, so the owning state still runs validation,
-  sounds, callbacks, and stack changes. Pointers that begin outside a modern
-  region fall through to the next hook.
+- TouchControls remain the first refusal for virtual buttons. When the
+  default-off **TOUCH / CLICK UI** experiment is enabled on hosts that expose
+  `input.pointer` and `mod.input`, supported modern rows and dialogue cards
+  accept touch or mouse taps; a tap selects the live row and sends the normal
+  source-safe `A` action, so the owning state still runs validation, sounds,
+  callbacks, and stack changes. Pointers that begin outside a modern region
+  fall through to the next hook.
 - Touch or mouse dragging can reposition supported panels when **DRAG UI
   PANELS** is enabled. Offsets are normalized to the viewport and persisted by
   screen family, so the layout remains usable across resolutions. A cancelled
@@ -68,9 +69,9 @@ custom engine checkout or a patched binary.
 - Side-by-side YES/NO cards translate L/R into atomic UP/DOWN taps. The mod
   never renames a queued directional edge, which prevents an input source from
   being detached and leaving DOWN held after the choice closes.
-- **TOUCH / CLICK UI** and **DRAG UI PANELS** can be disabled independently;
-  hosts without the new hooks retain the previous keyboard/controller-only
-  behavior.
+- **TOUCH / CLICK UI** and **DRAG UI PANELS** are experimental, default off,
+  and separately toggleable; panel dragging requires the pointer layer. Hosts
+  without the new hooks retain the previous keyboard/controller-only behavior.
 - **START MOD MENUS** collects rows appended by other mods and this mod's UI
   settings beneath one Start-menu entry by default. In the grouped submenu,
   highlight any row and press **SELECT** to pin/unpin it on the Start menu.
@@ -83,17 +84,29 @@ custom engine checkout or a patched binary.
 - **MINIMAL UI** defaults to off so new installs receive the richer Party,
   Pokédex, Bag, Shop, and PC presenters; enable it when a compact list is
   preferred.
-- New installs default to **Classic Mono**, **PIXEL** framing, **FRAME 2**, and
-  the bundled **PIXEL ART FONT**. The font preference applies Plain Pixel to
-  all modern presenters with nearest filtering, snaps its physical raster to
-  the authored 15-pixel grid, and normalizes line boxes so broad multilingual
-  metrics do not inflate every panel. It falls back safely on older game
-  builds that do not ship the asset and uses the system face for any missing
-  glyphs.
+- New installs default to **Classic Mono**, **PIXEL** framing, and **FRAME 2**.
+  The experimental **PIXEL ART FONT** defaults off. Enabling it applies Plain
+  Pixel to all modern presenters with nearest filtering, snaps its physical
+  raster to the authored 15-pixel grid, and normalizes line boxes so broad
+  multilingual metrics do not inflate every panel. It falls back safely on
+  older game builds that do not ship the asset and uses the system face for
+  any missing glyphs.
 - OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay
   vanilla.
+- RBY MMO's public `RbyMmoProfile` and `RbyMmoRank` screens receive semantic
+  profile and leaderboard cards. The adapter reads only their stable screen
+  IDs and public player/client payloads, so RBY MMO keeps ownership of network
+  requests, scrolling, callbacks, and future screen internals. Its chosen
+  overworld sprite is cropped from the host catalog for profile and rank art.
+- When RBY MMO is active, its public `party()` and `players()` exports also
+  place the remote party member on the modern Town Map at the member's current
+  city, with the chosen sprite and display name above the marker plus a
+  `Players here` detail. The modern map remains draw-only and falls back
+  quietly when the mod is absent or the public payload is unavailable.
+- Start-menu mod pins are flushed to the active save as soon as SELECT changes
+  them, so direct shortcuts survive a client restart and save-slot reload.
 - The presenter decorates `Menu`, `ListMenu`, `ChoiceBox`, `QuantityBox`,
   `TextBox`, `OptionsMenu`, `PartyMenu`, `SummaryMenu`, and the released in-game
   `ManagerState` mod-list/profile/error screens. The manager rows are read

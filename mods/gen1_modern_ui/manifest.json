@@ -1,7 +1,7 @@
 {
   "id": "gen1_modern_ui",
   "name": "Gen1 Modern UI",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "api": 2,
   "entry": "main.lua",
   "profile": "overhaul",

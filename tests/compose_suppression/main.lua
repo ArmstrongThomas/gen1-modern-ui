@@ -11,6 +11,14 @@ local function check(value, message)
   if not value then fail(message) end
 end
 
+local function optionDefault(schemas, key)
+  for _, schema in ipairs(schemas) do
+    for _, row in ipairs(schema) do
+      if row.key == key then return row.default end
+    end
+  end
+end
+
 local PLAIN_PIXEL_VIRTUAL =
   "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
 
@@ -34,6 +42,32 @@ end
 function love.errorhandler(message)
   io.stderr:write(tostring(message), "\n", debug.traceback(), "\n")
   os.exit(1)
+end
+
+local function namingGridHasNumberRows(hook)
+  local base = { { "A", "B", "C" }, { "ED" }, { "lower case" } }
+  local result = hook(function(grid) return grid end, base, { lower = false })
+  return #result == 5 and result[3][1] == "1"
+    and result[4][5] == "0" and result[5][1] == "lower case"
+end
+
+local function namingGridKeepsLowercase(hook)
+  local base = { { "a", "b", "c" }, { "ED" }, { "UPPER CASE" } }
+  local digitPage = { { "1", "2", "3" }, { "ABC" } }
+  local result = hook(function() return digitPage end, base, { lower = true })
+  return result[1][1] == "a" and result[3][1] == "1"
+    and result[#result][1] == "UPPER CASE"
+end
+
+local function namingGridNormalizesRbyMmoSwitch(hook)
+  local upper = { { "A", "B" }, { "1", "2" }, { "123" } }
+  local lower = { { "a", "b" }, { "1", "2" }, { "ABC" } }
+  local upperResult = hook(function() return upper end, upper,
+    { lower = false })
+  local lowerResult = hook(function() return lower end, lower,
+    { lower = true })
+  return upperResult[#upperResult][1] == "lower case"
+    and lowerResult[#lowerResult][1] == "UPPER CASE"
 end
 
 function love.load()
@@ -101,12 +135,23 @@ function love.load()
   package.loaded["src.ui.PartyMenu"] = partyClass
   package.loaded["src.ui.SummaryMenu"] = summaryClass
   package.loaded["src.ui.DexEntryMenu"] = dexEntryClass
+  package.loaded["src.ui.MoveLearnMenu"] = { draw = function() end }
+  package.loaded["src.ui.PicBox"] = { draw = function() end }
+  package.loaded["src.ui.NamingScreen"] = { draw = function() end }
+  package.loaded["src.ui.TownMap"] = { draw = function() end }
+  package.loaded["src.ui.QuarantineReport"] = { draw = function() end }
   package.loaded["src.mods.ManagerState"] = managerClass
   package.loaded["src.link.LinkState"] = linkClass
   package.loaded["src.world.OverworldController"] = overworldClass
   package.loaded["src.ui.TitleState"] = titleClass
   package.loaded["src.pokemon.Stats"] = statsLibrary
   local mod = {
+    find = function(id)
+      if id == "rby_mmo" and values.rbyPartyExports then
+        return { id = id, version = "0.8.0", exports = values.rbyPartyExports }
+      end
+      return nil
+    end,
     assets = {
       image = function(_, relative)
         modAssetLoads = modAssetLoads + 1
@@ -173,14 +218,13 @@ function love.load()
   check(type(installer) == "function", "entry must return an installer")
   installer(mod)
 
-  local themeRow, frameStyleRow, frameAssetRow, frameScaleRow, pixelFontRow
+  local themeRow, frameStyleRow, frameAssetRow, frameScaleRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
       if row.key == "theme" then themeRow = row end
       if row.key == "frameStyle" then frameStyleRow = row end
       if row.key == "frameAsset" then frameAssetRow = row end
       if row.key == "frameScale" then frameScaleRow = row end
-      if row.key == "pixelFont" then pixelFontRow = row end
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
@@ -199,8 +243,11 @@ function love.load()
       and frameScaleRow.choices[4][2] == "4"
       and frameScaleRow.default == "2",
     "pixel frame scale exposes whole-number 1X through 4X choices")
-  check(pixelFontRow and pixelFontRow.default == true,
-    "the bundled pixel-art font is enabled by default")
+  check(optionDefault(schemas, "pixelFont") == false,
+    "the experimental pixel-art font defaults off")
+  check(optionDefault(schemas, "pointerUi") == false
+      and optionDefault(schemas, "dragPanels") == false,
+    "experimental pointer interaction and panel dragging default off")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -275,12 +322,38 @@ function love.load()
   check(type(hooks["render.zones"]) == "function", "render.zones hook registered")
   check(type(hooks["render.compose"]) == "function", "render.compose hook registered")
   check(type(hooks["render.hud"]) == "function", "render.hud hook registered")
+  check(type(hooks["ui.naming.grid"]) == "function",
+    "naming grid hook registered")
   check(type(hooks["ui.state.decorate"]) == "function",
     "ui.state.decorate hook registered")
   check(type(eventListeners["screen.pushed"]) == "function",
     "screen lifecycle visibility listener registered")
   check(type(eventListeners["screen.popped"]) == "function",
     "screen lifecycle palette restore listener registered")
+  check(type(eventListeners["map.entered"]) == "function",
+    "QOL location banner replacement listener registered")
+  local bannerGame = {
+    data = {
+      field = { townMap = { locations = {
+        PALLET_TOWN = { name = "Pallet Town" },
+      } } },
+    },
+    save = { options = { modOptions = {
+      quality_of_life = { qol_location_banners = 2 },
+    } } },
+  }
+  check(mod._gen1ModernSpecialPresenters.qolLocationDuration(bannerGame) == 2,
+    "QOL banner duration follows the saved feature option")
+  check(mod._gen1ModernSpecialPresenters.qolLocationName(
+      bannerGame, "PALLET_TOWN") == "PALLET TOWN",
+    "QOL banner uses the resolved Town Map location name")
+
+  check(namingGridHasNumberRows(hooks["ui.naming.grid"]),
+    "naming grid adds numeric entry before the case page")
+  check(namingGridKeepsLowercase(hooks["ui.naming.grid"]),
+    "naming grid keeps lowercase when a mod uses lower for digits")
+  check(namingGridNormalizesRbyMmoSwitch(hooks["ui.naming.grid"]),
+    "naming grid normalizes RBY MMO case-switch labels")
 
   local titleGame = { stack = { states = {} } }
   local titleState = setmetatable({}, { __index = titleClass })
@@ -367,11 +440,15 @@ function love.load()
     "grouped submenu retains every third-party row and UI SETTINGS")
   pinMenu.index = dexIndex
   local pinInput = { pressQueue = { "select" } }
-  local pinGame = { input = pinInput, stack = game.stack }
+  values.pinSaveWrites = 0
+  local pinGame = { input = pinInput, stack = game.stack, save = {},
+    writeSave = function() values.pinSaveWrites = values.pinSaveWrites + 1 end }
   hooks["input.step"](function() end, pinGame, 0)
   check(savedPins.startMenuPins and savedPins.startMenuPins["example.dexnav"] == true
       and #pinInput.pressQueue == 0,
     "SELECT pins the highlighted mod menu")
+  check(values.pinSaveWrites == 1,
+    "SELECT flushes the pinned mod menu to the active save")
   game.stack:pop()
   local pinnedItems = hooks["ui.start_menu.items"](
     function(_, list) list[#list + 1] = modMenuRow return list end, game,
@@ -714,6 +791,19 @@ function love.load()
       owned = { TESTMON = true } },
     currentBox = 1, boxes = { {} },
   }
+  values.rbySpriteCanvas = love.graphics.newCanvas(16, 16)
+  love.graphics.push("all")
+  love.graphics.setCanvas(values.rbySpriteCanvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(0.10, 0.24, 0.46, 1)
+  love.graphics.rectangle("fill", 5, 1, 6, 4)
+  love.graphics.setColor(0.25, 0.72, 0.92, 1)
+  love.graphics.rectangle("fill", 3, 5, 10, 8)
+  love.graphics.setColor(0.95, 0.80, 0.18, 1)
+  love.graphics.rectangle("fill", 4, 13, 3, 3)
+  love.graphics.rectangle("fill", 9, 13, 3, 3)
+  love.graphics.setCanvas()
+  love.graphics.pop()
   game.data = {
     items = {
       POTION = { id = "POTION", name = "POTION", price = 300 },
@@ -727,6 +817,7 @@ function love.load()
     pokemon = { TESTMON = { id = "TESTMON", name = "TESTMON", dex = 1,
       types = { "NORMAL" }, baseStats = { hp = 30, attack = 25,
         defense = 20, speed = 22, special = 18 } } },
+    sprites = { PLAYER = { image = values.rbySpriteCanvas, frames = 6 } },
     constants = {},
   }
   local testMon = { species = "TESTMON", nickname = "BUDDY", level = 12,
@@ -749,6 +840,9 @@ function love.load()
   local largeDesktopViewport = { width = 1600, height = 1000,
     safe = { x = 0, y = 0, width = 1600, height = 1000 } }
   values.uiScale, values.fontScale = "auto", "auto"
+  -- Keep the remainder of the gallery on the opt-in font path so the default
+  -- can remain conservative without losing real-host font coverage.
+  values.pixelFont = true
   local autoPortrait = mod.exports.getScaleTokens(portraitViewport)
   local autoDesktop = mod.exports.getScaleTokens(largeDesktopViewport)
   check(autoPortrait.uiScale >= 0.75 and autoPortrait.uiScale <= 1.50
@@ -1163,11 +1257,79 @@ function love.load()
   renderHud({ trainer }, "trainer")
   renderHud({ trainer }, "trainer_portrait", portraitViewport)
 
+  do
+    -- RBY MMO's profile/rank states are plain local classes with public
+    -- semantic ids, not engine widgets. Keep a custom draw method on the
+    -- fixtures so the suppression seam proves the adapter is intentionally
+    -- modeling the foreign screen rather than accidentally accepting a stock
+    -- draw implementation.
+    local rbyProfile = {
+      screenId = "RbyMmoProfile",
+      player = {
+        name = "ONLINE",
+        sprite = "PLAYER",
+        points = 42,
+        money = 1234,
+        profile = { idNo = 7, playtime = 7260, badges = 3, seen = 86, owned = 35 },
+      },
+      draw = function() end,
+    }
+    check(mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, "PLAYER")
+        ~= nil, "RBY MMO profile resolves the selected player sprite")
+    local rbyProfileCanvas = renderHud({ rbyProfile }, "rby_mmo_profile")
+    check(pixelAlpha(rbyProfileCanvas, 320, 180) > 0,
+      "RBY MMO profile renders through its semantic presenter")
+    game.stack.states = { overworld, rbyProfile }
+    fill()
+    compose(false)
+    check(alpha() == 0,
+      "RBY MMO profile suppresses its native custom draw")
+
+    local rbyRankRows = {}
+    for index = 1, 8 do
+      rbyRankRows[index] = { name = "PLAYER " .. index, points = index * 10,
+        sprite = "PLAYER" }
+    end
+    local rbyRank = {
+      screenId = "RbyMmoRank", offset = 0, rows = rbyRankRows,
+      client = { isRanked = function() return true end }, draw = function() end,
+    }
+    local rbyRankCanvas = renderHud({ rbyRank }, "rby_mmo_rank")
+    check(pixelAlpha(rbyRankCanvas, 320, 180) > 0,
+      "RBY MMO rank renders through its semantic presenter")
+    game.stack.states = { overworld, rbyRank }
+    fill()
+    compose(false)
+    check(alpha() == 0,
+      "RBY MMO rank suppresses its native custom draw")
+
+    local rbyCharPick = setmetatable({
+      screenId = "RbyMmoCharPick", title = "CHARACTER", index = 1, scroll = 0,
+      items = {
+        { label = "PLAYER", value = "PLAYER" },
+        { label = "RED", value = "PLAYER" },
+      }, draw = function() end,
+    }, { __index = listClass })
+    check(alphaBounds(renderHud({ rbyCharPick }, "rby_mmo_character_pick",
+      largeDesktopViewport)) ~= nil,
+      "RBY MMO character selection renders with a selected portrait preview")
+  end
+
   local shop = setmetatable({ title = "BUY", dialogue = true,
     money = function() return 1234 end, footer = "What would you like?",
     items = { { label = "POTION", right = "¥300", value = "POTION" } },
     index = 1, scroll = 0 }, { __index = listClass })
+  values.shopPrints = {}
+  values.nativeShopPrint = love.graphics.print
+  love.graphics.print = function(value, ...)
+    values.shopPrints[#values.shopPrints + 1] = tostring(value)
+    return values.nativeShopPrint(value, ...)
+  end
   renderHud({ shop }, "shop")
+  love.graphics.print = values.nativeShopPrint
+  check(table.concat(values.shopPrints, "\n"):find("HAVE x2", 1, true) ~= nil,
+    "shop detail shows the quantity already owned")
+  values.shopPrints, values.nativeShopPrint = nil, nil
   shop.items = { { label = "TM01", right = "¥3000", value = "TM_TEST" } }
   renderHud({ shop }, "shop_portrait", portraitViewport)
   local savedTestMoveName = game.data.moves.TEST_MOVE.name
@@ -1263,6 +1425,109 @@ function love.load()
       and not printedChoice:find("Choose an option", 1, true)
       and not printedChoice:find("A  choose   B  no", 1, true),
     "dialogue choices omit redundant button tips")
+  textBox.choice, textBox.done = nil, true
+  printedChoiceText = {}
+  love.graphics.print = function(value, ...)
+    printedChoiceText[#printedChoiceText + 1] = tostring(value)
+    return nativePrint(value, ...)
+  end
+  renderHud({ overworld, textBox }, nil)
+  love.graphics.print = nativePrint
+  check(printedChoiceText[#printedChoiceText] == "...",
+    "ready dialogue uses a three-dot continuation cue")
+  local savedDialoguePages = textBox.pages
+  textBox.pages = {{
+    "A dialogue panel should leave comfortable room around readable text.",
+  }}
+  textBox.choice, textBox.done = nil, nil
+  check(alphaBounds(renderHud({ overworld, textBox },
+    "dialogue_wide_padding", largeDesktopViewport)) ~= nil,
+    "dialogue renders with the wider padded card")
+  textBox.pages = savedDialoguePages
+  textBox.choice = true
+
+  state = setmetatable({ screenId = "MoveLearnMenu", selecting = true,
+    index = 1, newMoveId = "TEST_MOVE", mon = testMon },
+    { __index = package.loaded["src.ui.MoveLearnMenu"] })
+  check(alphaBounds(renderHud({ state }, "p2_move_learn", largeDesktopViewport)) ~= nil,
+    "Move Learn presenter renders the replacement list")
+  state = setmetatable({ screenId = "PicBox", image = nil,
+    text = "A picture caption wraps without the classic canvas." },
+    { __index = package.loaded["src.ui.PicBox"] })
+  check(alphaBounds(renderHud({ state }, "p2_picbox", portraitViewport)) ~= nil,
+    "PicBox presenter renders its themed card")
+  state = setmetatable({ screenId = "NameRater", title = "NICKNAME?",
+    maxLen = 10, glyphs = {}, default = "PIKACHU", row = 1, col = 1,
+    lower = false,
+    mon = { nickname = "PIKACHU", species = "PIKACHU" },
+    grid = function()
+      return {
+        { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
+        { "J", "K", "L", "M", "N", "O", "P", "Q", "R" },
+        { "S", "T", "U", "V", "W", "X", "Y", "Z", " " },
+        { "x", "(", ")", ":", ";", "[", "]", "<PK>", "<MN>" },
+        { "-", "?", "!", "♂", "♀", "/", ".", ",", "ED" },
+        { "lower case" },
+      }
+    end },
+    { __index = { draw = function() end } })
+  check(alphaBounds(renderHud({ state }, "p2_naming", portraitViewport)) ~= nil,
+    "Name Rater presenter renders its glyph grid")
+  check(table.concat(state.glyphs) == "PIKACHU",
+    "Name Rater presenter seeds an editable existing nickname")
+  local nameRaterFixture = { state = state, point = {} }
+  -- Name Rater pushes NamingScreen.new() directly, so this path intentionally
+  -- has no screenId. RBY MMO then adds an instance draw wrapper on top.
+  local wrappedNaming = setmetatable({
+    title = "GYARADOS'S NAME?", maxLen = 10, glyphs = { "G", "Y" },
+    row = 1, col = 1, lower = false, default = "GYARADOS",
+    grid = state.grid,
+    draw = function() end },
+    { __index = package.loaded["src.ui.NamingScreen"] })
+  check(alphaBounds(renderHud({ wrappedNaming }, "p2_naming_wrapped",
+    portraitViewport)) ~= nil,
+    "Name Rater presenter accepts a wrapped built-in NamingScreen")
+  state = setmetatable({ screenId = "TownMap", mode = "list", sel = 1,
+    locs = { { name = "PALLET TOWN" }, { name = "VIRIDIAN CITY" } } },
+    { __index = package.loaded["src.ui.TownMap"] })
+  check(alphaBounds(renderHud({ state }, "p2_town_map_list", largeDesktopViewport)) ~= nil,
+    "Town Map presenter renders its location list")
+  state = setmetatable({ screenId = "TownMap", mode = "grid", sel = 1,
+    locs = { { name = "PALLET TOWN", x = 2, y = 11 } },
+    byMap = { PALLET_TOWN = { name = "PALLET TOWN", x = 2, y = 11 } },
+    partyMembers = { { mapId = "PALLET_TOWN", name = "MISTY" } } },
+    { __index = package.loaded["src.ui.TownMap"] })
+  check(alphaBounds(renderHud({ state }, "p2_town_map_party", largeDesktopViewport)) ~= nil,
+    "Town Map presenter accepts party-member map markers")
+  values.rbyTownMap = setmetatable({ screenId = "TownMap", mode = "grid",
+    sel = 1, locs = { { name = "PALLET TOWN", x = 2, y = 11 } },
+    byMap = { PALLET_TOWN = { name = "PALLET TOWN", x = 2, y = 11 } },
+    playerLoc = nil }, { __index = package.loaded["src.ui.TownMap"] })
+  values.rbyPartyExports = {
+    party = function()
+      return { { id = "local" }, { id = "partner", name = "MISTY" } }
+    end,
+    players = function()
+      return { { id = "partner", name = "MISTY", sprite = "PLAYER",
+        map = "PALLET_TOWN" } }
+    end,
+  }
+  values.rbyMarkers = mod._gen1ModernSpecialPresenters.townMapPartyMarkers(
+    values.rbyTownMap)
+  check(#values.rbyMarkers == 1 and values.rbyMarkers[1].name == "MISTY"
+      and values.rbyMarkers[1].sprite == "PLAYER"
+      and values.rbyMarkers[1].loc == values.rbyTownMap.byMap.PALLET_TOWN,
+    "Town Map presenter consumes RBYMMO public party, roster, and sprite exports")
+  check(alphaBounds(renderHud({ values.rbyTownMap }, "p2_town_map_rby_mmo",
+    largeDesktopViewport)) ~= nil,
+    "Town Map presenter renders the RBYMMO party marker")
+  values.rbyPartyExports = nil
+  state = setmetatable({ screenId = "QuarantineReport", offset = 0,
+    lines = { "Moved to LOST box:", " CHARMANDER (ROUTE_1)" },
+    maxOffset = function() return 0 end },
+    { __index = package.loaded["src.ui.QuarantineReport"] })
+  check(alphaBounds(renderHud({ state }, nil, portraitViewport)) ~= nil,
+    "Quarantine report presenter renders its recovery summary")
 
   local pointerItems = {}
   for index = 1, 12 do
@@ -1272,13 +1537,54 @@ function love.load()
   bag.items = pointerItems
   bag.index, bag.scroll = 1, 0
   values.uiScale, values.fontScale = "100", "100"
-  values.pointerUi, values.dragPanels = true, false
+  values.pointerUi, values.dragPanels = false, false
   renderHud({ bag }, "pointer_bag", viewport)
   local pointerNextCalls = 0
   local pointerNext = function()
     pointerNextCalls = pointerNextCalls + 1
     return false
   end
+  values.pointerUi = true
+  renderHud({ nameRaterFixture.state }, nil, portraitViewport)
+  for y = 0, portraitViewport.height - 1, 4 do
+    for x = 0, portraitViewport.width - 1, 4 do
+      nameRaterFixture.state.row, nameRaterFixture.state.col = 1, 1
+      hooks["input.pointer"](pointerNext, game,
+        { phase = "moved", source = "mouse", id = "mouse",
+          x = x, y = y })
+      if nameRaterFixture.state.col == 2 then
+        nameRaterFixture.point.x, nameRaterFixture.point.y = x, y
+        break
+      end
+    end
+    if nameRaterFixture.point.x then break end
+  end
+  check(nameRaterFixture.point.x ~= nil,
+    "Name Rater mouse hover selects a character")
+  nameRaterFixture.tapCount = #pointerTaps
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = nameRaterFixture.point.x, y = nameRaterFixture.point.y, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = nameRaterFixture.point.x, y = nameRaterFixture.point.y, button = 1 })
+  check(#pointerTaps == nameRaterFixture.tapCount + 1
+      and pointerTaps[#pointerTaps].button == "a",
+    "Name Rater mouse click activates a character")
+  values.pointerUi = false
+  pointerNextCalls = 0
+  while #pointerTaps > 0 do table.remove(pointerTaps) end
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 1 })
+  check(pointerNextCalls == 2 and #pointerTaps == 0,
+    "default-off pointer interaction forwards clicks without game actions")
+  values.pointerUi = true
+  renderHud({ bag }, "pointer_bag", viewport)
+  pointerNextCalls = 0
   hooks["input.pointer"](pointerNext, game,
     { phase = "moved", source = "mouse", id = "mouse", x = 5, y = 5 })
   check(pointerNextCalls == 1,

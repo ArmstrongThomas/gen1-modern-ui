@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.7.5 is a standalone, visual-first overhaul for released
+`mods/gen1_modern_ui` 0.7.6 is a standalone, visual-first overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -20,8 +20,9 @@ adapter, or installed-mod compatibility contract is discovered.
 
 The current slice presents `Menu`, `ListMenu`, `TextBox`, `ChoiceBox`,
 `QuantityBox`, `OptionsMenu`, `PartyMenu`, `SummaryMenu`, `TrainerCard`,
-`PokedexMenu`, `ManagerState`, Useful Dex's `DexEntryMenu`, and Gen 3 Box's
-`Gen3Box` screen. Bag, Shop-product, and Player-PC item lists have live
+`PokedexMenu`, `ManagerState`, Useful Dex's `DexEntryMenu`, Gen 3 Box's
+`Gen3Box`, Move Learn, PicBox, Naming, Town Map/Fly/AREA, and Quarantine
+Report. Bag, Shop-product, and Player-PC item lists have live
 detail-aware presenters, and compatible action/quantity/confirmation/dialogue
 layers render as one modern stack. Released Bill's PC root, deposit, withdraw,
 and release lists now have audited presenters; deposit/withdraw show the
@@ -46,7 +47,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.7.5. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.7.6. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -97,7 +98,7 @@ that file and appends the generated archive checksum.
    transitions, and callbacks. Pointer taps use only the host's source-safe
    action facade, and panel dragging does not synthesize game actions.
 
-Version 0.7.5 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.7.6 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -274,18 +275,18 @@ keeps decorative pixels outside the content container. `pixelScale` and
 `slice`, `pixelScale`, and `pixelInset` preserve pixel-art sizing while other frame geometry follows the
 active UI scale. Asset-backed frames place the image edge `pixelInset` scaled
 pixels outside the panel, excluding the rest of the transparent slice space,
-so large pixel multipliers stay snug without covering panel content. v0.7.5
-also paints the panel surface through the snapped UI rectangle while keeping
+so large pixel multipliers stay snug without covering panel content. The
+current renderer also paints the panel surface through the snapped UI rectangle while keeping
 transparent frame inset space outside the container. Pixel mode suppresses separate
 rounded corners and top accent strips so the asset owns the panel chrome. It
 also exposes **PIXEL FRAME** to select one of the three shipped PNG borders.
-New installs use Classic Mono with PIXEL / FRAME 2. **PIXEL ART FONT** is also
-enabled by default and loads gen1recomp's bundled Plain Pixel TTF for all
-presenters. Its physical raster is snapped to the nearest authored 15-pixel
-multiple with nearest filtering, while its broad multilingual metrics are
-normalized to an ordinary UI line box. The system font remains a missing-glyph
-fallback; older hosts without the asset use it outright. Plain Pixel is by
-Douglas Vautour / Burpy Fresh under CC BY 4.0.
+New installs use Classic Mono with PIXEL / FRAME 2. The experimental **PIXEL
+ART FONT** defaults off. When enabled it loads gen1recomp's bundled Plain Pixel
+TTF for all presenters. Its physical raster is snapped to the nearest authored
+15-pixel multiple with nearest filtering, while its broad multilingual metrics
+are normalized to an ordinary UI line box. The system font remains a
+missing-glyph fallback; older hosts without the asset use it outright. Plain
+Pixel is by Douglas Vautour / Burpy Fresh under CC BY 4.0.
 Themes may provide `colors.health` tokens for `track`, `high`, `medium`, `low`,
 and `critical` states. HP bars use those tokens and retain numeric HP labels as
 the color-independent cue for color-vision accessibility.
@@ -413,8 +414,13 @@ for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
   Shop, and Player-PC
   presenters in the released game with installed UI/category mods and retain
   classic fallback for any unmodeled branch.
-- Add visual presenters for move learning, PicBox, naming, Town Map/Fly/AREA,
-  and the title Continue-info/save-selection card.
+- Exercise the new Move Learn, PicBox, Naming/Name Rater, Town Map/Fly/AREA, and
+  Quarantine Report presenters in the released game across desktop and
+  portrait layouts; malformed or unknown state must retain the classic UI.
+- Verify Town Map party-member marker compatibility with RBYMMO, including
+  map IDs, direct coordinates, and the native player/selection indicators.
+- Add the title Continue-info/save-selection card once its private state has a
+  stable semantic marker.
 - Expand pointer coverage to atomic drag/drop inventory flows and replacement
   screens whose interactions cannot be inferred from public row/grid state.
 - Expand portrait/landscape screenshot coverage and add a theme-pack example.

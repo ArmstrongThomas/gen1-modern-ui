@@ -66,8 +66,9 @@ press/release repaired the state. The current path removes the horizontal edge
 and asks `mod.input:tap` for an atomic UP/DOWN edge, preserving source identity.
 
 The layer is opt-in through the **TOUCH / CLICK UI** and **DRAG UI PANELS**
-settings, both on by default for new installs. Hosts that do not expose the
-new APIs simply follow the existing keyboard/controller path. Semantic actions
+settings. Both experiments default off for new installs. Hosts that do not
+expose the new APIs simply follow the existing keyboard/controller path.
+Semantic actions
 for atomic box transfer and other custom replacement screens remain future
 adapter work. Mouse-wheel input is deliberately out of scope for now; lists use
 hover, row clicks, keyboard/controller navigation, or captured drag scrolling.

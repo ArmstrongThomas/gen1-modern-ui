@@ -6,7 +6,7 @@ states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.7.5 uses four released hooks plus a narrowly scoped class wrapper and
+Version 0.7.6 uses four released hooks plus a narrowly scoped class wrapper and
 the host's source-safe pointer/input hooks:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
@@ -144,6 +144,19 @@ The current presenter recognizes these released classes or screen IDs:
   to reproduce only text the engine has already revealed.
 - `ChoiceBox`: reads the current choice index and pending state.
 - `QuantityBox`: reads quantity, maximum, and optional unit price.
+- `MoveLearnMenu`: reads the active replacement list, new move, and cursor;
+  the surrounding trying-to-learn and abandon prompts remain native layers.
+- `PicBox`: reads the optional image and caption for an aspect-fit picture card.
+- `NamingScreen` and semantic Name Rater states: reads the live glyph grid,
+  typed glyphs, row/column, case, name length, and optional target nickname.
+- `TownMap`: reads map tiles, location markers, selection, fly destinations,
+  AREA/nest state, and common party-member marker shapes without owning
+  movement or callbacks. When RBY MMO is active, it also consumes the mod's
+  public `party()` and `players()` exports to place remote party members at
+  their current map location while leaving the MMO roster and navigation
+  ownership untouched.
+- `QuarantineReport`: reads the prepared recovery lines, offset, and paging
+  bound for a content-sized report card.
 - `OptionsMenu`: reads `state.rows` and current selection.
 - `PartyMenu`: reads the live party, selected index, healing/swap/TM state,
   current stats, moves/PP, and exact injected submenu rows. Class identity is
@@ -153,6 +166,15 @@ The current presenter recognizes these released classes or screen IDs:
 - `DexEntryMenu`: presents the data/stats/moves pages used by Useful Dex.
 - `TrainerCard`: reads the live player portrait, name, five-digit trainer ID,
   money, play time, and runtime badge definitions.
+- RBY MMO `RbyMmoProfile`: reads the public `player` payload for the remote or
+  local trainer name, selected sprite, avatar label, profile card, rank points,
+  and local money. The selected sprite ID resolves through the host catalog
+  and crops its front-facing 16x16 pose. The adapter uses semantic screen IDs
+  rather than RBY MMO's private classes.
+- RBY MMO `RbyMmoRank`: reads the public `client:ranking()` result and
+  `offset`, rendering each row's selected sprite when available, with guarded
+  support for `entries`, `rows`, and `isRanked()` so leaderboard updates
+  remain owned by RBY MMO.
 - `PokedexMenu`: reads the live list/filter rebuild, selection, seen/owned
   status, and active selected-species artwork.
 - `BagMenu`: reads current rows, selection, swap markers, pockets, counts,
@@ -200,13 +222,13 @@ The readability controls are applied before measurement and layout:
   cached title, body, caption, value, and hint fonts. Its `AUTO` value uses the
   same responsive viewport policy as `uiScale`.
 - `pixelFont` selects gen1recomp's bundled Plain Pixel face for every one of
-  those font roles. It defaults on, requests monochrome hinting and nearest
-  filtering, and snaps the physical glyph raster to the nearest multiple of
-  the face's authored 15-pixel grid. Its broad multilingual font metrics are
-  normalized to the equivalent system-font line box, so translated text keeps
-  its glyph coverage without making panels artificially tall. The system face
-  remains a missing-glyph fallback and replaces Plain Pixel entirely if the
-  engine asset is absent.
+  those font roles. This experimental option defaults off. When enabled, it
+  requests monochrome hinting and nearest filtering and snaps the physical
+  glyph raster to the nearest multiple of the face's authored 15-pixel grid.
+  Its broad multilingual font metrics are normalized to the equivalent
+  system-font line box, so translated text keeps its glyph coverage without
+  making panels artificially tall. The system face remains a missing-glyph
+  fallback and replaces Plain Pixel entirely if the engine asset is absent.
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
   confirmation prompts.
@@ -315,9 +337,10 @@ input can expose a compact action dock. Those controls call only
 when native TouchControls are visible so the two control surfaces never
 compete.
 
-**TOUCH / CLICK UI** disables taps and pointer capture. **DRAG UI PANELS**
-disables only panel movement. Both settings default on and gracefully fall back
-to the previous behavior on older hosts that do not provide the new hooks. The
+**TOUCH / CLICK UI** enables taps and pointer capture. **DRAG UI PANELS**
+separately enables panel movement and requires the pointer layer. Both
+experimental settings default off and gracefully fall back to the previous
+behavior on older hosts that do not provide the new hooks. The
 `startMenuFastJump` shortcut remains independent: it observes a queued
 left/right GB-button edge and moves the Start-menu cursor by five rows.
 Side-by-side YES/NO navigation never rewrites that queue: L/R is consumed and
@@ -343,8 +366,9 @@ if ui then
 end
 ```
 
-New installs start with **Classic Mono**, **PIXEL** framing, **FRAME 2**, and
-**PIXEL ART FONT** enabled. The font toggle loads gen1recomp's bundled
+New installs start with **Classic Mono**, **PIXEL** framing, and **FRAME 2**.
+The experimental **PIXEL ART FONT** toggle defaults off. When enabled it loads
+gen1recomp's bundled
 `assets/fonts/plainpixel/PlainPixel-Regular.ttf` for every presenter and uses
 nearest filtering. The rasterizer uses the closest physical 15-pixel multiple
 while preserving the requested logical UI size, and line layout uses normalized
@@ -427,6 +451,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.5 targets released game
+- Do not assume a custom engine build: version 0.7.6 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

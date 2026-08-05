@@ -76,7 +76,7 @@ than their live semantic contract.
 | TextBox/dialogue | `mod.ui.TextBox`; pages/typewriter/waiting/done/geometry | Shipped | Reads only the revealed glyph prefix and preserves the original typewriter, waiting, page, sound, and callback ownership. |
 | YES/NO | `ChoiceBox`; `index`, `pending` | Shipped layered modal | Renders above a complete modern parent stack; pending timing remains engine-owned. |
 | Quantity | `QuantityBox`; `qty`, `max`, `unitPrice` | Shipped layered modal | Layers above Bag/Shop/PC and displays totals when unit price is available. |
-| Picture popup | `mod.ui.PicBox`; `image`, `text` | Vanilla | **P2.** Aspect-fit nearest-neighbor image modal plus caption. |
+| Picture popup | `mod.ui.PicBox`; `image`, `text` | Dedicated presenter | Aspect-fit nearest-neighbor image card plus wrapped caption; native close/callback flow remains authoritative. |
 | Start menu | `screenId="StartMenu"`; live injected items | Shipped | Retain the unobtrusive landscape side panel, group third-party/UI settings rows under MOD MENUS, and support SELECT pin/unpin for direct shortcuts. |
 | Save/quit flow | Start row plus TextBox and ChoiceBox states | Stack-ready; QA needed | Dialogue/modal layering is shipped; test overwrite, saving, quit, and return-to-title branches before calling the family complete. |
 | Trainer/badge card | `screenId="TrainerCard"`; player ID/name, money, play time, badges, portrait | Shipped | Responsive profile card, five-digit Trainer ID, active portrait, live metadata, and scalable badge grid with optional custom badge art. |
@@ -87,18 +87,18 @@ than their live semantic contract.
 | Gen 3 Box | `screenId="Gen3Box"`; mode/grid/held/party/boxes | Dedicated presenter | Shipped; retain square cells, held-mon card, aspect ratio, nearest filtering, and active sprite hooks. |
 | Party | `PartyMenu` class; party/submenu/swap/heal/TM/battle/pick-only | Shipped rich presenter | Selected-mon sprite, HP/status, stats, moves/PP plus live compact rows; retains healing/TM/pick/swap data and injected submenu rows. Direct callers without `screenId` are supported by class identity. |
 | Summary/status | `screenId="SummaryMenu"`; mon/page/sprite | Dedicated presenter | Stabilize compact landscape layout and continue sprite-resolver compatibility. |
-| Move learning | `screenId="MoveLearnMenu"`; mon/new move/selecting/move data | Vanilla | **P2.** Five-row replace/cancel view with PP/type details after modal layering exists. |
+| Move learning | `screenId="MoveLearnMenu"`; mon/new move/selecting/move data | Dedicated presenter | Five-row replace/cancel view with move type details; trying-to-learn and abandon prompts remain layered native TextBox states. |
 | Evolution | `screenId="EvolutionState"`; old/new sprites, timer, cancel/done | Vanilla | Later full-sequence cosmetic presenter or intentionally remain vanilla; do not replace only part of its animation canvas. |
 | Pokédex list | `screenId="PokedexMenu"`; rows, ball/seen marker, values, filters | Shipped specialized presenter | Responsive list + selected-species preview while preserving unseen entries and Useful Dex sort/filter rebuilding. |
 | Pokédex entry | `screenId="DexEntryMenu"`; definition/sprite/view/page/stats/moves | Dedicated presenter | Shipped; maintain data/stats/moves variants and conditional UP/DOWN hints. |
 | Pokédex side menu | `Menu` layered above Pokédex | Shipped layered modal | Presents over the modern Pokédex only when the complete visible chain is modeled. |
-| Town Map / Fly / AREA | `screenId="TownMap"`; map image, locations, selection, fly/nests | Vanilla | **P2.** Full-window map, responsive banner/details, grid navigation, fly list, blinking nest markers. |
+| Town Map / Fly / AREA | `screenId="TownMap"`; map image, locations, selection, fly/nests | Dedicated presenter | Responsive map/list card, scale-aligned selection/player markers, fly destination details, AREA marker support, and conservative party-marker compatibility with native navigation/callback ownership. RBY MMO's public party/roster exports place the remote party member on the corresponding city with their selected sprite and name, and the detail pane lists players at the selected location. |
 | Options | `screenId="OptionsMenu"`; live descriptor rows | Dedicated rows | Shipped; allow stable-ID grouping only and never reorder unknown mod rows. |
 | Third-party OptionRows settings | Plain registered screen with `rows`, `index`, `scroll`, `update`, and `draw`; known IDs include `RunModeOptions`, `ShinyPokemonOptions`, and `QualityOfLife` | Shared adapter | Shipped in v0.6.6; reads live labels/values, preserves source callbacks/input, and falls back for non-semantic custom screens. |
 | Controls/bindings | `screenId="BindingsMenu"`; list fields plus `capture`/pending | Unsafe generic fallback | **P0 safety/P1 presenter.** Keep capture prompt vanilla now; later show logical control, existing bindings, reset/clear hints, and capture modal. |
 | Mod manager | `screenId="ManagerState"`; screen/tab/rows/current mod/overlays | Dedicated presenter | Shipped across list, profiles, errors, detail, options, permissions, and apply; keep explicit adapter. |
-| Quarantine report | `screenId="QuarantineReport"`; lines/offset/maxOffset | Vanilla | **P2.** Simple scrollable report with paging hints. |
-| Naming | `screenId="NamingScreen"`; glyph grid, row/col/case/maxLen | Vanilla | **P2.** Responsive character grid supporting modded glyph/address pages; preset menu remains layered. |
+| Quarantine report | `screenId="QuarantineReport"`; lines/offset/maxOffset | Dedicated presenter | Content-sized scrollable recovery report with explicit paging controls and classic fallback for malformed state. |
+| Naming / Name Rater | `NamingScreen` or semantic Name Rater state; glyph grid, row/col/case/maxLen, target nickname | Dedicated presenter | Responsive full character grid with editable existing nicknames, pointer activation, and preset menu layering. |
 | Title/Continue | ordinary title Menu over released TitleState; private ContinueInfo | Main Menu shipped; Continue classic | The title Menu draw is suppressed independently while preserving title art; any unknown overlay restores classic. ContinueInfo remains classic until it has a stable semantic presenter. |
 | Oak speech/intros | `OakSpeech`, `IntroMovie`, `YellowIntro`; art + TextBox/Menu/Naming | Vanilla | Leave cinematic canvas intact initially; revisit after dialogue and naming presenters. |
 | Battle | phase/queue/kind/player/enemy and battle screen variants | WIP, off | See battle section below. |
@@ -133,7 +133,7 @@ require it.
 | Unique Menu Icons | Preserve authored `frames=2` descriptors; keep vanilla pose sheets static instead of guessing animation frames. |
 | Run Mode / Shiny Pokémon / Quality of Life | Plain OptionRows screens (`RunModeOptions`, `ShinyPokemonOptions`, `QualityOfLife`) with rows/index/scroll. The shared adapter shipped in v0.6.6; source mods continue to own updates and callbacks. |
 | Overworld Wild Spawns | List views mostly fit generic models; preview detail/animation screen IDs need explicit adapters or vanilla fallback. |
-| RBY MMO | Generic widget screens can inherit baseline coverage; Naming, PicBox, opaque custom screens, and network flows need P2/P3 adapters. |
+| RBY MMO | Generic widget screens can inherit baseline coverage; Town Map party-member markers accept common location/map-id shapes and the public `party()`/`players()` exports. `RbyMmoProfile` and `RbyMmoRank` now have semantic presenters that read the public player/card and client/entries/offset payloads, crop selected sprite art from the host catalog, and leave network and navigation callbacks native. Future opaque screens still need explicit adapters. |
 | Modern Bag / Bag 999 / Item Shortcut / PC-shop utilities | Preserve their live row objects and constructors. Render only explicit `right`/`displayValue` metadata, not opaque `value` payloads. Use an explicit capability/adapter for custom tabs and drawing before suppression; a blanket custom-draw rejection would also reject wrappers that safely delegate. |
 
 ## Third-party presenter adapter proposal
@@ -170,8 +170,8 @@ Each new surface needs:
    nearest-neighbor filtering.
 7. At least one relevant third-party mod compatibility pass.
 
-The next implementation slice should focus on minimal UI sizing and settings
-category polish, then Move Learn, PicBox, Naming, Town Map/Fly/AREA, and title
-ContinueInfo. First complete released-game QA for
+The next implementation slice should focus on released-game QA for the new
+P2 presenters, title ContinueInfo, and pointer coverage for replacement and
+drag/drop flows. First complete released-game QA for
 the v0.5.0 dialogue, title, Trainer, Party, Bill's PC, Pokédex, Bag, Shop, and Player-PC stack;
 any unmodeled branch must keep the classic UI.
