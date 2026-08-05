@@ -110,7 +110,8 @@ function love.load()
   local quantityClass = { draw = function() end }
   local textBoxClass = { draw = function() end }
   local trainerCardClass = { draw = function() end }
-  local optionsClass = { draw = function() end }
+  local optionsDraws = 0
+  local optionsClass = { draw = function() optionsDraws = optionsDraws + 1 end }
   local partyClass = { draw = function() end }
   local summaryClass = { draw = function() end }
   local dexEntryClass = { draw = function() end }
@@ -245,6 +246,11 @@ function love.load()
     "pixel frame scale exposes whole-number 1X through 4X choices")
   check(optionDefault(schemas, "pixelFont") == false,
     "the experimental pixel-art font defaults off")
+  check(mod.exports.pixelFontTokens
+      and mod.exports.pixelFontTokens.cellHeight == 11
+      and mod.exports.pixelFontTokens.rasterStep == 15
+      and mod.exports.pixelFontTokens.coordinateStep == 1,
+    "pixel font exposes its 11-row cell and 15-point raster contract")
   check(optionDefault(schemas, "pointerUi") == false
       and optionDefault(schemas, "dragPanels") == false,
     "experimental pointer interaction and panel dragging default off")
@@ -684,6 +690,24 @@ function love.load()
   check(menuDraws == 1,
     "title Menu restores its classic draw when an unknown overlay blocks presentation")
 
+  -- Options opened from the title share the title UI canvas. The modern
+  -- options presenter must suppress only the native options rows, then let
+  -- them return if an unknown overlay makes the replacement unsafe.
+  local titleOptions = setmetatable({ screenId = "OptionsMenu", game = game,
+    rows = {}, index = 1 }, { __index = optionsClass })
+  titleOptions = hooks["ui.state.decorate"](
+    function(_, value) return value end, game, titleOptions, nil)
+  game.stack.states = { title, titleOptions }
+  optionsDraws = 0
+  titleOptions:draw()
+  check(optionsDraws == 0,
+    "title-launched OptionsMenu suppresses its native shared-canvas draw")
+  game.stack.states = { title, titleOptions, { draw = function() end } }
+  optionsDraws = 0
+  titleOptions:draw()
+  check(optionsDraws == 1,
+    "title-launched OptionsMenu restores native draw behind an unknown overlay")
+
   local link = setmetatable({ stage = "menu", index = 1 },
     { __index = linkClass })
   game.stack.states = { overworld, link }
@@ -940,6 +964,34 @@ function love.load()
     "dialogue panel footprint stays stable through typewriter reveal")
   check(pixelAlpha(dialogueSized, 800, 800) == 0,
     "short dialogue uses a content-sized card")
+  local savedDialoguePages, savedDialogueShown = textBox.pages, textBox.shown
+  local savedDialogueCharIndex = textBox.charIndex
+  textBox.pages = {{
+    "PLAYER RED",
+    "BADGES 4",
+    "POKEDEX 35",
+    "TIME 01:23",
+  }}
+  textBox.pageIndex, textBox.lineIndex = 1, 1
+  textBox.charIndex, textBox.shown = #textBox.pages[1][1], {}
+  textBox.done, textBox.waiting, textBox.choice = false, false, nil
+  local longDialogueTyping = renderHud({ overworld, textBox },
+    "dialogue_long_page_typing", largeDesktopViewport)
+  textBox.lineIndex = 4
+  textBox.charIndex, textBox.done = #textBox.pages[1][4], true
+  local longDialogueReady = renderHud({ overworld, textBox },
+    "dialogue_long_page_ready", largeDesktopViewport)
+  local longTypingBounds, longReadyBounds = alphaBounds(longDialogueTyping),
+    alphaBounds(longDialogueReady)
+  check(longTypingBounds and longReadyBounds
+      and longTypingBounds.h > typingBounds.h
+      and longTypingBounds.x == longReadyBounds.x
+      and longTypingBounds.y == longReadyBounds.y
+      and longTypingBounds.w == longReadyBounds.w
+      and longTypingBounds.h == longReadyBounds.h,
+    "long dialogue pages expand without a two-line scroll window")
+  textBox.pages, textBox.shown = savedDialoguePages, savedDialogueShown
+  textBox.charIndex = savedDialogueCharIndex
   textBox.pages, textBox.charIndex = savedPage, savedCharIndex
   textBox.pageIndex, textBox.lineIndex = savedDialoguePageIndex, savedDialogueLineIndex
   textBox.done, textBox.choice = savedDialogueDone, savedDialogueChoice

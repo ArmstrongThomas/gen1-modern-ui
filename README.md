@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.7.6 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.7.7 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -57,11 +57,14 @@ when the listing is enabled there.
   panel chrome.
 - New installs use **Classic Mono**, **PIXEL** framing, and **FRAME 2**. The
   experimental **PIXEL ART FONT** toggle defaults off; enabling it applies
-  gen1recomp's bundled Plain Pixel face to every modern presenter. Glyphs use
-  nearest filtering and a physical raster snapped to the face's native
-  15-pixel grid; normalized line boxes keep its broad multilingual metrics
-  from stretching layouts. Compatible older builds fall back to the system
-  font, which is also retained as a missing-glyph fallback.
+  gen1recomp's bundled Plain Pixel face to every modern presenter. Its artwork
+  uses an 11-row base cell (Latin is generally 5x11, while double-width
+  glyphs are 11x11), and its documented 15-point raster steps keep those
+  cells from being distorted. Glyphs use nearest filtering, and text origins
+  snap to the physical render grid so scaled panels do not introduce soft or
+  uneven edges. Layout uses the selected authored raster's real line metrics,
+  avoiding a second vertical resampling pass. Compatible older builds fall back to the system font,
+  which is also retained as a missing-glyph fallback.
 - Health bars use theme-aware teal/gold/orange/purple states instead of a
   red/green-only ramp, with numeric HP labels retained as the authoritative
   color-independent cue.
@@ -239,7 +242,7 @@ Bag, Pokédex, Trainer, Party, Bill's PC, Shop, PC, title, and dialogue/modal
 gallery to the LÖVE save directory for visual QA.
 
 The focused font probe documents Plain Pixel's physical 15-pixel raster
-contract, normalized line box, and multilingual glyph behavior:
+contract, direct authored font construction, and multilingual glyph behavior:
 
 ```powershell
 $env:GEN1_PLAIN_PIXEL_FONT =
@@ -251,7 +254,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.6.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.7.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -267,7 +270,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.7.6`) and push that commit to `main`. Each release includes a commit-based
+`0.7.7`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

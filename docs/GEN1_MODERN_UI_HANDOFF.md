@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.7.6 is a standalone, visual-first overhaul for released
+`mods/gen1_modern_ui` 0.7.7 is a standalone, visual-first overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -47,7 +47,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.7.6. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.7.7. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -98,7 +98,7 @@ that file and appends the generated archive checksum.
    transitions, and callbacks. Pointer taps use only the host's source-safe
    action facade, and panel dragging does not synthesize game actions.
 
-Version 0.7.6 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.7.7 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -151,7 +151,12 @@ classic UI is suppressed independently.
   metadata and degrades to text if the asset is absent.
 - Pokémon art goes through the active runtime `pokemon.sprite` resolver when
   available, so enabled packs such as `Gold_Silver_Sprites` are honored and
-  disabled packs are ignored.
+  disabled packs are ignored. Vanilla monochrome species art is then passed
+  through `PaletteFX.monPal` before drawing, matching the native active palette;
+  explicit `trueColor` replacements are left untouched.
+- RBYMMO portrait/character assets and Town Map markers use the current map
+  palette through the same safe shader path, so selected and remote player
+  sprites no longer appear as uncolored grayscale art.
 - Built-in party icon pose sheets are cropped to the engine's native rest frame
   (including 16x32 and 16x96 sheets) instead of scaling the whole sheet into a
   thin strip. Authored replacement descriptors may explicitly opt in with
@@ -282,9 +287,9 @@ rounded corners and top accent strips so the asset owns the panel chrome. It
 also exposes **PIXEL FRAME** to select one of the three shipped PNG borders.
 New installs use Classic Mono with PIXEL / FRAME 2. The experimental **PIXEL
 ART FONT** defaults off. When enabled it loads gen1recomp's bundled Plain Pixel
-TTF for all presenters. Its physical raster is snapped to the nearest authored
-15-pixel multiple with nearest filtering, while its broad multilingual metrics
-are normalized to an ordinary UI line box. The system font remains a
+TTF for all presenters. Its font atlas is constructed at the nearest authored
+15-pixel multiple with nearest filtering, and text origins snap to the physical
+render grid. The system font remains a
 missing-glyph fallback; older hosts without the asset use it outright. Plain
 Pixel is by Douglas Vautour / Burpy Fresh under CC BY 4.0.
 Themes may provide `colors.health` tokens for `track`, `high`, `medium`, `low`,

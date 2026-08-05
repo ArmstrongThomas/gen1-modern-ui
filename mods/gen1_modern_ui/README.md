@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.7.6 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.7.7 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -86,11 +86,12 @@ custom engine checkout or a patched binary.
   preferred.
 - New installs default to **Classic Mono**, **PIXEL** framing, and **FRAME 2**.
   The experimental **PIXEL ART FONT** defaults off. Enabling it applies Plain
-  Pixel to all modern presenters with nearest filtering, snaps its physical
-  raster to the authored 15-pixel grid, and normalizes line boxes so broad
-  multilingual metrics do not inflate every panel. It falls back safely on
-  older game builds that do not ship the asset and uses the system face for
-  any missing glyphs.
+  Pixel to all modern presenters with nearest filtering. The face's artwork
+  uses an 11-row base cell, while its documented 15-point raster steps keep
+  the glyph bitmap undistorted; text origins also snap to the physical render
+  grid. Layout uses the selected raster's real line metrics instead of
+  rescaling them into a system-font line box. It falls back safely on older game builds that do not ship the asset
+  and uses the system face for any missing glyphs.
 - OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay

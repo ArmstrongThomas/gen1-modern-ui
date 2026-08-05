@@ -312,7 +312,77 @@ local function titleFor(Strings, state, kind)
 end
 
 local PLAIN_PIXEL_FONT = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
-local PLAIN_PIXEL_GRID = 15
+-- Plain Pixel's authored glyph cell is 11 rows high (Latin glyphs are
+-- usually 5x11; double-width glyphs are 11x11).  The font's own usage notes
+-- recommend a 15-point raster step, though, because its OpenType metrics and
+-- baseline are not a literal 11px font-size grid.  Keep those two contracts
+-- separate: the cell describes the artwork, while the raster step keeps the
+-- rendered glyph bitmap undistorted.
+local PLAIN_PIXEL_CELL_HEIGHT = 11
+local PLAIN_PIXEL_RASTER_STEP = 15
+local PIXEL_FONT_SCALE_CHOICES = {
+  { "1X", "100" }, { "2X", "200" }, { "3X", "300" },
+  { "4X", "400" },
+}
+local FONT_SCALE_CHOICES = { { "AUTO", "auto" } }
+for percent = 80, 200, 5 do
+  FONT_SCALE_CHOICES[#FONT_SCALE_CHOICES + 1] = {
+    percent .. "%", tostring(percent)
+  }
+end
+
+local function normalizedPixelFontScale(value, pixelEnabled)
+  if pixelEnabled then
+    local numeric = tonumber(value)
+    if not numeric then return "100" end
+    local scale = numeric < 10 and numeric or numeric / 100
+    return tostring(clamp(math.floor(scale + 0.5), 1, 4) * 100)
+  end
+  if value ~= nil and tostring(value):lower() == "auto" then return "auto" end
+  local numeric = tonumber(value) or 100
+  return tostring(clamp(math.floor(numeric / 5 + 0.5) * 5, 80, 200))
+end
+
+-- LÖVE's nearest texture filter cannot correct a fractional draw position.
+-- Keep metadata by font object so every modern text primitive can snap its
+-- origin only when the active font is Plain Pixel.  System-font rendering is
+-- deliberately left byte-for-byte on its existing path.
+local pixelFontMetrics = setmetatable({}, { __mode = "k" })
+local rawPrint = love.graphics.print
+local rawPrintf = love.graphics.printf
+
+local function pixelTextDpi()
+  if love and love.graphics and type(love.graphics.getDPIScale) == "function" then
+    local ok, value = pcall(love.graphics.getDPIScale)
+    if ok and type(value) == "number" and value > 0 then return value end
+  end
+  return 1
+end
+
+local function snapPixelTextCoordinate(value)
+  if type(value) ~= "number" or type(love.graphics.getFont) ~= "function" then
+    return value
+  end
+  local active = love.graphics.getFont()
+  if not active or not pixelFontMetrics[active] then return value end
+  local dpi = pixelTextDpi()
+  return math.floor(value * dpi + 0.5) / dpi
+end
+
+local function drawText(text, x, y, ...)
+  return rawPrint(text, snapPixelTextCoordinate(x),
+    snapPixelTextCoordinate(y), ...)
+end
+
+local function drawTextWrapped(text, x, y, width, align, ...)
+  if type(width) == "number" and love.graphics.getFont()
+      and pixelFontMetrics[love.graphics.getFont()] then
+    local dpi = pixelTextDpi()
+    width = math.max(1, math.floor(width * dpi + 0.5) / dpi)
+  end
+  return rawPrintf(text, snapPixelTextCoordinate(x),
+    snapPixelTextCoordinate(y), width, align, ...)
+end
 
 local function useNativeGenderSigns(selected)
   nativeGenderSigns = false
@@ -326,24 +396,23 @@ local function useNativeGenderSigns(selected)
 end
 
 local function plainPixelRasterScale(pixels)
-  local displayDpi = 1
-  if love and love.graphics and type(love.graphics.getDPIScale) == "function" then
-    local ok, value = pcall(love.graphics.getDPIScale)
-    if ok and type(value) == "number" and value > 0 then displayDpi = value end
-  end
-  local requested = math.max(1, pixels * displayDpi)
-  local raster = math.max(PLAIN_PIXEL_GRID,
-    math.floor(requested / PLAIN_PIXEL_GRID + 0.5) * PLAIN_PIXEL_GRID)
-  return raster / pixels, raster
+  -- Keep Plain Pixel on its authored 15pt raster steps. Constructing it at an
+  -- arbitrary UI size and compensating with fractional DPI resamples the
+  -- glyph atlas before nearest filtering can help.
+  local requested = math.max(1, pixels)
+  local rasterScale = math.max(1,
+    math.floor(requested / PLAIN_PIXEL_RASTER_STEP + 0.5))
+  local raster = rasterScale * PLAIN_PIXEL_RASTER_STEP
+  return raster, rasterScale
 end
 
 local function font(cache, size)
   local pixels = math.max(10, math.floor((size or 16) + 0.5))
   local usePixel = cache and cache._usePixel == true
   local family = usePixel and "pixel" or "system"
-  local pixelDpi, raster = plainPixelRasterScale(pixels)
-  local key = family .. ":" .. pixels
-    .. (usePixel and (":" .. raster) or "")
+  local raster, rasterScale = plainPixelRasterScale(pixels)
+  local requestedRaster = usePixel and raster or pixels
+  local key = family .. ":" .. requestedRaster
   if cache[key] then
     nativeGenderSigns = cache["gender:" .. key] == true
     return cache[key]
@@ -355,22 +424,28 @@ local function font(cache, size)
     -- argument lets LÖVE build such a raster while preserving the requested
     -- logical font size and therefore the layout's uniform x/y scale.
     local ok, loaded = pcall(love.graphics.newFont,
-      PLAIN_PIXEL_FONT, pixels, "mono", pixelDpi)
+      PLAIN_PIXEL_FONT, raster, "mono", 1)
     if not ok then
       -- LÖVE before 11.0 has no explicit font DPI argument. Those compatible
       -- hosts retain the old path and still receive nearest filtering.
       ok, loaded = pcall(love.graphics.newFont,
-        PLAIN_PIXEL_FONT, pixels, "mono")
+        PLAIN_PIXEL_FONT, raster, "mono")
     end
     if ok and loaded then
       selected = loaded
+      pixelFontMetrics[selected] = {
+        cellHeight = PLAIN_PIXEL_CELL_HEIGHT,
+        rasterStep = PLAIN_PIXEL_RASTER_STEP,
+        raster = raster,
+        rasterScale = rasterScale,
+      }
       if type(selected.setFilter) == "function" then
         pcall(selected.setFilter, selected, "nearest", "nearest", 0)
       end
-      local systemKey = "system:" .. pixels
+      local systemKey = "system:" .. raster
       local fallback = cache[systemKey]
       if not fallback then
-        local fallbackOk, fallbackFont = pcall(love.graphics.newFont, pixels)
+        local fallbackOk, fallbackFont = pcall(love.graphics.newFont, raster)
         if fallbackOk and fallbackFont then
           fallback = fallbackFont
           cache[systemKey] = fallback
@@ -378,16 +453,6 @@ local function font(cache, size)
       end
       if fallback and type(selected.setFallbacks) == "function" then
         pcall(selected.setFallbacks, selected, fallback)
-      end
-      if fallback and type(selected.setLineHeight) == "function" then
-        local rawHeight = selected:getHeight()
-        if rawHeight > 0 then
-          -- The multilingual face has intentionally broad global vertical
-          -- metrics. Match the system face's logical line box so switching
-          -- fonts does not make every menu much taller.
-          pcall(selected.setLineHeight, selected,
-            fallback:getHeight() / rawHeight)
-        end
       end
     else
       cache._pixelUnavailable = true
@@ -443,10 +508,10 @@ local function drawFittedText(text, x, y, maxWidth, textFont)
   textFont = textFont or love.graphics.getFont()
   love.graphics.setFont(textFont)
   if wrapFittedText then
-    love.graphics.printf(safeText(text), x, y, math.max(1, maxWidth), "left")
+    drawTextWrapped(safeText(text), x, y, math.max(1, maxWidth), "left")
     return
   end
-  love.graphics.print(truncate(text, maxWidth, textFont), x, y)
+  drawText(truncate(text, maxWidth, textFont), x, y)
 end
 
 local utf8TextLibrary
@@ -515,7 +580,7 @@ local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
   local lines = wrappedLines(text, maxWidth, textFont)
   love.graphics.setFont(textFont)
   for index, line in ipairs(lines) do
-    love.graphics.print(line, x, y + (index - 1) * lineGap)
+    drawText(line, x, y + (index - 1) * lineGap)
   end
   return y + #lines * lineGap, #lines
 end
@@ -711,7 +776,8 @@ local function scaledTheme(theme, uiScale, fontScale, cache)
   end
   for name, value in pairs(out.frame) do
     if type(value) == "number" and name ~= "pixelScale" and
-        name ~= "pixelInset" and name ~= "pixelBorder" and name ~= "slice" then
+        name ~= "pixelInset" and name ~= "pixelBorder" and name ~= "slice" and
+        name ~= "pixelDpiX" and name ~= "pixelDpiY" then
       out.frame[name] = value * uiScale
     end
   end
@@ -751,7 +817,8 @@ local function responsiveTheme(theme, viewport, cache)
   for key, value in pairs(out.radii) do out.radii[key] = value * scale end
   for key, value in pairs(out.frame) do
     if type(value) == "number" and key ~= "pixelScale" and
-        key ~= "pixelInset" and key ~= "pixelBorder" and key ~= "slice" then
+        key ~= "pixelInset" and key ~= "pixelBorder" and key ~= "slice" and
+        key ~= "pixelDpiX" and key ~= "pixelDpiY" then
       out.frame[key] = value * scale
     end
   end
@@ -930,6 +997,20 @@ return function(mod)
   local glyphFont = mod.ui and mod.ui.Font
   local filteredImages = setmetatable({}, { __mode = "k" })
   local animatedImages = setmetatable({}, { __mode = "k" })
+  -- Keep palette state in one runtime object.  LÖVE/LuaJIT limits each
+  -- function prototype to 200 local variables; this module's factory is
+  -- intentionally large, so feature-local helpers must not consume that
+  -- budget just by being declared here.
+  local paletteRuntime = {
+    imagePalettes = setmetatable({}, { __mode = "k" }),
+    paletteShaders = setmetatable({}, { __mode = "k" }),
+  }
+  function paletteRuntime.load()
+    local ok, result = pcall(require, "src.render.PaletteFX")
+    return ok and result or nil
+  end
+  paletteRuntime.fx = paletteRuntime.load()
+  paletteRuntime.load = nil
   local spriteAnimationOn = true
   -- render.compose does not receive the Game object.  render.zones caches the
   -- live singleton immediately before it so both hooks inspect one frame.
@@ -1061,6 +1142,70 @@ return function(mod)
     return image
   end
 
+  function paletteRuntime.pokemon(game, species)
+    local fx = paletteRuntime.fx
+    if not fx or not game or not game.data or not species
+        or type(fx.monPal) ~= "function" then
+      return nil
+    end
+    local ok, palette = pcall(fx.monPal, game.data, species)
+    return ok and type(palette) == "table" and palette or nil
+  end
+
+  function paletteRuntime.world(game)
+    local fx = paletteRuntime.fx
+    if not fx or not game or not game.data
+        or type(fx.pal) ~= "function" then
+      return nil
+    end
+    local overworld = game.overworld
+    local map = overworld and overworld.map
+    if overworld and map and type(overworld.paletteNameFor) == "function" then
+      local okName, name = pcall(overworld.paletteNameFor, overworld, map)
+      if okName and name then
+        local okPalette, palette = pcall(fx.pal, game.data, name)
+        if okPalette and type(palette) == "table" then return palette end
+      end
+    end
+    for _, name in ipairs({ "GREENBAR", "TOWNMAP", "ROUTE" }) do
+      local okPalette, palette = pcall(fx.pal, game.data, name)
+      if okPalette and type(palette) == "table" then return palette end
+    end
+    return nil
+  end
+
+  function paletteRuntime.setImage(image, palette)
+    if image then paletteRuntime.imagePalettes[image] = palette end
+    return image
+  end
+
+  function paletteRuntime.withImage(image, draw)
+    local fx = paletteRuntime.fx
+    local palette = image and paletteRuntime.imagePalettes[image]
+    if not palette or not fx or type(fx.shader) ~= "function"
+        or type(fx.sendColors) ~= "function" then
+      return draw()
+    end
+    local shader = paletteRuntime.paletteShaders[palette]
+    if not shader then
+      local ok, created = pcall(fx.shader)
+      if not ok or not created then return draw() end
+      shader = created
+      paletteRuntime.paletteShaders[palette] = shader
+    end
+    local sent = pcall(fx.sendColors, shader, palette)
+    if not sent then return draw() end
+    local previous
+    if type(love.graphics.getShader) == "function" then
+      previous = love.graphics.getShader()
+    end
+    love.graphics.setShader(shader)
+    local ok, first, second = pcall(draw)
+    love.graphics.setShader(previous)
+    if not ok then return false end
+    return first, second
+  end
+
   -- A mod's files are mounted under its private virtual root.  A plain
   -- love.graphics.newImage("assets/foo.png") lookup only sees the game's
   -- global read path, so it cannot resolve art shipped beside this entry
@@ -1159,21 +1304,23 @@ return function(mod)
 
   local function drawImage(image, x, y, rotation, scaleX, scaleY)
     if not image then return false end
-    local animation = animatedImages[image]
-    if animation and #animation.quads > 0 then
-      local now = love.timer and love.timer.getTime and love.timer.getTime() or 0
-      local frame = animation.staticFrame
-      if frame == nil then
-        frame = spriteAnimationOn
-          and math.floor(now / animation.duration) % animation.frames or 0
+    return paletteRuntime.withImage(image, function()
+      local animation = animatedImages[image]
+      if animation and #animation.quads > 0 then
+        local now = love.timer and love.timer.getTime and love.timer.getTime() or 0
+        local frame = animation.staticFrame
+        if frame == nil then
+          frame = spriteAnimationOn
+            and math.floor(now / animation.duration) % animation.frames or 0
+        end
+        love.graphics.draw(image, animation.quads[frame + 1], x, y,
+          rotation or 0, scaleX or 1, scaleY or scaleX or 1)
+      else
+        love.graphics.draw(image, x, y, rotation or 0,
+          scaleX or 1, scaleY or scaleX or 1)
       end
-      love.graphics.draw(image, animation.quads[frame + 1], x, y,
-        rotation or 0, scaleX or 1, scaleY or scaleX or 1)
-    else
-      love.graphics.draw(image, x, y, rotation or 0,
-        scaleX or 1, scaleY or scaleX or 1)
-    end
-    return true
+      return true
+    end)
   end
 
   local function drawImageFit(image, x, y, w, h, maxScale)
@@ -1210,6 +1357,10 @@ return function(mod)
     return nil
   end
 
+  function paletteRuntime.worldImage(game, value)
+    return paletteRuntime.setImage(imageFor(value), paletteRuntime.world(game))
+  end
+
   -- Presenter helpers are declared in stages below; initialize the shared
   -- table before the image helpers attach the RBYMMO portrait adapter.
   mod._gen1ModernSpecialPresenters = mod._gen1ModernSpecialPresenters or {}
@@ -1235,7 +1386,10 @@ return function(mod)
     end
     local cacheKey = tostring(imageValue)
     if cache[cacheKey] == false then return nil end
-    if cache[cacheKey] then return cache[cacheKey] end
+    if cache[cacheKey] then
+      paletteRuntime.setImage(cache[cacheKey].image, paletteRuntime.world(game))
+      return cache[cacheKey]
+    end
     local image = imageFor(imageValue)
     if not image or not love.graphics.newQuad then
       cache[cacheKey] = false
@@ -1255,6 +1409,7 @@ return function(mod)
       return nil
     end
     cache[cacheKey] = { image = image, quad = quad, width = 16, height = 16 }
+    paletteRuntime.setImage(image, paletteRuntime.world(game))
     return cache[cacheKey]
   end
 
@@ -1267,10 +1422,12 @@ return function(mod)
     if w <= 0 or h <= 0 or iw <= 0 or ih <= 0 then return false end
     local scale = math.min(w / iw, h / ih)
     setColor({ 1, 1, 1, 1 })
-    love.graphics.draw(image.image, image.quad,
-      x + (w - iw * scale) / 2, y + (h - ih * scale) / 2,
-      0, scale, scale)
-    return true
+    return paletteRuntime.withImage(image.image, function()
+      love.graphics.draw(image.image, image.quad,
+        x + (w - iw * scale) / 2, y + (h - ih * scale) / 2,
+        0, scale, scale)
+      return true
+    end)
   end
 
   local function themeAssetFor(value)
@@ -1321,7 +1478,7 @@ return function(mod)
       selected = font(fontCache, size)
     end
     love.graphics.setFont(selected)
-    love.graphics.print(truncate(text, maxWidth), x, y)
+    drawText(truncate(text, maxWidth), x, y)
   end
 
   local function hintHasExtraControls(value)
@@ -1367,8 +1524,15 @@ return function(mod)
       or themes["gen1_modern_ui:classic_mono"] or themes.default
     local uiPercent, uiAuto = resolvedScalePercent(option("uiScale", 100),
       viewport, 75, 150)
-    local fontPercent, fontAuto = resolvedScalePercent(option("fontScale", 100),
-      viewport, 80, 200)
+    local fontPercent, fontAuto
+    if usePixelFont then
+      fontPercent = tonumber(normalizedPixelFontScale(
+        option("fontScale", 100), true)) or 100
+      fontAuto = false
+    else
+      fontPercent, fontAuto = resolvedScalePercent(option("fontScale", 100),
+        viewport, 80, 200)
+    end
     local uiScale = uiPercent / 100
     local fontScale = fontPercent / 100
     local density = safeText(option("density", "auto"))
@@ -1379,13 +1543,15 @@ return function(mod)
     end
     local frameScale = clamp(math.floor(
       tonumber(option("frameScale", 2)) or 2), 1, 4)
+    local dpiX = math.max(1, tonumber(viewport and viewport.dpiX) or 1)
+    local dpiY = math.max(1, tonumber(viewport and viewport.dpiY) or 1)
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
     local key = ("%.3f:%.3f:%s:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
       uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
       usePixelFont and "pixel" or "system",
       frameStyle .. ":" .. frameAsset .. ":" .. frameScale,
-      panelOpacity, foregroundOpacity)
+      panelOpacity, foregroundOpacity) .. (":%.4f:%.4f"):format(dpiX, dpiY)
     local bucket = themePresentationCache[base]
     if not bucket then
       bucket = {}
@@ -1400,6 +1566,8 @@ return function(mod)
     theme.frame = copy(theme.frame or {})
     theme.frame.asset = "assets/pixel_frame" .. frameAsset .. ".png"
     theme.frame.pixelScale = frameScale
+    theme.frame.pixelDpiX = dpiX
+    theme.frame.pixelDpiY = dpiY
     if frameStyle == "pixel" or frameStyle == "soft" then
       theme.frame.style = frameStyle
     elseif frameStyle == "plain" then
@@ -1477,6 +1645,11 @@ return function(mod)
     version = API_VERSION,
     registerTheme = registerTheme,
     themes = themes,
+    pixelFontTokens = {
+      cellHeight = PLAIN_PIXEL_CELL_HEIGHT,
+      rasterStep = PLAIN_PIXEL_RASTER_STEP,
+      coordinateStep = 1,
+    },
     scaleTokens = {
       uiMin = 0.75, uiMax = 1.50, uiStep = 0.05,
       fontMin = 0.80, fontMax = 2.00, fontStep = 0.05,
@@ -1485,8 +1658,10 @@ return function(mod)
     getScaleTokens = function(viewport)
       local uiPercent = resolvedScalePercent(option("uiScale", 100),
         viewport, 75, 150)
-      local fontPercent = resolvedScalePercent(option("fontScale", 100),
-        viewport, 80, 200)
+      local pixelFont = option("pixelFont", false) == true
+      local fontPercent = pixelFont
+        and tonumber(normalizedPixelFontScale(option("fontScale", 100), true))
+        or resolvedScalePercent(option("fontScale", 100), viewport, 80, 200)
       return {
         uiScale = uiPercent / 100,
         fontScale = fontPercent / 100,
@@ -1529,9 +1704,9 @@ return function(mod)
       choices = percentChoices(75, 150, true), default = "100" },
     { key = "fontScale", label = "FONT SCALE", type = "choice",
       description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
-      choices = percentChoices(80, 200, true), default = "100" },
+      choices = FONT_SCALE_CHOICES, default = "100" },
     { key = "pixelFont", label = "PIXEL ART FONT", type = "toggle", default = false,
-      description = "Enable the experimental multilingual Plain Pixel font on its crisp 15-pixel raster grid. Older builds and missing glyphs fall back safely to the system font.", },
+      description = "Enable the experimental multilingual Plain Pixel font. Its 11-row artwork uses the author's crisp 15-point raster steps, and fractional text origins snap to whole pixels. Older builds and missing glyphs fall back safely to the system font.", },
     { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
       description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
       choices = { { "INHERIT", "inherit" }, { "110%", "110" },
@@ -1567,10 +1742,10 @@ return function(mod)
     -- saves retain a player's explicit choice through the normal option store.
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
       description = "Use a compact presentation with fewer previews and less extra detail.", },
-    { key = "pointerUi", label = "TOUCH / CLICK UI", type = "toggle", default = false,
-      description = "Enable experimental row/grid hover and taps, global mouse A/B, and contextual arrow, SELECT, and START buttons.", },
-    { key = "dragPanels", label = "DRAG UI PANELS", type = "toggle", default = false,
-      description = "Allow experimental touch or mouse dragging to reposition modern panels. Requires TOUCH / CLICK UI; positions are saved per screen family.", },
+    { key = "pointerUi", label = "TOUCH / CLICK UI (WIP)", type = "toggle", default = false,
+      description = "WIP: enable experimental row/grid hover and taps, global mouse A/B, and contextual arrow, SELECT, and START buttons.", },
+    { key = "dragPanels", label = "DRAG UI PANELS (WIP)", type = "toggle", default = false,
+      description = "WIP: allow experimental touch or mouse dragging to reposition modern panels. Requires TOUCH / CLICK UI; positions are saved per screen family.", },
     { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true,
       description = "Use modern text boxes, choices, quantities, and confirmation prompts.", },
     { key = "menuUi", label = "MENU UI", type = "toggle", default = true,
@@ -1663,9 +1838,11 @@ return function(mod)
   -- LinkState is a released custom state rather than a Menu/ListMenu.  Keep
   -- it optional so older clients simply fall back to their native link UI.
   local linkClass = optionalClass("src.link.LinkState")
-  local linkCodeEntryClass = optionalClass("src.link.CodeEntry")
-  local linkNetClass = optionalClass("src.link.Net")
-  local statsLibrary = optionalClass("src.pokemon.Stats")
+  local runtimeClasses = {
+    linkCodeEntry = optionalClass("src.link.CodeEntry"),
+    linkNet = optionalClass("src.link.Net"),
+    stats = optionalClass("src.pokemon.Stats"),
+  }
   -- The released overworld is a singleton class table rather than a normal
   -- instance. Its drawUI method is therefore a legitimate raw field. Capture
   -- the shipped identities once so a replaced world renderer still triggers
@@ -1674,7 +1851,6 @@ return function(mod)
   -- remains the released renderer, so they do not disable every menu layered
   -- over the overworld.
   local overworldClass = optionalClass("src.world.OverworldController")
-  local overworldDraw = overworldClass and rawget(overworldClass, "draw")
 
   local function isTitleState(state)
     if not (state and titleClass) then return false end
@@ -1991,6 +2167,12 @@ return function(mod)
         value)
     end
     if id == "fontScale" then
+      if option("pixelFont", false) == true then
+        local scale = (tonumber(normalizedPixelFontScale(
+          option("fontScale", 100), true)) or 100) / 100
+        return ("Scale Plain Pixel glyphs by %dX. Integer steps keep its authored raster crisp."):format(
+          scale)
+      end
       local percent, auto = resolvedScalePercent(option("fontScale", 100),
         nil, 80, 200)
       local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
@@ -2043,6 +2225,35 @@ return function(mod)
     if not (state and state.screen == "options" and state.currentMod
         and state.currentMod.id == MOD_ID and type(state.optionRows) == "table") then
       return
+    end
+    local pixelEnabled = option("pixelFont", false) == true
+    local fontSchema
+    for _, descriptor in ipairs(optionSchema) do
+      if descriptor.key == "fontScale" then
+        fontSchema = descriptor
+        break
+      end
+    end
+    if fontSchema then
+      fontSchema.label = pixelEnabled and "PIXEL ART FONT SCALE" or "FONT SCALE"
+      fontSchema.choices = pixelEnabled
+        and PIXEL_FONT_SCALE_CHOICES or FONT_SCALE_CHOICES
+      local stored = option("fontScale", 100)
+      local normalized = normalizedPixelFontScale(stored, pixelEnabled)
+      if tostring(stored) ~= normalized and type(state.setOption) == "function" then
+        pcall(state.setOption, state, MOD_ID, "fontScale", normalized)
+      end
+    end
+    local activeRows = state._gen1OptionRowsSource or state.optionRows
+    for _, row in ipairs(activeRows or {}) do
+      if row and row.id == "fontScale" then
+        row.label = pixelEnabled and "PIXEL ART FONT SCALE" or "FONT SCALE"
+      end
+    end
+    for _, row in ipairs(state.optionRows or {}) do
+      if row and row.id == "fontScale" then
+        row.label = pixelEnabled and "PIXEL ART FONT SCALE" or "FONT SCALE"
+      end
     end
     if state._gen1OptionRowsActive == state.optionRows then return end
     local source = state.optionRows
@@ -2728,7 +2939,7 @@ return function(mod)
         end
         if overworldClass then
           if visible ~= overworldClass
-              or rawget(visible, "draw") ~= overworldDraw
+              or rawget(visible, "draw") ~= rawget(overworldClass, "draw")
               or type(rawget(visible, "drawUI")) ~= "function" then
             return {}, false
           end
@@ -2758,6 +2969,20 @@ return function(mod)
       end
     end
     return layers, #layers > 0, not preserveUiCanvas
+  end
+
+  function mod._gen1ModernSpecialPresenters.shouldHideNativeOptions(game,
+      state)
+    if not (game and state and option("hideOriginalUi", true) ~= false
+        and option("menuUi", true) ~= false) then
+      return false
+    end
+    local layers, complete = presentationStack(game)
+    if not complete then return false end
+    for _, layer in ipairs(layers) do
+      if layer.state == state then return true end
+    end
+    return false
   end
 
   -- Current released clients do not expose a state-decoration hook; the
@@ -3141,7 +3366,14 @@ return function(mod)
         textHeight(bodyFont) * 2 + spacing.sm * 2)
     end
     local navigationMenu = kind == "menu" or kind == "box_root"
-    local sidePanel = desktopFloat and landscape and navigationMenu and rowCount > 0
+    -- The title screen is a composed artwork canvas rather than ordinary
+    -- in-game navigation. Keep its modern menu centered in both axes so it
+    -- does not inherit the wide-window side-dock used by the overworld menu.
+    local titleMenu = kind == "menu" and pointerDrawContext
+      and pointerDrawContext.state
+      and type(pointerDrawContext.state.titleUiBox) == "table"
+    local sidePanel = desktopFloat and landscape and navigationMenu
+      and rowCount > 0 and not titleMenu
     if navigationMenu or kind == "choice" or kind == "quantity" then
       -- Short action/confirmation menus should read as focused cards in
       -- landscape, not as banners stretched across the whole phone. Longer
@@ -3216,28 +3448,37 @@ return function(mod)
     if asset then
       local iw, ih = imageMetrics(asset)
       if iw and ih then
-      -- Pixel artwork must meet integer pixel edges. Presenter layout is
-      -- intentionally allowed to use fractional coordinates for centering,
-      -- but rounding each side independently during nine-slice placement can
-      -- leave a one-pixel seam on the right or bottom edge. Snap the panel
-      -- edges once, then derive every frame dimension from that same rect.
-      local snap = function(value) return math.floor(value + 0.5) end
-      local panelX, panelY = snap(x), snap(y)
-      local panelRight, panelBottom = snap(x + w), snap(y + h)
-      local panelW = math.max(1, panelRight - panelX)
-      local panelH = math.max(1, panelBottom - panelY)
-      local sourceSlice = math.max(1, math.min(
-        tonumber(frame.slice) or 24, math.min(iw or 1, ih or 1) / 2))
-      local destinationCorner = math.max(1, math.min(
-        tonumber(frame.corner) or sourceSlice, math.min(panelW, panelH) / 2))
-      local pixelScale = tonumber(frame.pixelScale)
-      if pixelScale then
-        pixelScale = clamp(math.floor(pixelScale), 1, 4)
-        destinationCorner = math.min(sourceSlice * pixelScale,
-          math.min(panelW, panelH) / 2)
-        destinationCorner = math.max(1, snap(destinationCorner))
+      -- Pixel artwork must meet the same integer grid in which it was
+      -- authored. The viewport can be fractional (window DPI and responsive
+      -- centering both contribute), so snap the panel to physical pixels and
+      -- make its size a whole number of source-pixel blocks. Derive the
+      -- complete nine-slice rectangle from those snapped edges; independently
+      -- rounding the right/bottom used to create the visible one-pixel drift.
+      local pixelScale = clamp(math.floor(
+        tonumber(frame.pixelScale) or 1), 1, 4)
+      local dpiX = math.max(1, tonumber(frame.pixelDpiX) or 1)
+      local dpiY = math.max(1, tonumber(frame.pixelDpiY) or 1)
+      local function snapPixel(value, dpi, quantum)
+        local q = math.max(1, quantum or 1)
+        return math.floor(value * dpi / q + 0.5) * q / dpi
       end
-      local edgeScale = destinationCorner / sourceSlice
+      local panelX, panelY = snapPixel(x, dpiX, 1), snapPixel(y, dpiY, 1)
+      local panelRight = snapPixel(x + w, dpiX, 1)
+      local panelBottom = snapPixel(y + h, dpiY, 1)
+      local panelW = math.max(pixelScale / dpiX,
+        snapPixel(panelRight - panelX, dpiX, pixelScale))
+      local panelH = math.max(pixelScale / dpiY,
+        snapPixel(panelBottom - panelY, dpiY, pixelScale))
+      local sourceSlice = math.max(1, math.min(
+        math.floor(tonumber(frame.slice) or 24),
+        math.floor(math.min(iw or 1, ih or 1) / 2)))
+      local edgeScaleX, edgeScaleY = pixelScale / dpiX, pixelScale / dpiY
+      local maxCornerSource = math.max(1, math.min(sourceSlice,
+        math.floor(panelW / (2 * edgeScaleX) + 0.0001),
+        math.floor(panelH / (2 * edgeScaleY) + 0.0001)))
+      sourceSlice = maxCornerSource
+      local destinationCornerX = sourceSlice * edgeScaleX
+      local destinationCornerY = sourceSlice * edgeScaleY
       -- The frame image reserves a seven-source-pixel outer inset by
       -- contract. Expand by that inset rather than the whole slice, so the
       -- image edge sits just outside the UI while its authored border lands
@@ -3246,10 +3487,13 @@ return function(mod)
       local sourceInset = math.max(0, math.min(
         tonumber(frame.pixelInset) or tonumber(frame.pixelBorder) or 7,
         sourceSlice))
-      local frameMargin = snap(sourceInset * edgeScale)
-      local assetFx, assetFy = panelX - frameMargin, panelY - frameMargin
-      local assetFw = math.max(1, panelW + frameMargin * 2)
-      local assetFh = math.max(1, panelH + frameMargin * 2)
+      local frameMarginX = sourceInset * edgeScaleX
+      local frameMarginY = sourceInset * edgeScaleY
+      local assetFx, assetFy = panelX - frameMarginX, panelY - frameMarginY
+      local assetFw = math.max(pixelScale / dpiX,
+        panelW + frameMarginX * 2)
+      local assetFh = math.max(pixelScale / dpiY,
+        panelH + frameMarginY * 2)
       -- Keep the authored transparent inset outside the UI surface. The
       -- panel itself is already snapped to the visible content boundary; if
       -- we fill the full image bounds here, the transparent outer ornament
@@ -3266,24 +3510,31 @@ return function(mod)
         love.graphics.draw(asset, quad, dx, dy, 0, dw / sw, dh / sh)
       end
       local function drawTiledX(sx, sy, sw, sh, dx, dy, dw, dh)
-        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScale <= 0 then return end
-        local tileWidth = sw * edgeScale
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScaleX <= 0 then return end
+        local tileWidth = sw * edgeScaleX
         local offset = 0
         while offset < dw - 0.001 do
-          local drawWidth = math.min(tileWidth, dw - offset)
-          local sourceWidth = math.min(sw, drawWidth / edgeScale)
+          -- Never crop a fractional source pixel for the final tile. The
+          -- destination width is snapped to this same block grid above, so a
+          -- whole source-pixel tile always fits exactly.
+          local sourceWidth = math.min(sw, math.floor(
+            (dw - offset) / edgeScaleX + 0.0001))
+          if sourceWidth < 1 then break end
+          local drawWidth = sourceWidth * edgeScaleX
           drawSlice(sx, sy, sourceWidth, sh, dx + offset, dy,
             drawWidth, dh)
           offset = offset + drawWidth
         end
       end
       local function drawTiledY(sx, sy, sw, sh, dx, dy, dw, dh)
-        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScale <= 0 then return end
-        local tileHeight = sh * edgeScale
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0 or edgeScaleY <= 0 then return end
+        local tileHeight = sh * edgeScaleY
         local offset = 0
         while offset < dh - 0.001 do
-          local drawHeight = math.min(tileHeight, dh - offset)
-          local sourceHeight = math.min(sh, drawHeight / edgeScale)
+          local sourceHeight = math.min(sh, math.floor(
+            (dh - offset) / edgeScaleY + 0.0001))
+          if sourceHeight < 1 then break end
+          local drawHeight = sourceHeight * edgeScaleY
           drawSlice(sx, sy, sw, sourceHeight, dx, dy + offset,
             dw, drawHeight)
           offset = offset + drawHeight
@@ -3291,34 +3542,34 @@ return function(mod)
       end
       local centerSourceW, centerSourceH = iw - sourceSlice * 2,
         ih - sourceSlice * 2
-      local centerDestW, centerDestH = assetFw - destinationCorner * 2,
-        assetFh - destinationCorner * 2
+      local centerDestW, centerDestH = assetFw - destinationCornerX * 2,
+        assetFh - destinationCornerY * 2
       setColor({ 1, 1, 1, 1 })
       drawSlice(0, 0, sourceSlice, sourceSlice,
-        assetFx, assetFy, destinationCorner, destinationCorner)
+        assetFx, assetFy, destinationCornerX, destinationCornerY)
       drawTiledX(sourceSlice, 0, centerSourceW, sourceSlice,
-        assetFx + destinationCorner, assetFy, centerDestW, destinationCorner)
+        assetFx + destinationCornerX, assetFy, centerDestW, destinationCornerY)
       drawSlice(iw - sourceSlice, 0, sourceSlice, sourceSlice,
-        assetFx + assetFw - destinationCorner, assetFy,
-        destinationCorner, destinationCorner)
+        assetFx + assetFw - destinationCornerX, assetFy,
+        destinationCornerX, destinationCornerY)
       drawTiledY(0, sourceSlice, sourceSlice, centerSourceH,
-        assetFx, assetFy + destinationCorner, destinationCorner, centerDestH)
+        assetFx, assetFy + destinationCornerY, destinationCornerX, centerDestH)
       drawSlice(sourceSlice, sourceSlice, centerSourceW, centerSourceH,
-        assetFx + destinationCorner, assetFy + destinationCorner,
+        assetFx + destinationCornerX, assetFy + destinationCornerY,
         centerDestW, centerDestH)
       drawTiledY(iw - sourceSlice, sourceSlice, sourceSlice, centerSourceH,
-        assetFx + assetFw - destinationCorner, assetFy + destinationCorner,
-        destinationCorner, centerDestH)
+        assetFx + assetFw - destinationCornerX, assetFy + destinationCornerY,
+        destinationCornerX, centerDestH)
       drawSlice(0, ih - sourceSlice, sourceSlice, sourceSlice,
-        assetFx, assetFy + assetFh - destinationCorner,
-        destinationCorner, destinationCorner)
+        assetFx, assetFy + assetFh - destinationCornerY,
+        destinationCornerX, destinationCornerY)
       drawTiledX(sourceSlice, ih - sourceSlice, centerSourceW, sourceSlice,
-        assetFx + destinationCorner, assetFy + assetFh - destinationCorner,
-        centerDestW, destinationCorner)
+        assetFx + destinationCornerX, assetFy + assetFh - destinationCornerY,
+        centerDestW, destinationCornerY)
       drawSlice(iw - sourceSlice, ih - sourceSlice, sourceSlice, sourceSlice,
-        assetFx + assetFw - destinationCorner,
-        assetFy + assetFh - destinationCorner,
-        destinationCorner, destinationCorner)
+        assetFx + assetFw - destinationCornerX,
+        assetFy + assetFh - destinationCornerY,
+        destinationCornerX, destinationCornerY)
       love.graphics.setLineWidth(1)
       return
       end
@@ -3368,7 +3619,7 @@ return function(mod)
     drawPanelAccent(theme, layout.x, layout.y, layout.w, layout.radius)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     setColor(colors.text)
-    love.graphics.print(truncate(title, layout.w - theme.spacing.lg * 2),
+    drawText(truncate(title, layout.w - theme.spacing.lg * 2),
       layout.x + theme.spacing.lg,
       layout.y + theme.spacing.md)
   end
@@ -3408,7 +3659,7 @@ return function(mod)
         setColor(rowSelected and colors.text or colors.textMuted)
         love.graphics.setFont(bodyFont)
         local label = truncate(safeText(row.label), width)
-        love.graphics.print(label, rx + (width - bodyFont:getWidth(label)) / 2,
+        drawText(label, rx + (width - bodyFont:getWidth(label)) / 2,
           ry + (layout.rowHeight - textHeight(bodyFont)) / 2)
       end
       return
@@ -3447,13 +3698,13 @@ return function(mod)
         local labelWidth = math.max(20, layout.w - theme.spacing.lg * 2
           - (valueWidth > 0 and valueWidth + theme.spacing.md or 0))
         love.graphics.setFont(categoryFont)
-        love.graphics.print(truncate(row.label, labelWidth, categoryFont),
+        drawText(truncate(row.label, labelWidth, categoryFont),
           layout.x + theme.spacing.lg,
           ry + (layout.rowHeight - textHeight(categoryFont)) / 2)
         if value ~= "" then
           love.graphics.setFont(valueFont)
           setColor(rowSelected and colors.text or colors.textMuted)
-          love.graphics.print(truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont),
+          drawText(truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont),
             layout.x + layout.w - theme.spacing.lg - valueFont:getWidth(
               truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont)),
             ry + (layout.rowHeight - textHeight(valueFont)) / 2)
@@ -3461,7 +3712,7 @@ return function(mod)
       elseif row.header then
         setColor(colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.caption))
-        love.graphics.print(safeText(row.label):upper(),
+        drawText(safeText(row.label):upper(),
           layout.x + theme.spacing.lg, ry + (layout.rowHeight -
             textHeight(love.graphics.getFont())) / 2)
         love.graphics.setFont(font(fontCache, theme.typography.body))
@@ -3486,6 +3737,10 @@ return function(mod)
         setColor(row.enabled == false and colors.textMuted or colors.text)
       end
       local icon = not row.header and not row.category and imageFor(row.image) or nil
+      if icon then
+        paletteRuntime.setImage(icon, row.source and row.source.species
+          and paletteRuntime.pokemon(game, row.source.species) or nil)
+      end
       if not icon and not row.header and game and row.source and
           row.source.species and iconFor then
         local ok, resolved = pcall(iconFor, game, row.source)
@@ -3536,12 +3791,12 @@ return function(mod)
         local textY = ry + (layout.rowHeight - blockHeight) / 2
         love.graphics.setFont(bodyFont)
         for lineIndex, line in ipairs(labelLines) do
-          love.graphics.print(line, textX,
+          drawText(line, textX,
             textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
         for lineIndex, line in ipairs(valueLines) do
           local lineWidth = bodyFont:getWidth(line)
-          love.graphics.print(line,
+          drawText(line,
             layout.x + layout.w - theme.spacing.lg - lineWidth,
             textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
@@ -3560,12 +3815,12 @@ return function(mod)
     end
     if scroll > 0 then
       setColor(colors.accent)
-      love.graphics.print("^", layout.x + layout.w - theme.spacing.lg - 8,
+      drawText("^", layout.x + layout.w - theme.spacing.lg - 8,
         layout.y + layout.header - 4)
     end
     if scroll + layout.visible < #rows then
       setColor(colors.accent)
-      love.graphics.print("v", layout.x + layout.w - theme.spacing.lg - 8,
+      drawText("v", layout.x + layout.w - theme.spacing.lg - 8,
         layout.y + layout.h - layout.footer - 2)
     end
   end
@@ -3606,7 +3861,26 @@ return function(mod)
     local current = clamp(state.lineIndex or 1, 1, math.max(1, #page))
     local shownCount = type(state.shown) == "table" and #state.shown or 1
     shownCount = clamp(shownCount, 1, 5)
-    local first = math.max(1, current - shownCount + 1)
+    -- The vanilla TextBox is a two-line tile window, so it keeps only the
+    -- latest two lines in `shown` and scrolls whenever a page contains a
+    -- normal newline. Modern dialogue cards have room to grow, though, and
+    -- should let a longer message read as one stable card. Preserve the
+    -- engine's intentional \v continuation pauses; those are the cases where
+    -- scrolling is part of the authored interaction rather than just a
+    -- consequence of the classic two-line window.
+    local expandPage = true
+    local conts = type(pages.contBefore) == "table"
+      and pages.contBefore[state.pageIndex or 1] or nil
+    if type(conts) == "table" then
+      for index = 2, #page do
+        if conts[index] then
+          expandPage = false
+          break
+        end
+      end
+    end
+    local first = expandPage and 1
+      or math.max(1, current - shownCount + 1)
     local lines = {}
     for index = first, current do
       local line = safeText(page[index])
@@ -3624,9 +3898,22 @@ return function(mod)
     local current = clamp(state.lineIndex or 1, 1, math.max(1, #page))
     local shownCount = type(state.shown) == "table" and #state.shown or 1
     shownCount = clamp(shownCount, 1, 5)
-    local first = math.max(1, current - shownCount + 1)
+    local expandPage = true
+    local conts = type(pages.contBefore) == "table"
+      and pages.contBefore[state.pageIndex or 1] or nil
+    if type(conts) == "table" then
+      for index = 2, #page do
+        if conts[index] then
+          expandPage = false
+          break
+        end
+      end
+    end
+    local first = expandPage and 1
+      or math.max(1, current - shownCount + 1)
+    local last = expandPage and #page or current
     local lines = {}
-    for index = first, current do
+    for index = first, last do
       lines[#lines + 1] = safeText(page[index])
     end
     if #lines == 0 then lines[1] = "" end
@@ -3687,15 +3974,28 @@ return function(mod)
     local minWidth = math.min(landscape and 400 or 340, maxWidth)
     local width = clamp(widest + paddingX * 2, minWidth, maxWidth)
     -- TextBox pages in the released engine normally expose two visible lines.
-    -- Size to the live wrapped content instead of reserving five lines for
-    -- every message; longer page models can still grow up to five lines.
+    -- Size to the complete ordinary page instead of reserving a fixed number
+    -- of lines for every message; explicit continuation pauses still use the
+    -- engine-compatible two-line window.
     local lineGap = textHeight(body) + theme.spacing.xs
     local available = math.max(1, width - paddingX * 2)
     local desiredLines = 0
     for _, line in ipairs(completeDialogueLines(state)) do
       desiredLines = desiredLines + #wrappedLines(line, available, body)
     end
-    desiredLines = clamp(math.max(2, desiredLines), 2, 5)
+    -- Grow to the full current page whenever the viewport can hold it. The
+    -- old five-line cap was still an arbitrary version of the vanilla
+    -- two-line window and made four-line NPC/save messages race through a
+    -- visually scrolling card at FAST text speed.
+    local maxHeight = h - gutter * 2
+    if reserveKind then
+      local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
+      maxHeight = math.min(maxHeight,
+        math.max(1, h - gutter * 2 - reserve - theme.spacing.sm))
+    end
+    local maxLines = math.max(2,
+      math.floor((maxHeight - paddingY * 2) / lineGap))
+    desiredLines = math.max(2, math.min(desiredLines, maxLines))
     -- Keep the card large enough for the revealed text and footer, but do not
     -- let a chrome-only minimum create a tall empty box when UI SCALE is high
     -- and FONT SCALE is intentionally smaller.
@@ -3732,7 +4032,7 @@ return function(mod)
     local textY = py + paddingY
     setColor(colors.text)
     for index, line in ipairs(lines) do
-      love.graphics.print(line, px + paddingX, textY + (index - 1) * lineGap)
+      drawText(line, px + paddingX, textY + (index - 1) * lineGap)
     end
 
     local ready = state.waiting or (state.done and not state.choice
@@ -3740,7 +4040,7 @@ return function(mod)
     if ready and not state.choice then
       local indicator = "..."
       setColor(colors.accent)
-      love.graphics.print(indicator,
+      drawText(indicator,
         px + panelW - paddingX - body:getWidth(indicator),
         py + panelH - paddingY - textHeight(body))
     end
@@ -3837,7 +4137,7 @@ return function(mod)
           controlKey = "manager-tab:" .. i, dragHandle = false,
         })
       setColor(i == active and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print(shown, x, y)
+      drawText(shown, x, y)
       x = x + width
     end
     love.graphics.setFont(font(fontCache, theme.typography.body))
@@ -3865,7 +4165,7 @@ return function(mod)
     if subtitle and subtitle ~= "" then
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(theme.colors.textMuted)
-      love.graphics.print(truncate(subtitle,
+      drawText(truncate(subtitle,
         layout.w - theme.spacing.lg * 2), layout.x + theme.spacing.lg,
         layout.y + theme.spacing.md + theme.typography.title + 2)
       love.graphics.setFont(font(fontCache, theme.typography.body))
@@ -3902,7 +4202,7 @@ return function(mod)
     love.graphics.setFont(font(fontCache, theme.typography.body))
     for i, line in ipairs(lines) do
       setColor(theme.colors.text)
-      love.graphics.print(truncate(line, modalW - theme.spacing.lg * 2),
+      drawText(truncate(line, modalW - theme.spacing.lg * 2),
         mx + theme.spacing.lg, my + theme.spacing.lg + (i - 1) * lineHeight)
     end
     local footerY = my + modalH - theme.spacing.lg - lineHeight
@@ -3924,9 +4224,9 @@ return function(mod)
           selectionIndex = 2, activate = true, dragHandle = false,
         })
       setColor(index == 1 and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print("YES", yesX, footerY)
+      drawText("YES", yesX, footerY)
       setColor(index == 2 and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print("NO", noX, footerY)
+      drawText("NO", noX, footerY)
     else
       setColor(theme.colors.textMuted)
       drawHintIfUseful(theme, "A / B  CLOSE", mx + theme.spacing.lg, footerY,
@@ -3978,13 +4278,13 @@ return function(mod)
     drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
     love.graphics.setFont(titleFont)
     setColor(theme.colors.text)
-    love.graphics.print(truncate(title, modalW - spacing.lg * 2),
+    drawText(truncate(title, modalW - spacing.lg * 2),
       mx + spacing.lg, my + spacing.md)
     love.graphics.setFont(body)
     local textY = my + spacing.md + textHeight(titleFont) + spacing.sm
     for index, line in ipairs(lines) do
       setColor(theme.colors.text)
-      love.graphics.print(line, mx + spacing.lg, textY + (index - 1) * lineHeight)
+      drawText(line, mx + spacing.lg, textY + (index - 1) * lineHeight)
     end
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", mx + spacing.lg,
@@ -4178,12 +4478,12 @@ return function(mod)
         drawFittedText(moveName, moveX, moveY + (i - 1) * moveGap,
           moveMax, bodyFont)
         setColor(theme.colors.textMuted)
-        love.graphics.print(("PP %s"):format(pp), ppX,
+        drawText(("PP %s"):format(pp), ppX,
           moveY + (i - 1) * moveGap)
       end
     else
       local types = def and def.types or {}
-      love.graphics.print(("TYPE  %s %s"):format(safeText(types[1]), safeText(types[2])),
+      drawText(("TYPE  %s %s"):format(safeText(types[1]), safeText(types[2])),
         px + spacing.lg, statusY + lineGap)
       local stats = mon.stats or {}
       local infoX = compact and (px + panelW * 0.48) or (px + panelW * 0.52)
@@ -4259,6 +4559,11 @@ return function(mod)
     -- own animation contract.
     local image = imageFor(entry)
     if not image then return nil end
+    -- Vanilla icon sheets are monochrome source art; apply the species' live
+    -- palette just as the native summary/party renderer does. Explicit icon
+    -- descriptors remain authored artwork and are left untouched.
+    paletteRuntime.setImage(image, not hasDescriptor
+      and paletteRuntime.pokemon(game, mon and mon.species) or nil)
     local followerSheet = knownSheetOptions(originalEntry or entry, image, 0)
     if followerSheet then image = markAnimated(image, followerSheet) end
     if hasDescriptor then
@@ -4285,8 +4590,9 @@ return function(mod)
       game.data.pokemon[species]
     local path = fallback or (def and
       (side == "back" and def.spriteBack or def.spriteFront))
-    if not path or not species then return path, false end
+    if not path or not species then return path, false, false end
     local replaced = false
+    local trueColor = false
 
     -- src.pokemon.Sprites.path is the runtime's sanctioned sprite seam. It
     -- invokes enabled pokemon.sprite replacements (Gold/Silver, alternate
@@ -4297,15 +4603,17 @@ return function(mod)
       spriteResolver = ok and resolver or false
     end
     if spriteResolver and type(spriteResolver.path) == "function" then
-      local ok, hooked = pcall(spriteResolver.path, game.data, species, side, {
+      local ok, hooked, hookedTrueColor = pcall(spriteResolver.path,
+        game.data, species, side, {
         mon = mon, kind = kind or "menu",
       })
       if ok and type(hooked) == "string" and hooked ~= "" then
         replaced = hooked ~= path
         path = hooked
+        trueColor = hookedTrueColor == true
       end
     end
-    return path, replaced
+    return path, replaced, trueColor
   end
 
   spriteFor = function(game, mon, fallback, kind)
@@ -4314,18 +4622,27 @@ return function(mod)
     if image then
       local sheet = knownSheetOptions(candidate, image, nil)
       if sheet then image = markAnimated(image, sheet) end
+      paletteRuntime.setImage(image, type(candidate) ~= "table"
+        and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
     local fallbackPath = type(fallback) == "string" and fallback or nil
-    local path = resolvedSpritePath(game, mon, "front", kind, fallbackPath)
+    local path, _, trueColor = resolvedSpritePath(game, mon, "front", kind,
+      fallbackPath)
     -- Battle sprite replacement assets are complete single-frame pictures by
     -- default (including Gold/Silver packs). Only an explicit image
     -- descriptor with `frames` opts into sheet animation.
     image = imageFor(path)
     local sheet = image and knownSheetOptions(path, image, nil)
     if sheet then image = markAnimated(image, sheet) end
-    if image then return image end
-    return imageFor(fallback)
+    if image then
+      paletteRuntime.setImage(image, not trueColor
+        and paletteRuntime.pokemon(game, mon and mon.species) or nil)
+      return image
+    end
+    image = imageFor(fallback)
+    paletteRuntime.setImage(image, paletteRuntime.pokemon(game, mon and mon.species))
+    return image
   end
 
   local function spriteForSide(game, mon, side, fallback, kind)
@@ -4334,17 +4651,26 @@ return function(mod)
     if image then
       local sheet = knownSheetOptions(candidate, image, nil)
       if sheet then image = markAnimated(image, sheet) end
+      paletteRuntime.setImage(image, type(candidate) ~= "table"
+        and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
     local fallbackPath = type(fallback) == "string" and fallback or nil
-    local path = resolvedSpritePath(game, mon, side, kind, fallbackPath)
+    local path, _, trueColor = resolvedSpritePath(game, mon, side, kind,
+      fallbackPath)
     -- `pokemon.sprite` paths are authored battle pictures, not animation
     -- sheets. Explicit descriptors can still request frame cropping.
     image = imageFor(path)
     local sheet = image and knownSheetOptions(path, image, nil)
     if sheet then image = markAnimated(image, sheet) end
-    if image then return image end
-    return imageFor(fallback)
+    if image then
+      paletteRuntime.setImage(image, not trueColor
+        and paletteRuntime.pokemon(game, mon and mon.species) or nil)
+      return image
+    end
+    image = imageFor(fallback)
+    paletteRuntime.setImage(image, paletteRuntime.pokemon(game, mon and mon.species))
+    return image
   end
 
   local function drawTrainerCard(game, state, viewport, theme)
@@ -4380,7 +4706,7 @@ return function(mod)
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", portraitX, portraitY, portraitSize, portraitSize,
       theme.radii.sm)
-    local portrait = prepareImage(state.pic)
+    local portrait = paletteRuntime.worldImage(game, state.pic)
     if portrait then
       drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
         portraitSize - spacing.sm * 2, portraitSize - spacing.sm * 2)
@@ -4410,9 +4736,9 @@ return function(mod)
     for index, row in ipairs(profile) do
       local ry = contentY + spacing.md + (index - 1) * profileGap
       setColor(colors.textMuted)
-      love.graphics.print(row[1], profileX, ry)
+      drawText(row[1], profileX, ry)
       setColor(colors.text)
-      love.graphics.print(truncate(row[2], math.max(20,
+      drawText(truncate(row[2], math.max(20,
         profileX + profileW - valueX)), valueX, ry)
     end
 
@@ -4434,7 +4760,7 @@ return function(mod)
     local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     setColor(colors.textMuted)
-    love.graphics.print(Strings("BADGES  %d/%d", ownedCount, #badges),
+    drawText(Strings("BADGES  %d/%d", ownedCount, #badges),
       px + spacing.lg, gridY)
     gridY = gridY + theme.typography.caption + spacing.sm
     gridH = math.max(1, contentY + contentH - gridY)
@@ -4487,7 +4813,7 @@ return function(mod)
       local labelX = cx + spacing.sm + artSize + spacing.sm
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(owned and colors.text or colors.textMuted)
-      love.graphics.print(truncate(("%d  %s"):format(index, badgeName),
+      drawText(truncate(("%d  %s"):format(index, badgeName),
         math.max(20, cx + cellW - spacing.sm - labelX)), labelX,
         cy + (cellH - theme.typography.caption) / 2)
     end
@@ -4520,8 +4846,9 @@ return function(mod)
     local def = derive and game.data and game.data.pokemon
       and game.data.pokemon[mon.species]
     if def and type(def.baseStats) == "table"
-        and statsLibrary and type(statsLibrary.calc) == "function" then
-      local ok, stats = pcall(statsLibrary.calc, def, mon.level or 1,
+        and runtimeClasses.stats
+        and type(runtimeClasses.stats.calc) == "function" then
+      local ok, stats = pcall(runtimeClasses.stats.calc, def, mon.level or 1,
         mon.dvs or {}, mon.statExp)
       if ok and type(stats) == "table" then return stats end
     end
@@ -4602,7 +4929,7 @@ return function(mod)
     if not mon then
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.textMuted)
-      love.graphics.printf(Strings("No POKéMON selected."), x + spacing.lg,
+      drawTextWrapped(Strings("No POKéMON selected."), x + spacing.lg,
         y + h / 2 - 10, w - spacing.lg * 2, "center")
       return
     end
@@ -4623,7 +4950,7 @@ return function(mod)
     local infoW = math.max(32, x + w - spacing.md - infoX)
     love.graphics.setFont(titleFont)
     setColor(colors.text)
-    love.graphics.print(truncate(name, infoW), infoX, y + spacing.md)
+    drawText(truncate(name, infoW), infoX, y + spacing.md)
     love.graphics.setFont(captionFont)
     setColor(colors.textMuted)
     local speciesName = def.name and def.name ~= name and def.name or nil
@@ -4685,12 +5012,12 @@ return function(mod)
         movesY + (index - 1) * (textHeight(bodyFont) + spacing.xs),
         moveMax, bodyFont)
       setColor(colors.textMuted)
-      love.graphics.print(pp, x + w - spacing.md - ppWidth,
+      drawText(pp, x + w - spacing.md - ppWidth,
         movesY + (index - 1) * (textHeight(bodyFont) + spacing.xs))
     end
     if #moves == 0 then
       setColor(colors.textMuted)
-      love.graphics.print(Strings("No moves."), x + spacing.md, movesY)
+      drawText(Strings("No moves."), x + spacing.md, movesY)
     end
   end
 
@@ -4877,7 +5204,7 @@ return function(mod)
     local titleW = font(fontCache, theme.typography.title):getWidth(
       safeText(state.title or Strings("PC BOX")))
     if titleW + contextW + spacing.lg * 3 < panelW then
-      love.graphics.print(context, px + panelW - spacing.lg - contextW,
+      drawText(context, px + panelW - spacing.lg - contextW,
         py + spacing.md + 5)
     end
     drawRows(theme, { x = px, y = listY, w = listW, h = listH,
@@ -4990,7 +5317,7 @@ return function(mod)
     else
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.textMuted)
-      love.graphics.printf(Strings("No data for this entry."),
+      drawTextWrapped(Strings("No data for this entry."),
         previewX + spacing.lg, previewY + previewH / 2 - theme.typography.body,
         previewW - spacing.lg * 2, "center")
     end
@@ -5375,7 +5702,7 @@ return function(mod)
           spacing.md * 2, py + spacing.sm, amountW + spacing.md * 2,
           theme.typography.body + spacing.sm * 2, theme.radii.sm)
         setColor(colors.text)
-        love.graphics.print(amount, px + panelW - spacing.lg - amountW - spacing.md,
+        drawText(amount, px + panelW - spacing.lg - amountW - spacing.md,
           py + spacing.sm * 1.5)
       end
     end
@@ -5460,7 +5787,7 @@ return function(mod)
     setColor(colors.text)
     local messageLines = wrappedLines(footerText or "", panelW - spacing.lg * 2)
     for index = 1, math.min(2, #messageLines) do
-      love.graphics.print(messageLines[index], px + spacing.lg,
+      drawText(messageLines[index], px + spacing.lg,
         messageY + spacing.sm + (index - 1) * (theme.typography.caption + spacing.xs))
     end
     setColor(colors.textMuted)
@@ -5524,7 +5851,7 @@ return function(mod)
     drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.title))
-    love.graphics.print(title, px + spacing.lg, py + spacing.md)
+    drawText(title, px + spacing.lg, py + spacing.md)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     local footerText = state.notice or (mode == "box"
@@ -5582,10 +5909,10 @@ return function(mod)
         local nameMax = math.max(12, cellW - cellPad * 2 - levelW - cellPad)
         local captionY = cy + cellH - captionH
           + (captionH - textHeight(captionFont)) / 2 - 1
-        love.graphics.print(truncate(name, nameMax), cx + cellPad, captionY)
+        drawText(truncate(name, nameMax), cx + cellPad, captionY)
         setColor(theme.colors.textMuted)
         if level ~= "" then
-          love.graphics.print(level, cx + cellW - cellPad - levelW, captionY)
+          drawText(level, cx + cellW - cellPad - levelW, captionY)
         end
       end
     end
@@ -5613,9 +5940,9 @@ return function(mod)
         carried.species or "POKÃ©MON"
       setColor(theme.colors.accent)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
-      love.graphics.print("CARRYING", cardX + 64, cardY + 10)
+      drawText("CARRYING", cardX + 64, cardY + 10)
       setColor(theme.colors.text)
-      love.graphics.print(truncate(carriedName, cardW - 76),
+      drawText(truncate(carriedName, cardW - 76),
         cardX + 64, cardY + 32)
     end
     love.graphics.pop()
@@ -5703,7 +6030,7 @@ return function(mod)
       panelW - spacing.lg * 2, titleFont)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(captionFont)
-    love.graphics.print((page == "stats" and "BASE STATS" or page == "moves" and "MOVES" or
+    drawText((page == "stats" and "BASE STATS" or page == "moves" and "MOVES" or
       "DEX DATA"), px + spacing.lg, py + spacing.lg + 32)
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", heroX, heroY, heroW, heroH, theme.radii.md)
@@ -5764,7 +6091,7 @@ return function(mod)
       end
       if visible < requested then
         setColor(theme.colors.textMuted)
-        love.graphics.print("...", tx,
+        drawText("...", tx,
           footerY - textHeight(captionFont) - spacing.sm)
         setColor(theme.colors.text)
       end
@@ -5793,10 +6120,10 @@ return function(mod)
         for i, line in ipairs(lines) do
           local yy = descriptionY + (i - 1) * lineHeight
           if yy > footerY - lineHeight then break end
-          love.graphics.print(line, px + spacing.lg, yy)
+          drawText(line, px + spacing.lg, yy)
         end
       else
-        love.graphics.print("Data unknown.", px + spacing.lg, descriptionY)
+        drawText("Data unknown.", px + spacing.lg, descriptionY)
       end
     end
     setColor(theme.colors.textMuted)
@@ -5856,7 +6183,7 @@ return function(mod)
     drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print("FORGET A MOVE", px + spacing.lg, py + spacing.md)
+    drawText("FORGET A MOVE", px + spacing.lg, py + spacing.md)
     local newDef = moveDefs[state.newMoveId] or {}
     setColor(colors.textMuted)
     love.graphics.setFont(body)
@@ -5876,11 +6203,11 @@ return function(mod)
         panelW - spacing.sm * 2, rowH - 2, theme.radii.sm)
       setColor(index == selected and colors.text or colors.textMuted)
       love.graphics.setFont(body)
-      love.graphics.print(safeText(row.label), px + spacing.lg,
+      drawText(safeText(row.label), px + spacing.lg,
         ry + (rowH - textHeight(body)) / 2 - 1)
       if row.value ~= "" then
         local valueW = body:getWidth(row.value)
-        love.graphics.print(row.value, px + panelW - spacing.lg - valueW,
+        drawText(row.value, px + panelW - spacing.lg - valueW,
           ry + (rowH - textHeight(body)) / 2 - 1)
       end
     end
@@ -5924,7 +6251,7 @@ return function(mod)
     })
     setColor(colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print("PICTURE", px + spacing.lg, py + spacing.md)
+    drawText("PICTURE", px + spacing.lg, py + spacing.md)
     local artY = py + textHeight(titleFont) + spacing.lg
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", px + spacing.lg, artY,
@@ -5942,7 +6269,7 @@ return function(mod)
     setColor(colors.text)
     love.graphics.setFont(body)
     for index, line in ipairs(captionLines) do
-      love.graphics.print(line, px + spacing.lg,
+      drawText(line, px + spacing.lg,
         artY + cardH + spacing.md + (index - 1) * lineGap)
     end
     love.graphics.pop()
@@ -5997,7 +6324,7 @@ return function(mod)
       theme.radii.sm)
     local portrait =
       mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, player.sprite)
-      or imageFor(player.portrait or player.image or player.icon)
+      or paletteRuntime.worldImage(game, player.portrait or player.image or player.icon)
     local artSize = math.min(heroH - spacing.md * 2, 92)
     local artX = contentX + spacing.md
     if portrait then
@@ -6010,7 +6337,7 @@ return function(mod)
       setColor(colors.text)
       love.graphics.setFont(titleFont)
       local initial = safeText(player.name or "?"):sub(1, 1):upper()
-      love.graphics.print(initial,
+      drawText(initial,
         artX + (artSize - titleFont:getWidth(initial)) / 2,
         heroY + (heroH - textHeight(titleFont)) / 2)
     end
@@ -6039,7 +6366,7 @@ return function(mod)
       local ry = heroY + heroH + spacing.sm + (row - 1) * rowH
       setColor(colors.textMuted)
       love.graphics.setFont(captionFont)
-      love.graphics.print(label, rx, ry + spacing.xs)
+      drawText(label, rx, ry + spacing.xs)
       setColor(colors.text)
       love.graphics.setFont(bodyFont)
       drawFittedText(value, rx, ry + spacing.xs + textHeight(captionFont),
@@ -6121,7 +6448,7 @@ return function(mod)
     drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print("RANK", contentX, py + spacing.md)
+    drawText("RANK", contentX, py + spacing.md)
 
     local function emptyMessage()
       if not asked and client then
@@ -6151,7 +6478,7 @@ return function(mod)
         local name = safeText(row.name or row.player or "UNKNOWN")
         local portrait =
           mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, row.sprite)
-          or imageFor(row.portrait or row.image or row.icon)
+          or paletteRuntime.worldImage(game, row.portrait or row.image or row.icon)
         local artSize = math.max(24, math.min(40, rowH - spacing.sm * 2))
         local artX = contentX + spacing.sm
         if portrait then
@@ -6167,12 +6494,12 @@ return function(mod)
         local placeW = bodyFont:getWidth(place)
         setColor(selected and colors.text or colors.textMuted)
         love.graphics.setFont(captionFont)
-        love.graphics.print(place, contentX + spacing.sm, ry + spacing.sm)
+        drawText(place, contentX + spacing.sm, ry + spacing.sm)
         love.graphics.setFont(bodyFont)
         drawFittedText(name, nameX, ry + (rowH - textHeight(bodyFont)) / 2,
           math.max(24, contentX + contentW - spacing.lg - pointsW
             - spacing.md - nameX), bodyFont)
-        love.graphics.print(points, contentX + contentW - spacing.lg - pointsW,
+        drawText(points, contentX + contentW - spacing.lg - pointsW,
           ry + (rowH - textHeight(bodyFont)) / 2)
       end
     end
@@ -6239,8 +6566,18 @@ return function(mod)
     local row = selectedListRow(rows, selected)
     local source = row and row.source
     local spriteId = source and (source.value or source.sprite)
+    -- Character artwork is authored avatar art, not a map tile/sprite. Do not
+    -- tint it with the current overworld palette; that can turn every avatar
+    -- into the active route's colors (the native RBY MMO picker has the same
+    -- underlying palette confusion on some builds).
     local portrait = mod._gen1ModernSpecialPresenters.rbyMmoPortrait(
-      game, spriteId) or imageFor(source and (source.image or source.icon))
+      game, spriteId)
+    if not portrait then
+      portrait = paletteRuntime.setImage(imageFor(source and
+        (source.image or source.icon)), nil)
+    else
+      paletteRuntime.setImage(portrait.image, nil)
+    end
     if detailW > 0 or detailH > 0 then
       local detailX = detailW > 0 and (px + panelW - detailW) or px
       local detailY = py + headerH
@@ -6269,7 +6606,7 @@ return function(mod)
         setColor(colors.text)
         local initial = safeText(row and row.label or "?"):sub(1, 1):upper()
         love.graphics.setFont(titleFont)
-        love.graphics.print(initial,
+        drawText(initial,
           artX + (artSize - titleFont:getWidth(initial)) / 2,
           artY + (artSize - textHeight(titleFont)) / 2)
       end
@@ -6502,7 +6839,7 @@ return function(mod)
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
     local counterW = caption:getWidth(counter)
-    love.graphics.print(counter, px + panelW - spacing.lg - counterW,
+    drawText(counter, px + panelW - spacing.lg - counterW,
       slotsY + slotH + spacing.xs)
 
     local gridY = py + headerH
@@ -6747,7 +7084,7 @@ return function(mod)
     drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print(title, px + spacing.lg, py + spacing.md)
+    drawText(title, px + spacing.lg, py + spacing.md)
 
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", mapX, mapY, mapW, mapH, theme.radii.md)
@@ -6771,7 +7108,7 @@ return function(mod)
           local cellSize = 8 * mapScale
           local image =
             mod._gen1ModernSpecialPresenters.rbyMmoPortrait(game, marker.sprite)
-            or imageFor(marker.image)
+            or paletteRuntime.worldImage(game, marker.image)
           if image then
             mod._gen1ModernSpecialPresenters.drawImageFitRegion(image, cellX,
               cellY, cellSize, cellSize)
@@ -6867,7 +7204,7 @@ return function(mod)
           mapW - spacing.sm * 2, rowH - 2, theme.radii.sm)
         setColor(index == state.sel and colors.text or colors.textMuted)
         love.graphics.setFont(body)
-        love.graphics.print(safeText(loc.name), mapX + spacing.lg,
+        drawText(safeText(loc.name), mapX + spacing.lg,
           ry + (rowH - textHeight(body)) / 2)
       end
     end
@@ -6966,13 +7303,13 @@ return function(mod)
     setColor(colors.textMuted)
     love.graphics.setFont(titleFont)
     local title = "LOCATION"
-    love.graphics.print(title,
+    drawText(title,
       px + (panelW - titleFont:getWidth(title)) / 2,
       py + spacing.sm)
     setColor(colors.text)
     love.graphics.setFont(bodyFont)
     local nameText = truncate(name, panelW - spacing.lg * 2, bodyFont)
-    love.graphics.print(nameText,
+    drawText(nameText,
       px + (panelW - bodyFont:getWidth(nameText)) / 2,
       py + spacing.sm + textHeight(titleFont) + spacing.xs)
     love.graphics.pop()
@@ -7022,24 +7359,24 @@ return function(mod)
     })
     setColor(colors.text)
     love.graphics.setFont(titleFont)
-    love.graphics.print("LOAD REPORT", px + spacing.lg, py + spacing.md)
+    drawText("LOAD REPORT", px + spacing.lg, py + spacing.md)
     setColor(colors.textMuted)
     love.graphics.setFont(body)
     for index = 1, visible do
       local line = lines[offset + index]
       if line and line ~= "" then
-        love.graphics.print(safeText(line), px + spacing.lg,
+        drawText(safeText(line), px + spacing.lg,
           contentY + (index - 1) * rowH)
       end
     end
     if offset > 0 then
       setColor(colors.accent)
-      love.graphics.print("^", px + panelW - spacing.lg - body:getWidth("^"),
+      drawText("^", px + panelW - spacing.lg - body:getWidth("^"),
         contentY)
     end
     if offset < maxOffset then
       setColor(colors.accent)
-      love.graphics.print("v", px + panelW - spacing.lg - body:getWidth("v"),
+      drawText("v", px + panelW - spacing.lg - body:getWidth("v"),
         contentY + math.max(0, visible - 1) * rowH)
     end
     setColor(colors.divider)
@@ -7106,22 +7443,22 @@ return function(mod)
     local nameX = x + spacing.md
     local levelX = x + w - spacing.md - levelW
     local nameMax = math.max(20, levelX - nameX - spacing.sm)
-    love.graphics.print(truncate(name, nameMax), nameX, y + spacing.sm)
+    drawText(truncate(name, nameMax), nameX, y + spacing.sm)
     if level ~= "" then
       setColor(theme.colors.textMuted)
-      love.graphics.print(level, levelX, y + spacing.sm)
+      drawText(level, levelX, y + spacing.sm)
     end
     local barY = y + spacing.sm
       + textHeight(font(fontCache, theme.typography.body)) + 5
     drawBattleBar(theme, x + spacing.md, barY, w - spacing.md * 2, 8, hp, maxHP)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
-    love.graphics.print(("HP %d/%d"):format(math.floor(hp), math.floor(maxHP)),
+    drawText(("HP %d/%d"):format(math.floor(hp), math.floor(maxHP)),
       x + spacing.md, barY + 12)
     local status = battler.shownStatus or mon.status
     if status then
       setColor(theme.colors.accent)
-      love.graphics.print(safeText(status):upper(),
+      drawText(safeText(status):upper(),
         x + w - spacing.md - love.graphics.getFont():getWidth(safeText(status)), barY + 12)
     end
   end
@@ -7187,7 +7524,7 @@ return function(mod)
         end
         setColor(i == (state.menuIndex or 1) and theme.colors.text or theme.colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.body))
-        love.graphics.print(Strings(label), cx + spacing.sm,
+        drawText(Strings(label), cx + spacing.sm,
           cy + (cellH - textHeight(love.graphics.getFont())) / 2)
       end
     elseif phase == "moveSelect" or phase == "mimicSelect" then
@@ -7226,15 +7563,15 @@ return function(mod)
         local labelMax = math.max(12, cellW - spacing.sm * 2 - ppW - spacing.sm)
         setColor(i == selected and theme.colors.text or theme.colors.textMuted)
         if move then
-          love.graphics.print(truncate(label, labelMax), cx + spacing.sm,
+          drawText(truncate(label, labelMax), cx + spacing.sm,
             cy + (cellH - textHeight(moveFont)) / 2)
         else
-          love.graphics.print("-", cx + (cellW - moveFont:getWidth("-")) / 2,
+          drawText("-", cx + (cellW - moveFont:getWidth("-")) / 2,
             cy + (cellH - textHeight(moveFont)) / 2)
         end
         setColor(theme.colors.textMuted)
         love.graphics.setFont(ppFont)
-        love.graphics.print(pp, cx + cellW - spacing.md - ppW,
+        drawText(pp, cx + cellW - spacing.md - ppW,
           cy + (cellH - textHeight(ppFont)) / 2)
       end
     else
@@ -7245,11 +7582,11 @@ return function(mod)
       local lineH = textHeight(love.graphics.getFont()) + spacing.sm
       for i, line in ipairs(lines) do
         if i > math.max(1, math.floor(contentH / lineH)) then break end
-        love.graphics.print(line, x + spacing.lg, y + spacing.md + (i - 1) * lineH)
+        drawText(line, x + spacing.lg, y + spacing.md + (i - 1) * lineH)
       end
       if state.msgWaiting or state.msgPrompt then
         setColor(theme.colors.accent)
-        love.graphics.print("A  continue", x + w - spacing.lg - 90, y + h - spacing.lg - 14)
+        drawText("A  continue", x + w - spacing.lg - 90, y + h - spacing.lg - 14)
       end
     end
   end
@@ -7279,11 +7616,11 @@ return function(mod)
     drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.title))
-    love.graphics.print(state.kind == "trainer" and "TRAINER BATTLE" or "BATTLE",
+    drawText(state.kind == "trainer" and "TRAINER BATTLE" or "BATTLE",
       px + spacing.lg, py + spacing.md)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
-    love.graphics.print("LIVE BATTLE", px + panelW - spacing.lg - 82, py + spacing.md + 5)
+    drawText("LIVE BATTLE", px + panelW - spacing.lg - 82, py + spacing.md + 5)
 
     drawBattleCard(game, theme, state.enemy, px + spacing.lg,
       py + spacing.lg + 34, cardW, cardH, false)
@@ -7351,8 +7688,9 @@ return function(mod)
       return table.concat(out)
     end
     local defaultPort = "7777"
-    if linkNetClass and type(linkNetClass.defaultPort) == "function" then
-      local ok, value = pcall(linkNetClass.defaultPort)
+    if runtimeClasses.linkNet
+        and type(runtimeClasses.linkNet.defaultPort) == "function" then
+      local ok, value = pcall(runtimeClasses.linkNet.defaultPort)
       if ok and value then defaultPort = safeText(value) end
     end
     local function row(label, value, enabled)
@@ -7381,11 +7719,13 @@ return function(mod)
     elseif stage == "codeEntry" then
       local entry = state.codeEntry
       local code = "------"
-      if entry and linkCodeEntryClass and type(linkCodeEntryClass.text) == "function" then
-        local ok, value = pcall(linkCodeEntryClass.text, entry)
+      if entry and runtimeClasses.linkCodeEntry
+          and type(runtimeClasses.linkCodeEntry.text) == "function" then
+        local ok, value = pcall(runtimeClasses.linkCodeEntry.text, entry)
         if ok and value then code = safeText(value) end
       elseif entry and entry.chars then
-        local charset = linkCodeEntryClass and linkCodeEntryClass.CHARSET
+        local charset = runtimeClasses.linkCodeEntry
+          and runtimeClasses.linkCodeEntry.CHARSET
         code = listText(entry.chars, charset)
       end
       if entry and entry.pos then
@@ -7776,7 +8116,7 @@ return function(mod)
       setColor(hovered and theme.colors.text or theme.colors.textMuted)
       local label = POINTER_CONTROL_LABEL.forContext(
         context.kind, context.state, action)
-      love.graphics.print(label, x + (width - controlFont:getWidth(label)) / 2,
+      drawText(label, x + (width - controlFont:getWidth(label)) / 2,
         dockY + (buttonH - textHeight(controlFont)) / 2)
       registerPointerRegion(x, dockY, width, buttonH, {
         action = action, activate = true, interactive = true,
@@ -8337,6 +8677,24 @@ return function(mod)
       end
       decorated._gen1ModernTitleDraw = drawTitleMenu
       decorated.draw = drawTitleMenu
+    end
+    -- Options opened from the title remain above TitleState, so both native
+    -- screens share the title UI canvas. The normal compose fallback must
+    -- preserve that canvas to keep the logo and title artwork visible; hide
+    -- only the native OptionsMenu draw while the modern options presenter has
+    -- proved it can render the complete state.
+    if optionsClass and inherits(classOf(decorated), optionsClass)
+        and type(decorated.draw) == "function"
+        and not decorated._gen1ModernOptionsMenu then
+      decorated._gen1ModernOptionsNativeDraw = decorated.draw
+      decorated._gen1ModernOptionsMenu = true
+      decorated.draw = function(self)
+        if mod._gen1ModernSpecialPresenters.shouldHideNativeOptions(
+            self.game or game or currentGame, self) then
+          return
+        end
+        return self._gen1ModernOptionsNativeDraw(self)
+      end
     end
     return decorated
   end, 100)

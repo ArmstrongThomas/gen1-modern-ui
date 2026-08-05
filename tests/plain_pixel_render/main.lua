@@ -1,4 +1,4 @@
--- Visual probe for Plain Pixel's 15-point raster grid.
+-- Visual probe for Plain Pixel's 11-row artwork and 15-point raster grid.
 --
 -- Run from the repository root:
 --   $env:GEN1_PLAIN_PIXEL_FONT =
@@ -12,6 +12,9 @@ end
 local function check(value, message)
   if not value then fail(message) end
 end
+
+local PLAIN_PIXEL_CELL_HEIGHT = 11
+local PLAIN_PIXEL_RASTER_STEP = 15
 
 function love.errorhandler(message)
   io.stderr:write(tostring(message), "\n", debug.traceback(), "\n")
@@ -42,14 +45,18 @@ function love.load()
   }
   local columns = {
     { label = "old / arbitrary raster", dpi = function() return 1 end },
-    { label = "nearest 15pt raster", dpi = function(size)
-        local native = math.max(15, math.floor(size / 15 + 0.5) * 15)
+    { label = "nearest authored raster", dpi = function(size)
+        local native = math.max(PLAIN_PIXEL_RASTER_STEP,
+          math.floor(size / PLAIN_PIXEL_RASTER_STEP + 0.5)
+            * PLAIN_PIXEL_RASTER_STEP)
         return native / size, native
       end },
-    { label = "production / normalized lines", normalize = true,
+    { label = "production / direct authored raster", directRaster = true,
       dpi = function(size)
-        local native = math.max(15, math.floor(size / 15 + 0.5) * 15)
-        return native / size, native
+        local native = math.max(PLAIN_PIXEL_RASTER_STEP,
+          math.floor(size / PLAIN_PIXEL_RASTER_STEP + 0.5)
+            * PLAIN_PIXEL_RASTER_STEP)
+        return 1, native
       end },
     { label = "system line-box reference", system = true,
       dpi = function() return 1 end },
@@ -71,33 +78,33 @@ function love.load()
       local x = 24 + (column - 1) * 380
       local dpi, native = spec.dpi(size)
       local font = spec.system and love.graphics.newFont(size)
+        or (spec.directRaster and love.graphics.newFont(staged, native,
+          "mono", 1))
         or love.graphics.newFont(staged, size, "mono", dpi)
       font:setFilter("nearest", "nearest", 0)
       local systemFont = love.graphics.newFont(size)
-      if spec.normalize then
+      if spec.directRaster then
         local fallbackOk, fallbackError = pcall(
           font.setFallbacks, font, systemFont)
         check(fallbackOk, "system fallback failed: " .. tostring(fallbackError))
-        font:setLineHeight(systemFont:getHeight() / font:getHeight())
-        check(math.abs(font:getHeight() * font:getLineHeight()
-          - systemFont:getHeight()) < 0.01,
-          "normalized line box must match the system font")
         check(font:hasGlyphs("Pokémon Español Русский 日本語"),
           "production font must retain representative multilingual glyphs")
       end
       if not spec.system and native then
         check(type(font.getDPIScale) == "function",
           "Font:getDPIScale is required for the raster contract")
-        check(math.abs(size * font:getDPIScale() - native) < 0.01,
-          "physical Plain Pixel raster must align to 15 pixels")
-        check(native % 15 == 0,
-          "Plain Pixel raster must be a multiple of 15")
+        local expectedDpi = spec.directRaster and 1 or native / size
+        check(math.abs(font:getDPIScale() - expectedDpi) < 0.01,
+          "Plain Pixel raster must use the expected DPI contract")
+        check(native % PLAIN_PIXEL_RASTER_STEP == 0,
+          "Plain Pixel raster must be a multiple of the authored step")
       end
       local lineBox = font:getHeight() * font:getLineHeight()
       love.graphics.setFont(labelFont)
       love.graphics.setColor(0.30, 0.31, 0.27, 1)
-      love.graphics.print(("logical %d / raster %s / h %.1f / line %.1f"):format(
-        size, tostring(native or size), font:getHeight(), lineBox), x, y)
+      love.graphics.print(("cell %d / logical %d / raster %s / h %.1f / line %.1f"):format(
+        PLAIN_PIXEL_CELL_HEIGHT, size, tostring(native or size),
+        font:getHeight(), lineBox), x, y)
       love.graphics.setColor(0.08, 0.09, 0.07, 1)
       love.graphics.setFont(font)
       for lineIndex, sample in ipairs(samples) do

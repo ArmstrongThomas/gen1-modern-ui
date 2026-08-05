@@ -6,7 +6,7 @@ states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.7.6 uses four released hooks plus a narrowly scoped class wrapper and
+Version 0.7.7 uses four released hooks plus a narrowly scoped class wrapper and
 the host's source-safe pointer/input hooks:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
@@ -223,12 +223,13 @@ The readability controls are applied before measurement and layout:
   same responsive viewport policy as `uiScale`.
 - `pixelFont` selects gen1recomp's bundled Plain Pixel face for every one of
   those font roles. This experimental option defaults off. When enabled, it
-  requests monochrome hinting and nearest filtering and snaps the physical
-  glyph raster to the nearest multiple of the face's authored 15-pixel grid.
-  Its broad multilingual font metrics are normalized to the equivalent
-  system-font line box, so translated text keeps its glyph coverage without
-  making panels artificially tall. The system face remains a missing-glyph
-  fallback and replaces Plain Pixel entirely if the engine asset is absent.
+  requests monochrome hinting and nearest filtering. Plain Pixel's artwork
+  uses an 11-row base cell, while its documented 15-point raster steps keep
+  the glyph bitmap undistorted; text origins snap to the physical render grid
+  so fractional responsive panel coordinates do not soften the glyphs. Its
+  multilingual metrics are used directly at that raster size rather than
+  rescaled into a system-font line box. The system face remains a missing-glyph fallback and
+  replaces Plain Pixel entirely if the engine asset is absent.
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
   confirmation prompts.
@@ -370,9 +371,10 @@ New installs start with **Classic Mono**, **PIXEL** framing, and **FRAME 2**.
 The experimental **PIXEL ART FONT** toggle defaults off. When enabled it loads
 gen1recomp's bundled
 `assets/fonts/plainpixel/PlainPixel-Regular.ttf` for every presenter and uses
-nearest filtering. The rasterizer uses the closest physical 15-pixel multiple
-while preserving the requested logical UI size, and line layout uses normalized
-metrics rather than the face's intentionally broad multilingual bounding box.
+nearest filtering. The rasterizer constructs the face directly at the closest
+authored 15-pixel multiple and snaps text origins to the physical render grid.
+Line layout uses the resulting font metrics rather than rescaling the face's
+multilingual bounding box.
 If an older compatible host does not contain that asset, the presenter falls
 back to LÖVE's system font without disabling the UI. The system face also acts
 as a fallback for any glyph outside Plain Pixel's extensive language coverage.
@@ -451,6 +453,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.6 targets released game
+- Do not assume a custom engine build: version 0.7.7 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.
