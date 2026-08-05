@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.7.9 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.8.0 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -163,8 +163,8 @@ when the listing is enabled there.
   speed-up button blurb while text is flowing.
   UI SETTINGS is organized into expandable Appearance, Navigation, Presenters,
   and Advanced categories instead of one long list.
-- Useful Dex and Gen 3 Box presenters with square grids and animated authored
-  art support.
+- Useful Dex, Dex Radar, and Gen 3 Box presenters with responsive encounter
+  rows, square grids, active-palette icons, and animated authored art support.
 - Battle presentation remains explicitly WIP and disabled by default.
 
 ## Compatibility with other mods
@@ -172,10 +172,11 @@ when the listing is enabled there.
 The presenter reads live public menu rows rather than replacing other mods'
 state or callbacks. It currently supports UI surfaces from mods such as
 [Useful Dex](https://github.com/bryanthaboi/gen1recomp/wiki), **Gen 3 Box**, and
-the built-in mod manager, while preserving custom entries added by other
-authors. Sprite replacement packs such as **Gold_Silver_Sprites** are used when
-they are enabled. Unknown or unsupported screens remain vanilla instead of
-being forced through an incorrect layout.
+[Dex Radar](https://github.com/Zetto22/dex_radar), plus the built-in mod
+manager, while preserving custom entries added by other authors. Sprite
+replacement packs such as **Gold_Silver_Sprites** are used when they are
+enabled. Unknown or unsupported screens remain vanilla instead of being forced
+through an incorrect layout.
 
 Mod settings screens built with gen1recomp's public `src.ui.OptionRows`
 contract are also recognized. The current compatibility pass covers
@@ -259,7 +260,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.9.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.8.0.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -275,7 +276,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.7.9`) and push that commit to `main`. Each release includes a commit-based
+`0.8.0`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

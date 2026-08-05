@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.7.9 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.8.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -96,6 +96,11 @@ custom engine checkout or a patched binary.
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay
   vanilla.
+- Dex Radar's stable `DexRadar` screen receives a responsive encounter list
+  with section labels, active-palette icons, unseen silhouettes, ownership,
+  levels, and rates. Dex Radar continues to own encounter collection, cursor
+  wrapping, input repeat, and closing; incomplete future screen models fall
+  back to the native renderer.
 - RBY MMO's public `RbyMmoProfile` and `RbyMmoRank` screens receive semantic
   profile and leaderboard cards. The adapter reads only their stable screen
   IDs and public player/client payloads, so RBY MMO keeps ownership of network

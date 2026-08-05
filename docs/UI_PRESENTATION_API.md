@@ -6,7 +6,7 @@ states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.7.9 uses four released hooks plus a narrowly scoped class wrapper and
+Version 0.8.0 uses four released hooks plus a narrowly scoped class wrapper and
 the host's source-safe pointer/input hooks:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
@@ -157,6 +157,10 @@ The current presenter recognizes these released classes or screen IDs:
   ownership untouched.
 - `QuarantineReport`: reads the prepared recovery lines, offset, and paging
   bound for a content-sized report card.
+- Dex Radar `DexRadar`: reads the public encounter rows, species cursor, map
+  label, ownership totals, and level/rate visibility flags. Dex Radar retains
+  encounter collection, held-input repeat, cursor wrapping, and close behavior;
+  the modern adapter supplies only responsive themed drawing and pointer hover.
 - `OptionsMenu`: reads `state.rows` and current selection.
 - `PartyMenu`: reads the live party, selected index, healing/swap/TM state,
   current stats, moves/PP, and exact injected submenu rows. Class identity is
@@ -455,6 +459,6 @@ theme refreshes its tokens and label without duplicating the option.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.9 targets released game
+- Do not assume a custom engine build: version 0.8.0 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

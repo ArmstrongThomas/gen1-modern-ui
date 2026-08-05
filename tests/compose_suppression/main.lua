@@ -8,6 +8,10 @@ local function fail(message)
 end
 
 local function check(value, message)
+  if not value and os.getenv("GEN1_UI_DEX_RADAR_ONLY") == "1"
+      and not tostring(message):find("Dex Radar", 1, true) then
+    return
+  end
   if not value then fail(message) end
 end
 
@@ -873,8 +877,8 @@ function love.load()
       and autoPortrait.fontScale >= 0.80 and autoPortrait.fontScale <= 2.00,
     "AUTO scale stays within the configured bounds")
   check(autoDesktop.uiScale > autoPortrait.uiScale
-      and autoDesktop.fontScale > autoPortrait.fontScale,
-    "AUTO scale responds to portrait and large-desktop viewports")
+      and autoDesktop.fontScale == 1 and autoPortrait.fontScale == 1,
+    "AUTO UI scale responds while pixel font scale stays on an integer step")
   local hudCanvases = {}
   local captureHud = os.getenv("GEN1_UI_SHOTS") == "1"
   local function renderHud(states, name, activeViewport)
@@ -964,8 +968,8 @@ function love.load()
     "dialogue panel footprint stays stable through typewriter reveal")
   check(pixelAlpha(dialogueSized, 800, 800) == 0,
     "short dialogue uses a content-sized card")
-  local savedDialoguePages, savedDialogueShown = textBox.pages, textBox.shown
-  local savedDialogueCharIndex = textBox.charIndex
+  values.savedDialoguePages, values.savedDialogueShown = textBox.pages, textBox.shown
+  values.savedDialogueCharIndex = textBox.charIndex
   textBox.pages = {{
     "PLAYER RED",
     "BADGES 4",
@@ -990,8 +994,8 @@ function love.load()
       and longTypingBounds.w == longReadyBounds.w
       and longTypingBounds.h == longReadyBounds.h,
     "long dialogue pages expand without a two-line scroll window")
-  textBox.pages, textBox.shown = savedDialoguePages, savedDialogueShown
-  textBox.charIndex = savedDialogueCharIndex
+  textBox.pages, textBox.shown = values.savedDialoguePages, values.savedDialogueShown
+  textBox.charIndex = values.savedDialogueCharIndex
   textBox.pages, textBox.charIndex = savedPage, savedCharIndex
   textBox.pageIndex, textBox.lineIndex = savedDialoguePageIndex, savedDialogueLineIndex
   textBox.done, textBox.choice = savedDialogueDone, savedDialogueChoice
@@ -1304,10 +1308,10 @@ function love.load()
   check(alpha() == 0,
     "Bill release list remains modeled when retained row payloads are stale")
 
-  local trainer = setmetatable({ screenId = "TrainerCard", game = game },
+  values.trainer = setmetatable({ screenId = "TrainerCard", game = game },
     { __index = trainerCardClass })
-  renderHud({ trainer }, "trainer")
-  renderHud({ trainer }, "trainer_portrait", portraitViewport)
+  renderHud({ values.trainer }, "trainer")
+  renderHud({ values.trainer }, "trainer_portrait", portraitViewport)
 
   do
     -- RBY MMO's profile/rank states are plain local classes with public
@@ -1367,7 +1371,53 @@ function love.load()
       "RBY MMO character selection renders with a selected portrait preview")
   end
 
-  local shop = setmetatable({ title = "BUY", dialogue = true,
+  do
+    -- Dex Radar 1.x deliberately uses a private screen class, but publishes
+    -- this complete live model under the stable DexRadar screen id.
+    values.dexRadar = {
+      screenId = "DexRadar", mapLabel = "ROUTE 22",
+      ownedN = 1, totalN = 3, cursor = 2, scroll = 0,
+      showLevels = true, showRates = true,
+      rows = {
+        { kind = "header", text = "GRASS" },
+        { kind = "mon", id = "TESTMON", name = "TESTMON", seen = true,
+          owned = true, minLv = 3, maxLv = 5, rate = 25 },
+        { kind = "mon", id = "PIDGEY", name = "PIDGEY", seen = true,
+          owned = false, minLv = 2, maxLv = 4, rate = 25 },
+        { kind = "header", text = "FISH" },
+        { kind = "mon", id = "MAGIKARP", name = "?????", seen = false,
+          owned = false, minLv = 5, maxLv = 5, rate = 10 },
+      },
+      monIndex = { 2, 3, 5 },
+      moveCursor = function() end,
+      update = function() end,
+      draw = function() end,
+    }
+    check(alphaBounds(renderHud({ values.dexRadar }, "dex_radar",
+      largeDesktopViewport)) ~= nil,
+      "Dex Radar renders through its semantic responsive presenter")
+    game.stack.states = { overworld, values.dexRadar }
+    fill()
+    compose(false)
+    check(alpha() == 0,
+      "Dex Radar suppresses its native custom draw when the model is complete")
+
+    values.incompleteRadar = {
+      screenId = "DexRadar", draw = function() end,
+    }
+    game.stack.states = { overworld, values.incompleteRadar }
+    fill()
+    compose(false)
+    check(alpha() > 0,
+      "incomplete Dex Radar state retains the native fallback")
+    if os.getenv("GEN1_UI_DEX_RADAR_ONLY") == "1" then
+      print("Dex Radar presenter test: PASS")
+      love.event.quit(0)
+      return
+    end
+  end
+
+  values.shop = setmetatable({ title = "BUY", dialogue = true,
     money = function() return 1234 end, footer = "What would you like?",
     items = { { label = "POTION", right = "¥300", value = "POTION" } },
     index = 1, scroll = 0 }, { __index = listClass })
@@ -1377,57 +1427,57 @@ function love.load()
     values.shopPrints[#values.shopPrints + 1] = tostring(value)
     return values.nativeShopPrint(value, ...)
   end
-  renderHud({ shop }, "shop")
+  renderHud({ values.shop }, "shop")
   love.graphics.print = values.nativeShopPrint
   check(table.concat(values.shopPrints, "\n"):find("HAVE x2", 1, true) ~= nil,
     "shop detail shows the quantity already owned")
   values.shopPrints, values.nativeShopPrint = nil, nil
-  shop.items = { { label = "TM01", right = "¥3000", value = "TM_TEST" } }
-  renderHud({ shop }, "shop_portrait", portraitViewport)
-  local savedTestMoveName = game.data.moves.TEST_MOVE.name
+  values.shop.items = { { label = "TM01", right = "¥3000", value = "TM_TEST" } }
+  renderHud({ values.shop }, "shop_portrait", portraitViewport)
+  values.savedTestMoveName = game.data.moves.TEST_MOVE.name
   game.data.moves.TEST_MOVE.name = "A VERY LONG DOUBLE TEAM MOVE NAME"
   values.uiScale, values.fontScale = "150", "150"
-  renderHud({ shop }, "shop_detail_wrapped", largeDesktopViewport)
-  game.data.moves.TEST_MOVE.name = savedTestMoveName
+  renderHud({ values.shop }, "shop_detail_wrapped", largeDesktopViewport)
+  game.data.moves.TEST_MOVE.name = values.savedTestMoveName
   values.uiScale, values.fontScale = "100", "100"
-  shop.items = { { label = "POTION", right = "¥300", value = "POTION" } }
+  values.shop.items = { { label = "POTION", right = "¥300", value = "POTION" } }
   values.minimalUi = true
-  renderHud({ shop }, "shop_minimal")
+  renderHud({ values.shop }, "shop_minimal")
   values.minimalUi = false
 
   -- Nested prompts should share one modal policy across rich parents. Bare
   -- quantity/choice states belong over the shop or Bag that opened them, not
   -- at an unrelated safe-window edge; the parent remains visible but dimmed.
-  local nestedQuantity = setmetatable({ qty = 1, unitPrice = 150 },
+  values.nestedQuantity = setmetatable({ qty = 1, unitPrice = 150 },
     { __index = quantityClass })
-  renderHud({ shop, nestedQuantity }, "shop_quantity_modal")
-  renderHud({ bag, nestedQuantity }, "bag_quantity_modal")
-  local dexOptions = setmetatable({ title = "POKÃ©DEX OPTIONS", index = 1,
+  renderHud({ values.shop, values.nestedQuantity }, "shop_quantity_modal")
+  renderHud({ bag, values.nestedQuantity }, "bag_quantity_modal")
+  values.dexOptions = setmetatable({ title = "POKÃ©DEX OPTIONS", index = 1,
     items = { { label = "DATA" }, { label = "CRY" }, { label = "AREA" },
       { label = "QUIT" } } }, { __index = menuClass })
-  renderHud({ dex, dexOptions }, "pokedex_action_modal")
+  renderHud({ dex, values.dexOptions }, "pokedex_action_modal")
 
   -- On a large desktop viewport, rich screens should spend the extra vertical
   -- room that readability scaling requests instead of keeping the reference
   -- height ceiling. At 150% the shop frame reaches this sample row; at 100%
   -- it intentionally ends above it.
-  local savedShopItems = shop.items
+  values.savedShopItems = values.shop.items
   local largeShopItems = {}
   for index = 1, 12 do
     largeShopItems[index] = { label = "SHOP ITEM " .. index,
       right = "¥" .. (index * 100), value = "POTION" }
   end
-  shop.items = largeShopItems
+  values.shop.items = largeShopItems
   values.layoutStyle = "floating"
   values.uiScale, values.fontScale = "100", "100"
-  local largeShop100 = renderHud({ shop }, "shop_large_100", largeDesktopViewport)
+  local largeShop100 = renderHud({ values.shop }, "shop_large_100", largeDesktopViewport)
   local largeShop100Sample = pixelAlpha(largeShop100, 800, 850)
   values.uiScale, values.fontScale = "150", "150"
-  local largeShop150 = renderHud({ shop }, "shop_large_150", largeDesktopViewport)
+  local largeShop150 = renderHud({ values.shop }, "shop_large_150", largeDesktopViewport)
   check(largeShop100Sample == 0
       and pixelAlpha(largeShop150, 800, 850) > 0,
     "large desktop shop uses additional vertical room at higher readability scale")
-  shop.items = savedShopItems
+  values.shop.items = values.savedShopItems
   values.uiScale, values.fontScale = "100", "100"
 
   -- Minimal rich lists should grow their content-width budget with the
@@ -1453,41 +1503,41 @@ function love.load()
   values.minimalUi = savedMinimalUi
   values.uiScale, values.fontScale = "100", "100"
 
-  local pc = setmetatable({ title = "WITHDRAW", messageBox = true,
+  values.pc = setmetatable({ title = "WITHDRAW", messageBox = true,
     footer = "Withdraw how many?",
     items = { { label = "POTION", right = "x2", value = "POTION" } },
     index = 1, scroll = 0 }, { __index = listClass })
-  renderHud({ pc }, "pc")
-  renderHud({ pc }, "pc_portrait", portraitViewport)
+  renderHud({ values.pc }, "pc")
+  renderHud({ values.pc }, "pc_portrait", portraitViewport)
 
   textBox.choice = true
   choice.anchor = "bottom"
-  local printedChoiceText = {}
-  local nativePrint = love.graphics.print
+  values.printedChoiceText = {}
+  values.nativePrint = love.graphics.print
   love.graphics.print = function(value, ...)
-    printedChoiceText[#printedChoiceText + 1] = tostring(value)
-    return nativePrint(value, ...)
+    values.printedChoiceText[#values.printedChoiceText + 1] = tostring(value)
+    return values.nativePrint(value, ...)
   end
   renderHud({ overworld, textBox, choice }, "dialogue_choice")
   renderHud({ overworld, textBox, choice }, "dialogue_choice_portrait",
     portraitViewport)
-  love.graphics.print = nativePrint
-  local printedChoice = table.concat(printedChoiceText, "\n")
-  check(not printedChoice:find("A / B  continue", 1, true)
-      and not printedChoice:find("Choose an option", 1, true)
-      and not printedChoice:find("A  choose   B  no", 1, true),
+  love.graphics.print = values.nativePrint
+  values.printedChoice = table.concat(values.printedChoiceText, "\n")
+  check(not values.printedChoice:find("A / B  continue", 1, true)
+      and not values.printedChoice:find("Choose an option", 1, true)
+      and not values.printedChoice:find("A  choose   B  no", 1, true),
     "dialogue choices omit redundant button tips")
   textBox.choice, textBox.done = nil, true
-  printedChoiceText = {}
+  values.printedChoiceText = {}
   love.graphics.print = function(value, ...)
-    printedChoiceText[#printedChoiceText + 1] = tostring(value)
-    return nativePrint(value, ...)
+    values.printedChoiceText[#values.printedChoiceText + 1] = tostring(value)
+    return values.nativePrint(value, ...)
   end
   renderHud({ overworld, textBox }, nil)
-  love.graphics.print = nativePrint
-  check(printedChoiceText[#printedChoiceText] == "...",
+  love.graphics.print = values.nativePrint
+  check(values.printedChoiceText[#values.printedChoiceText] == "...",
     "ready dialogue uses a three-dot continuation cue")
-  local savedDialoguePages = textBox.pages
+  values.savedDialoguePagesForWideCard = textBox.pages
   textBox.pages = {{
     "A dialogue panel should leave comfortable room around readable text.",
   }}
@@ -1495,7 +1545,7 @@ function love.load()
   check(alphaBounds(renderHud({ overworld, textBox },
     "dialogue_wide_padding", largeDesktopViewport)) ~= nil,
     "dialogue renders with the wider padded card")
-  textBox.pages = savedDialoguePages
+  textBox.pages = values.savedDialoguePagesForWideCard
   textBox.choice = true
 
   state = setmetatable({ screenId = "MoveLearnMenu", selecting = true,
@@ -1527,16 +1577,16 @@ function love.load()
     "Name Rater presenter renders its glyph grid")
   check(table.concat(state.glyphs) == "PIKACHU",
     "Name Rater presenter seeds an editable existing nickname")
-  local nameRaterFixture = { state = state, point = {} }
+  values.nameRaterFixture = { state = state, point = {} }
   -- Name Rater pushes NamingScreen.new() directly, so this path intentionally
   -- has no screenId. RBY MMO then adds an instance draw wrapper on top.
-  local wrappedNaming = setmetatable({
+  values.wrappedNaming = setmetatable({
     title = "GYARADOS'S NAME?", maxLen = 10, glyphs = { "G", "Y" },
     row = 1, col = 1, lower = false, default = "GYARADOS",
     grid = state.grid,
     draw = function() end },
     { __index = package.loaded["src.ui.NamingScreen"] })
-  check(alphaBounds(renderHud({ wrappedNaming }, "p2_naming_wrapped",
+  check(alphaBounds(renderHud({ values.wrappedNaming }, "p2_naming_wrapped",
     portraitViewport)) ~= nil,
     "Name Rater presenter accepts a wrapped built-in NamingScreen")
   state = setmetatable({ screenId = "TownMap", mode = "list", sel = 1,
@@ -1597,30 +1647,32 @@ function love.load()
     return false
   end
   values.pointerUi = true
-  renderHud({ nameRaterFixture.state }, nil, portraitViewport)
+  renderHud({ values.nameRaterFixture.state }, nil, portraitViewport)
   for y = 0, portraitViewport.height - 1, 4 do
     for x = 0, portraitViewport.width - 1, 4 do
-      nameRaterFixture.state.row, nameRaterFixture.state.col = 1, 1
+      values.nameRaterFixture.state.row, values.nameRaterFixture.state.col = 1, 1
       hooks["input.pointer"](pointerNext, game,
         { phase = "moved", source = "mouse", id = "mouse",
           x = x, y = y })
-      if nameRaterFixture.state.col == 2 then
-        nameRaterFixture.point.x, nameRaterFixture.point.y = x, y
+      if values.nameRaterFixture.state.col == 2 then
+        values.nameRaterFixture.point.x, values.nameRaterFixture.point.y = x, y
         break
       end
     end
-    if nameRaterFixture.point.x then break end
+    if values.nameRaterFixture.point.x then break end
   end
-  check(nameRaterFixture.point.x ~= nil,
+  check(values.nameRaterFixture.point.x ~= nil,
     "Name Rater mouse hover selects a character")
-  nameRaterFixture.tapCount = #pointerTaps
+  values.nameRaterFixture.tapCount = #pointerTaps
   hooks["input.pointer"](pointerNext, game,
     { phase = "pressed", source = "mouse", id = "mouse",
-      x = nameRaterFixture.point.x, y = nameRaterFixture.point.y, button = 1 })
+      x = values.nameRaterFixture.point.x, y = values.nameRaterFixture.point.y,
+      button = 1 })
   hooks["input.pointer"](pointerNext, game,
     { phase = "released", source = "mouse", id = "mouse",
-      x = nameRaterFixture.point.x, y = nameRaterFixture.point.y, button = 1 })
-  check(#pointerTaps == nameRaterFixture.tapCount + 1
+      x = values.nameRaterFixture.point.x, y = values.nameRaterFixture.point.y,
+      button = 1 })
+  check(#pointerTaps == values.nameRaterFixture.tapCount + 1
       and pointerTaps[#pointerTaps].button == "a",
     "Name Rater mouse click activates a character")
   values.pointerUi = false

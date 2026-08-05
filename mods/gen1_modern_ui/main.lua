@@ -1855,6 +1855,10 @@ return function(mod)
   -- remains the released renderer, so they do not disable every menu layered
   -- over the overworld.
   local overworldClass = optionalClass("src.world.OverworldController")
+  runtimeClasses.overworldDraw = overworldClass
+    and rawget(overworldClass, "draw") or nil
+  runtimeClasses.overworldDrawUI = overworldClass
+    and rawget(overworldClass, "drawUI") or nil
 
   local function isTitleState(state)
     if not (state and titleClass) then return false end
@@ -2546,6 +2550,15 @@ return function(mod)
     if isRbyMmoProfileState(state) then return "rby_mmo_profile" end
     if isRbyMmoRankState(state) then return "rby_mmo_rank" end
     if isRbyMmoCharacterPickState(state) then return "rby_mmo_char_pick" end
+    -- Dex Radar 1.x publishes a stable screen id and keeps its complete
+    -- presentation model on the screen instance.  Treat that public shape as
+    -- the compatibility seam so the foreign screen can retain update/input
+    -- ownership while this mod replaces only its 160x144 draw pass.
+    if id == "DexRadar" and type(state.rows) == "table"
+        and type(state.monIndex) == "table" and type(state.cursor) == "number"
+        and type(state.mapLabel) == "string" then
+      return "dex_radar"
+    end
     if isLinkState(state) then return "link" end
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
@@ -2648,8 +2661,13 @@ return function(mod)
     if kind == "gen3_box" and isGen3Box(state) then return true end
     if kind == "dex_entry" and isUsefulDexEntry(state) then return true end
     if kind == "naming" and isNamingState(state) then return true end
+    if kind == "dex_radar" and state.screenId == "DexRadar" then return true end
     if kind == "rby_mmo_profile" or kind == "rby_mmo_rank"
         or kind == "rby_mmo_char_pick" then return true end
+    if kind == "options" and state._gen1ModernOptionsMenu == true
+        and type(state._gen1ModernOptionsNativeDraw) == "function" then
+      return true
+    end
     if kind == "box_root" and isBoxRoot(state) then return true end
     if kind == "menu" and state._gen1ModernTitleMenu == true
         and rawget(state, "draw") == state._gen1ModernTitleDraw then return true end
@@ -2944,7 +2962,7 @@ return function(mod)
         end
         if overworldClass then
           if visible ~= overworldClass
-              or rawget(visible, "draw") ~= rawget(overworldClass, "draw")
+              or rawget(visible, "draw") ~= runtimeClasses.overworldDraw
               or type(rawget(visible, "drawUI")) ~= "function" then
             return {}, false
           end
@@ -6731,6 +6749,229 @@ return function(mod)
     love.graphics.pop()
   end
 
+  -- Dex Radar keeps the live encounter model and all navigation behavior on
+  -- its screen object.  This presenter intentionally consumes only those
+  -- public fields; the source mod remains responsible for collection,
+  -- cursor wrapping, held-direction repeat, and closing the screen.
+  function mod._gen1ModernSpecialPresenters.drawDexRadar(
+      game, state, viewport, theme)
+    local x, y, w, h = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local gutter = spacing.lg
+    local landscape = w > h * 1.08
+    local panelW = panelWidthFor(viewport, w - gutter * 2,
+      panelMaxWidth(theme, 760))
+    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
+    local headerH = textHeight(titleFont) + textHeight(captionFont)
+      + spacing.lg + spacing.sm
+    local footerH = textHeight(captionFont) + spacing.lg
+    local sectionH = math.max(textHeight(captionFont) + spacing.sm,
+      spacing.lg + themeMetric(theme, "divider", 1))
+    local rowH = math.max(minimumRowHeight(theme),
+      textHeight(bodyFont) + textHeight(captionFont) + spacing.md)
+
+    local function radarRowHeight(row)
+      return row and row.kind == "header" and sectionH or rowH
+    end
+
+    local totalListH = 0
+    for _, row in ipairs(state.rows or {}) do
+      totalListH = totalListH + radarRowHeight(row)
+    end
+    if totalListH <= 0 then
+      totalListH = textHeight(bodyFont) * 2 + spacing.xl
+    end
+    local maxPanelH = math.min(h - gutter * 2,
+      scaledPanelHeight(theme, landscape, 620, 760))
+    local maxListH = math.max(rowH,
+      maxPanelH - headerH - footerH)
+    local desiredListH = math.min(totalListH, maxListH)
+    local panelH = math.min(h - gutter * 2,
+      headerH + footerH + desiredListH)
+    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local listY = py + headerH
+    local listH = math.max(1, panelH - headerH - footerH)
+    local selectedCursor = clamp(math.floor(tonumber(state.cursor) or 1),
+      1, math.max(1, #(state.monIndex or {})))
+    local selectedRaw = state.monIndex and state.monIndex[selectedCursor]
+    local cursorByRaw = {}
+    for cursor, rawIndex in ipairs(state.monIndex or {}) do
+      cursorByRaw[rawIndex] = cursor
+    end
+
+    -- Build a content-height window around the selected species. Section
+    -- labels have a smaller height than encounter rows, so an ordinary
+    -- row-count scroll would either clip labels or waste room at some scales.
+    local firstRow, lastRow = 1, #(state.rows or {})
+    local usedH = totalListH
+    if totalListH > listH and selectedRaw then
+      firstRow, lastRow = selectedRaw, selectedRaw
+      usedH = radarRowHeight(state.rows[selectedRaw])
+      while firstRow > 1 do
+        local candidateH = radarRowHeight(state.rows[firstRow - 1])
+        if usedH + candidateH > listH * 0.55 then break end
+        firstRow = firstRow - 1
+        usedH = usedH + candidateH
+      end
+      while lastRow < #state.rows do
+        local candidateH = radarRowHeight(state.rows[lastRow + 1])
+        if usedH + candidateH > listH then break end
+        lastRow = lastRow + 1
+        usedH = usedH + candidateH
+      end
+      while firstRow > 1 do
+        local candidateH = radarRowHeight(state.rows[firstRow - 1])
+        if usedH + candidateH > listH then break end
+        firstRow = firstRow - 1
+        usedH = usedH + candidateH
+      end
+    end
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    drawPresenterBackdrop(theme, viewport)
+    setColor(colors.surface)
+    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
+    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+
+    setColor(colors.text)
+    love.graphics.setFont(titleFont)
+    drawFittedText("DEX RADAR", px + spacing.lg, py + spacing.md,
+      panelW * 0.62, titleFont)
+    local ownedLabel = ("%d/%d OWNED"):format(
+      tonumber(state.ownedN) or 0, tonumber(state.totalN) or 0)
+    love.graphics.setFont(captionFont)
+    local ownedW = captionFont:getWidth(ownedLabel)
+    setColor(colors.accent)
+    drawText(ownedLabel, px + panelW - spacing.lg - ownedW,
+      py + spacing.md + math.max(0,
+        (textHeight(titleFont) - textHeight(captionFont)) / 2))
+    setColor(colors.textMuted)
+    drawFittedText(safeText(state.mapLabel):upper(), px + spacing.lg,
+      py + spacing.md + textHeight(titleFont) + spacing.xs,
+      panelW - spacing.lg * 2, captionFont)
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      listY - spacing.xs, panelW - spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
+
+    if #(state.monIndex or {}) == 0 then
+      setColor(colors.surfaceRaised)
+      love.graphics.rectangle("fill", px + spacing.lg,
+        listY + spacing.sm, panelW - spacing.lg * 2,
+        math.max(1, listH - spacing.md), theme.radii.md)
+      setColor(colors.text)
+      love.graphics.setFont(bodyFont)
+      local empty = "NO WILD POKEMON"
+      drawText(empty, px + (panelW - bodyFont:getWidth(empty)) / 2,
+        listY + (listH - textHeight(bodyFont)) / 2)
+    else
+      love.graphics.setScissor(px, listY, panelW, listH)
+      local rowY = listY + math.max(0, (listH - usedH) / 2)
+      for rawIndex = firstRow, lastRow do
+        local row = state.rows[rawIndex]
+        local height = radarRowHeight(row)
+        if row and row.kind == "header" then
+          setColor(colors.accent)
+          love.graphics.setFont(captionFont)
+          drawFittedText(safeText(row.text or row.label):upper(),
+            px + spacing.lg, rowY + (height - textHeight(captionFont)) / 2,
+            panelW - spacing.lg * 2, captionFont)
+          setColor(colors.divider)
+          love.graphics.rectangle("fill", px + spacing.lg,
+            rowY + height - themeMetric(theme, "divider", 1),
+            panelW - spacing.lg * 2, themeMetric(theme, "divider", 1))
+        elseif row then
+          local cursorIndex = cursorByRaw[rawIndex]
+          local selected = cursorIndex == selectedCursor
+          local rowX = px + spacing.sm
+          local rowW = panelW - spacing.sm * 2
+          registerPointerRegion(rowX, rowY + 2, rowW, height - 4, {
+            selectionField = "cursor", selectionIndex = cursorIndex,
+            rowCount = #(state.monIndex or {}), interactive = cursorIndex ~= nil,
+            activate = false, dragHandle = false,
+          })
+          setColor(selected and colors.selected or colors.surfaceRaised)
+          love.graphics.rectangle("fill", rowX, rowY + 2, rowW,
+            height - 4, theme.radii.sm)
+
+          local iconSize = math.max(20, math.min(42, height - spacing.sm * 2))
+          local iconX = px + spacing.lg
+          local iconY = rowY + (height - iconSize) / 2
+          local encounterIcon = row.id and iconFor(game, { species = row.id })
+          if encounterIcon then
+            local iw, ih = imageMetrics(encounterIcon)
+            if iw and ih then
+              local scale = math.min(iconSize / iw, iconSize / ih)
+              setColor(row.seen and { 1, 1, 1, 1 } or { 0, 0, 0, 1 })
+              drawImage(encounterIcon,
+                iconX + (iconSize - iw * scale) / 2,
+                iconY + (iconSize - ih * scale) / 2, 0, scale, scale)
+            end
+          else
+            setColor(colors.divider)
+            love.graphics.rectangle("line", iconX, iconY, iconSize, iconSize,
+              theme.radii.sm)
+          end
+
+          local textX = iconX + iconSize + spacing.md
+          local rightEdge = px + panelW - spacing.lg
+          local ownedText = row.owned and row.seen and "OWNED" or ""
+          love.graphics.setFont(captionFont)
+          local ownedTextW = captionFont:getWidth(ownedText)
+          setColor(colors.text)
+          love.graphics.setFont(bodyFont)
+          drawFittedText(safeText(row.name or (row.seen and row.id) or "?????"),
+            textX, rowY + spacing.sm,
+            math.max(24, rightEdge - textX - ownedTextW - spacing.md), bodyFont)
+          if ownedText ~= "" then
+            setColor(colors.accent)
+            love.graphics.setFont(captionFont)
+            drawText(ownedText, rightEdge - ownedTextW,
+              rowY + spacing.sm + math.max(0,
+                (textHeight(bodyFont) - textHeight(captionFont)) / 2))
+          end
+
+          if row.seen then
+            local details = {}
+            if state.showLevels ~= false and row.minLv ~= nil then
+              local minLv = tonumber(row.minLv) or row.minLv
+              local maxLv = tonumber(row.maxLv) or minLv
+              details[#details + 1] = minLv == maxLv
+                and ("Lv " .. safeText(minLv))
+                or ("Lv " .. safeText(minLv) .. "-" .. safeText(maxLv))
+            end
+            if state.showRates ~= false and row.rate ~= nil then
+              details[#details + 1] = "RATE " .. safeText(row.rate)
+            end
+            setColor(colors.textMuted)
+            love.graphics.setFont(captionFont)
+            drawFittedText(table.concat(details, "   "), textX,
+              rowY + height - spacing.sm - textHeight(captionFont),
+              math.max(24, rightEdge - textX), captionFont)
+          end
+        end
+        rowY = rowY + height
+      end
+      love.graphics.setScissor()
+    end
+
+    setColor(colors.divider)
+    love.graphics.rectangle("fill", px + spacing.lg,
+      py + panelH - footerH, panelW - spacing.lg * 2,
+      themeMetric(theme, "divider", 1))
+    setColor(colors.textMuted)
+    drawHintIfUseful(theme,
+      "UP/DOWN  choose   LEFT/RIGHT  jump   B  back",
+      px + spacing.lg, py + panelH - footerH + spacing.xs,
+      panelW - spacing.lg * 2)
+    love.graphics.pop()
+  end
+
   mod._gen1ModernSpecialPresenters.namingGridUpper = {
     { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
     { "J", "K", "L", "M", "N", "O", "P", "Q", "R" },
@@ -7962,6 +8203,11 @@ return function(mod)
         game, state, viewport, theme)
       return
     end
+    if kind == "dex_radar" then
+      mod._gen1ModernSpecialPresenters.drawDexRadar(
+        game, state, viewport, theme)
+      return
+    end
     if asModal or kind == "choice" or kind == "quantity" then
       drawModalRows(game, state, kind, viewport, theme, underKind, underState)
       return
@@ -8123,6 +8369,8 @@ return function(mod)
       end
     elseif kind == "rby_mmo_rank" then
       add("up"); add("down")
+    elseif kind == "dex_radar" then
+      add("up"); add("down"); add("left"); add("right")
     end
 
     if state.pageJump then add("left"); add("right") end
