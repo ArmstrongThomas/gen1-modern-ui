@@ -11,6 +11,26 @@ local function check(value, message)
   if not value then fail(message) end
 end
 
+local PLAIN_PIXEL_VIRTUAL =
+  "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
+
+local function stagePlainPixelHostAsset()
+  love.filesystem.remove(PLAIN_PIXEL_VIRTUAL)
+  local source = os.getenv("GEN1_UI_PLAIN_PIXEL_FONT")
+  if not source or source == "" then return end
+  local input, openError = io.open(source, "rb")
+  check(input, openError)
+  local bytes = input:read("*a")
+  input:close()
+  check(bytes and #bytes > 0, "Plain Pixel host asset is not empty")
+  check(love.filesystem.createDirectory("assets/fonts/plainpixel"),
+    "Plain Pixel staging directory is writable")
+  local wrote, writeError = love.filesystem.write(PLAIN_PIXEL_VIRTUAL, bytes)
+  check(wrote, writeError)
+  check(love.filesystem.getInfo(PLAIN_PIXEL_VIRTUAL, "file"),
+    "Plain Pixel host asset is readable at the production path")
+end
+
 function love.errorhandler(message)
   io.stderr:write(tostring(message), "\n", debug.traceback(), "\n")
   os.exit(1)
@@ -32,11 +52,15 @@ function love.load()
         "mounted " .. name .. " is readable")
     end
   end
-
+  -- gen1recomp owns Plain Pixel rather than the mod archive. CI and local
+  -- probes can mount the host asset at its production virtual path so the
+  -- real font rasterization and multilingual glyph coverage are exercised.
+  stagePlainPixelHostAsset()
   local hooks = {}
   local eventListeners = {}
   local values = {}
   local savedPins = {}
+  local pointerTaps = {}
   local schemas = {}
   local modAssetLoads = 0
   local menuDraws = 0
@@ -106,6 +130,19 @@ function love.load()
       end,
       get = function(_, key) return values[key] end,
     },
+    input = {
+      tap = function(_, targetGame, button)
+        pointerTaps[#pointerTaps + 1] = { game = targetGame, button = button }
+        local input = targetGame and targetGame.input
+        if input and type(input.sourcePress) == "function"
+            and type(input.sourceRelease) == "function" then
+          local source = "test:mod.tap:" .. tostring(#pointerTaps)
+          input:sourcePress(button, source)
+          input:sourceRelease(button, source)
+        end
+        return true
+      end,
+    },
     ui = {
       Menu = menuClass, ListMenu = listClass,
       ChoiceBox = choiceClass, QuantityBox = quantityClass,
@@ -136,25 +173,34 @@ function love.load()
   check(type(installer) == "function", "entry must return an installer")
   installer(mod)
 
-  local themeRow, frameStyleRow, frameScaleRow
+  local themeRow, frameStyleRow, frameAssetRow, frameScaleRow, pixelFontRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
       if row.key == "theme" then themeRow = row end
       if row.key == "frameStyle" then frameStyleRow = row end
+      if row.key == "frameAsset" then frameAssetRow = row end
       if row.key == "frameScale" then frameScaleRow = row end
+      if row.key == "pixelFont" then pixelFontRow = row end
     end
   end
   check(themeRow and type(themeRow.choices) == "table", "theme choices registered")
+  check(themeRow.default == "gen1_modern_ui:classic_mono",
+    "Classic Mono is the first-run theme")
   check(frameStyleRow and #frameStyleRow.choices == 4
       and frameStyleRow.choices[1][2] == "theme"
       and frameStyleRow.choices[4][2] == "plain"
-      and frameStyleRow.default == "theme",
+      and frameStyleRow.default == "pixel",
     "frame style exposes theme, pixel, soft, and plain treatments")
+  check(frameAssetRow and #frameAssetRow.choices == 3
+      and frameAssetRow.default == "2",
+    "pixel frame 2 is the first-run authored frame")
   check(frameScaleRow and #frameScaleRow.choices == 4
       and frameScaleRow.choices[1][2] == "1"
       and frameScaleRow.choices[4][2] == "4"
       and frameScaleRow.default == "2",
     "pixel frame scale exposes whole-number 1X through 4X choices")
+  check(pixelFontRow and pixelFontRow.default == true,
+    "the bundled pixel-art font is enabled by default")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -573,17 +619,54 @@ function love.load()
   local choice = setmetatable({ index = 1 }, { __index = choiceClass })
   local choiceNavigationState = setmetatable({ index = 1 },
     { __index = choiceClass })
-  local choiceNavigationInput = { pressQueue = { "left" } }
+  local choiceNavigationInput = {
+    pressQueue = { "left" }, state = { left = false, right = false,
+      up = false, down = false }, sources = {},
+  }
+  function choiceNavigationInput:sourcePress(button, source)
+    self.sources[button] = self.sources[button] or {}
+    self.sources[button][source] = true
+    self.state[button] = true
+    self.pressQueue[#self.pressQueue + 1] = button
+  end
+  function choiceNavigationInput:sourceRelease(button, source)
+    self.sources[button][source] = nil
+    self.state[button] = false
+  end
+  function choiceNavigationInput:step()
+    for _, button in ipairs(self.pressQueue) do
+      local sources = self.sources[button]
+      if sources == nil then
+        self.state[button] = true
+      elseif next(sources) ~= nil then
+        self.state[button] = true
+      end
+    end
+    for button, sources in pairs(self.sources) do
+      if next(sources) == nil then self.sources[button] = nil end
+    end
+    self.pressQueue = {}
+  end
   local choiceNavigationGame = { input = choiceNavigationInput, stack = {
     top = function() return choiceNavigationState end,
   } }
-  hooks["input.step"](function() end, choiceNavigationGame, 0)
-  check(choiceNavigationInput.pressQueue[1] == "up",
-    "horizontal LEFT maps to YES/NO up navigation")
+  local choiceTapStart = #pointerTaps
+  hooks["input.step"](function() choiceNavigationInput:step() end,
+    choiceNavigationGame, 0)
+  check(#choiceNavigationInput.pressQueue == 0
+      and #pointerTaps == choiceTapStart + 1
+      and pointerTaps[#pointerTaps].button == "up"
+      and choiceNavigationInput.state.up == false,
+    "horizontal LEFT becomes a source-safe YES/NO up tap")
   choiceNavigationInput.pressQueue = { "right" }
-  hooks["input.step"](function() end, choiceNavigationGame, 0)
-  check(choiceNavigationInput.pressQueue[1] == "down",
-    "horizontal RIGHT maps to YES/NO down navigation")
+  hooks["input.step"](function() choiceNavigationInput:step() end,
+    choiceNavigationGame, 0)
+  check(#choiceNavigationInput.pressQueue == 0
+      and #pointerTaps == choiceTapStart + 2
+      and pointerTaps[#pointerTaps].button == "down"
+      and choiceNavigationInput.state.down == false,
+    "horizontal RIGHT does not leave DOWN held after YES/NO navigation")
+  while #pointerTaps > choiceTapStart do table.remove(pointerTaps) end
   game.stack.states = { bag, choice }
   fill()
   compose(false)
@@ -774,14 +857,15 @@ function love.load()
     values.panelOpacity, values.foregroundOpacity = 100, 100
     renderHud({ bag }, "theme_full_" .. themeChoice[2]:gsub(":", "_"), mobileLandscapeViewport)
   end
-  values.theme = "default"
+  values.theme = themeRow.default
   for _, style in ipairs({ "theme", "pixel", "soft", "plain" }) do
     values.frameStyle = style
     renderHud({ bag }, "frame_" .. style, mobileLandscapeViewport)
   end
   check(modAssetLoads > 0,
     "theme-owned pixel frame loads through the mod asset helper")
-  values.frameStyle = "theme"
+  values.frameStyle = frameStyleRow.default
+  values.frameAsset = frameAssetRow.default
   local opaqueBag = setmetatable({ screenId = "BagMenu", items = {}, index = 1,
     isOpaque = true }, { __index = listClass })
   game.stack.states = { overworld, opaqueBag }
@@ -1180,10 +1264,374 @@ function love.load()
       and not printedChoice:find("A  choose   B  no", 1, true),
     "dialogue choices omit redundant button tips")
 
+  local pointerItems = {}
+  for index = 1, 12 do
+    pointerItems[index] = { label = "POINTER ITEM " .. index,
+      right = "x" .. index, value = "POTION" }
+  end
+  bag.items = pointerItems
+  bag.index, bag.scroll = 1, 0
+  values.uiScale, values.fontScale = "100", "100"
+  values.pointerUi, values.dragPanels = true, false
+  renderHud({ bag }, "pointer_bag", viewport)
+  local pointerNextCalls = 0
+  local pointerNext = function()
+    pointerNextCalls = pointerNextCalls + 1
+    return false
+  end
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "moved", source = "mouse", id = "mouse", x = 5, y = 5 })
+  check(pointerNextCalls == 1,
+    "pointer outside the modern UI remains available to later hooks")
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 2 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 2 })
+  check(#pointerTaps == 2 and pointerTaps[1].button == "a"
+      and pointerTaps[2].button == "b",
+    "outside left/right clicks map to source-safe A/B actions")
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 5, y = 5, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "moved", source = "mouse", id = "mouse",
+      x = 25, y = 25, dx = 20, dy = 20 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 25, y = 25, button = 1 })
+  check(#pointerTaps == 2,
+    "an outside mouse drag does not fire the click action on release")
+  local hoverY
+  for y = 40, 320, 4 do
+    bag.index = 1
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "moved", source = "mouse", id = "mouse", x = 320, y = y })
+    if bag.index == 2 then hoverY = y break end
+  end
+  check(hoverY ~= nil,
+    "mouse hover finds a visible row in the responsive card")
+  check(bag.index == 2,
+    "mouse hover moves the live cursor without activating a row")
+  check(#pointerTaps == 2,
+    "mouse hover does not synthesize an A action")
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 320, y = hoverY, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 320, y = hoverY, button = 1 })
+  check(#pointerTaps == 3 and pointerTaps[3].button == "a",
+    "pointer row tap selects through the source-safe A action")
+
+  do
+    local thirdRowY
+    for y = 40, 320, 4 do
+      bag.index = 1
+      hooks["input.pointer"](pointerNext, game,
+        { phase = "moved", source = "mouse", id = "mouse", x = 320, y = y })
+      if bag.index == 3 then thirdRowY = y break end
+    end
+    check(thirdRowY ~= nil, "pointer test locates a second release target")
+    local before = #pointerTaps
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = 320, y = hoverY, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = 320, y = thirdRowY, button = 1 })
+    check(#pointerTaps == before,
+      "a click only activates when press and release resolve to the same row")
+
+    renderHud({ bag }, "pointer_stale_capture", viewport)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = 320, y = hoverY, button = 1 })
+    game.stack.states = { choice }
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = 320, y = hoverY, button = 1 })
+    check(#pointerTaps == before,
+      "a captured row cannot release into a different stack state")
+
+    renderHud({ bag, choice }, "pointer_modal_isolation", viewport)
+    bag.index = 1
+    for y = 16, viewport.height - 16, 12 do
+      for x = 16, viewport.width - 16, 12 do
+        hooks["input.pointer"](pointerNext, game,
+          { phase = "moved", source = "mouse", id = "mouse", x = x, y = y })
+        check(bag.index == 1,
+          "a modal never exposes its parent list to hover")
+      end
+    end
+
+    local bagCanvas = renderHud({ bag }, "pointer_panel_whitespace", viewport)
+    local bounds = alphaBounds(bagCanvas)
+    check(bounds ~= nil, "pointer panel has visible bounds")
+    local panelX = math.floor(bounds.x + bounds.w / 2)
+    local panelY = math.floor(bounds.y + 20)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = panelX, y = panelY, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = panelX, y = panelY, button = 1 })
+    check(#pointerTaps == before,
+      "blank list-panel chrome blocks global A without activating a row")
+  end
+
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "touch", id = 1, x = 320, y = hoverY })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "moved", source = "touch", id = 1, x = 320, y = hoverY - 70,
+      dx = 0, dy = -70 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "touch", id = 1, x = 320, y = hoverY - 70 })
+  check((bag.scroll or 0) > 0,
+    "dragging a long list scrolls its live state instead of moving the panel")
+  check((bag.scroll or 0) <= 2,
+    "one-row drag distance does not race through a long list")
+
+  values.dragPanels = true
+  local dragFound = false
+  for y = 20, 340, 4 do
+    renderHud({ bag }, "pointer_drag_bag_" .. y, viewport)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = 320, y = y, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "moved", source = "mouse", id = "mouse", x = 360, y = y + 20,
+      dx = 40, dy = 20 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = 360, y = y + 20, button = 1 })
+    if savedPins.panelOffsets and savedPins.panelOffsets.bag
+        and math.abs(savedPins.panelOffsets.bag.x) > 0
+        and math.abs(savedPins.panelOffsets.bag.y) > 0 then
+      dragFound = true
+      break
+    end
+  end
+  check(dragFound,
+    "a responsive panel exposes a draggable surface")
+  check(savedPins.panelOffsets and savedPins.panelOffsets.bag
+      and math.abs(savedPins.panelOffsets.bag.x) > 0
+      and math.abs(savedPins.panelOffsets.bag.y) > 0,
+    "multi-source pointer drag persists a normalized panel offset")
+
+  local pointerManager = setmetatable({
+    screenId = "ManagerState", screen = "options", cursor = 1, scroll = 0,
+    currentMod = { id = "gen1_modern_ui", name = "Gen1 Modern UI" },
+    optionRows = {
+      { id = "theme", label = "UI THEME" },
+      { id = "startMenuFastJump", label = "START MENU FAST JUMP" },
+    },
+    -- Real ManagerState intentionally returns no rows from rowsForScreen()
+    -- while on options, so snapCursor would reset every hovered option to 1.
+    snapCursor = function(self) self.cursor = 1 end,
+  }, { __index = managerClass })
+  renderHud({ pointerManager }, "pointer_manager", viewport)
+  local managerHoverY
+  for y = 40, 320, 4 do
+    pointerManager.cursor = 1
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "moved", source = "mouse", id = "mouse", x = 320, y = y })
+    if pointerManager.cursor == 2 then managerHoverY = y break end
+  end
+  check(managerHoverY ~= nil,
+    "UI settings exposes its categorized rows to mouse hover")
+  local managerTapCount = #pointerTaps
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = 320, y = managerHoverY, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = 320, y = managerHoverY, button = 1 })
+  check(pointerManager.cursor == 2 and #pointerTaps == managerTapCount + 1
+      and pointerTaps[#pointerTaps].button == "a",
+    "UI settings hover and left-click use the live manager cursor and A action")
+
+  do
+    local before = #pointerTaps
+    renderHud({ pointerManager }, "pointer_manager_mode_capture", viewport)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = 320, y = managerHoverY, button = 1 })
+    pointerManager.screen = "detail"
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = 320, y = managerHoverY, button = 1 })
+    check(#pointerTaps == before,
+      "a pointer captured in one Manager mode cannot fire in another")
+    pointerManager.screen = "options"
+
+    pointerManager._gen1OptionDescription = {
+      title = "UI THEME", text = "Choose a readable presentation theme.",
+    }
+    renderHud({ pointerManager }, "pointer_manager_help_modal", viewport)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = viewport.width / 2, y = viewport.height / 2, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = viewport.width / 2, y = viewport.height / 2, button = 1 })
+    check(pointerManager._gen1OptionDescription == nil
+        and #pointerTaps == before,
+      "clicking option help dismisses it without adjusting the row below")
+
+    pointerManager.cursor = 2
+    pointerManager.overlay = { kind = "confirm", index = 1,
+      lines = { "APPLY THESE CHANGES?" } }
+    renderHud({ pointerManager }, "pointer_manager_confirm_modal", viewport)
+    for y = 20, viewport.height - 20, 16 do
+      for x = 20, viewport.width - 20, 16 do
+        hooks["input.pointer"](pointerNext, game,
+          { phase = "moved", source = "mouse", id = "mouse", x = x, y = y })
+        check(pointerManager.cursor == 2,
+          "Manager confirmation blocks hover into its underlying options")
+      end
+    end
+    pointerManager.overlay = nil
+    renderHud({ pointerManager }, "pointer_manager_after_modal", viewport)
+  end
+
+  local extraControls = {}
+  for y = 220, viewport.height - 2, 6 do
+    for x = 2, viewport.width - 2, 6 do
+      hooks["input.pointer"](pointerNext, game,
+        { phase = "pressed", source = "mouse", id = "mouse",
+          x = x, y = y, button = 1 })
+      hooks["input.pointer"](pointerNext, game,
+        { phase = "released", source = "mouse", id = "mouse",
+          x = x, y = y, button = 1 })
+      local button = pointerTaps[#pointerTaps] and pointerTaps[#pointerTaps].button
+      if button == "left" or button == "right" or button == "select" then
+        extraControls[button] = true
+      end
+      if extraControls.left and extraControls.right and extraControls.select then
+        break
+      end
+    end
+    if extraControls.left and extraControls.right and extraControls.select then
+      break
+    end
+  end
+  check(extraControls.left and extraControls.right and extraControls.select,
+    "UI settings renders clickable LEFT/RIGHT/SELECT controls")
+
+  local pointerBox = { screenId = "Gen3Box", mode = "box", row = 0, col = 0,
+    draw = function() end }
+  renderHud({ pointerBox }, "pointer_box", viewport)
+  local boxHoverX, boxHoverY
+  for y = 20, viewport.height - 20, 4 do
+    for x = 20, viewport.width - 20, 4 do
+      pointerBox.row, pointerBox.col = 0, 0
+      hooks["input.pointer"](pointerNext, game,
+        { phase = "moved", source = "mouse", id = "mouse", x = x, y = y })
+      if pointerBox.row == 0 and pointerBox.col == 1 then
+        boxHoverX, boxHoverY = x, y
+        break
+      end
+    end
+    if boxHoverX then break end
+  end
+  check(boxHoverX ~= nil,
+    "PC box grid cells expose hover selection regions")
+  local boxTapCount = #pointerTaps
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "pressed", source = "mouse", id = "mouse",
+      x = boxHoverX, y = boxHoverY, button = 1 })
+  hooks["input.pointer"](pointerNext, game,
+    { phase = "released", source = "mouse", id = "mouse",
+      x = boxHoverX, y = boxHoverY, button = 1 })
+  check(pointerBox.row == 0 and pointerBox.col == 1
+      and #pointerTaps == boxTapCount + 1
+      and pointerTaps[#pointerTaps].button == "a",
+    "PC box cell click selects the cell before sending A")
+
+  do
+    local savedParty = party.party
+    party.party = { testMon, testMon, testMon }
+    party.index, party.subIndex = 2, 1
+    party.submenu = true
+    party.subItems = { { label = "SUMMARY" }, { label = "SWITCH" } }
+    renderHud({ party }, "pointer_party_submenu", viewport)
+    local actionX, actionY
+    for y = 16, viewport.height - 16, 6 do
+      for x = 16, viewport.width - 16, 6 do
+        party.subIndex = 1
+        hooks["input.pointer"](pointerNext, game,
+          { phase = "moved", source = "mouse", id = "mouse", x = x, y = y })
+        check(party.index == 2,
+          "Party action modal never moves the underlying party cursor")
+        if party.subIndex == 2 then actionX, actionY = x, y break end
+      end
+      if actionX then break end
+    end
+    check(actionX ~= nil,
+      "Party action rows remain directly hoverable inside their modal")
+    local before = #pointerTaps
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = actionX, y = actionY, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = actionX, y = actionY, button = 1 })
+    check(party.index == 2 and party.subIndex == 2
+        and #pointerTaps == before + 1
+        and pointerTaps[#pointerTaps].button == "a",
+      "Party action click targets only the live submenu row")
+    party.submenu, party.subItems = nil, nil
+    party.party, party.index = savedParty, 1
+
+    local summaryCanvas = renderHud({ summary }, "pointer_summary_continue", viewport)
+    local summaryBounds = alphaBounds(summaryCanvas)
+    check(summaryBounds ~= nil, "summary panel has visible bounds")
+    before = #pointerTaps
+    local summaryX = math.floor(summaryBounds.x + summaryBounds.w / 2)
+    local summaryY = math.floor(summaryBounds.y + summaryBounds.h / 2)
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = summaryX, y = summaryY, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = summaryX, y = summaryY, button = 1 })
+    check(#pointerTaps == before + 1
+        and pointerTaps[#pointerTaps].button == "a",
+      "clicking a continue-only data card maps to A")
+
+    local emptyList = setmetatable({ title = "EMPTY", items = {}, index = 1 },
+      { __index = listClass })
+    local emptyCanvas = renderHud({ emptyList }, "pointer_empty_list", viewport)
+    local emptyBounds = alphaBounds(emptyCanvas)
+    before = #pointerTaps
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "pressed", source = "mouse", id = "mouse",
+        x = emptyBounds.x + emptyBounds.w / 2,
+        y = emptyBounds.y + emptyBounds.h / 2, button = 1 })
+    hooks["input.pointer"](pointerNext, game,
+      { phase = "released", source = "mouse", id = "mouse",
+        x = emptyBounds.x + emptyBounds.w / 2,
+        y = emptyBounds.y + emptyBounds.h / 2, button = 1 })
+    check(#pointerTaps == before,
+      "an empty-list placeholder cannot synthesize A against a missing item")
+  end
+
+  bag.items = savedBagItems
+  bag.index, bag.scroll = 1, 0
+
   if captureHud then
     print("compose suppression shots: " .. love.filesystem.getSaveDirectory())
   end
 
+  love.filesystem.remove(PLAIN_PIXEL_VIRTUAL)
   print("compose suppression test: PASS")
   love.event.quit(0)
 end

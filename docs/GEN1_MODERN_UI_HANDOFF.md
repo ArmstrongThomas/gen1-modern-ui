@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.7.4 is a standalone, visual-only overhaul for released
+`mods/gen1_modern_ui` 0.7.5 is a standalone, visual-first overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -46,7 +46,7 @@ optional for development and testing only.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.7.4. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.7.5. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -93,9 +93,11 @@ that file and appends the generated archive checksum.
    when the runtime provides one (falling back to the full window); the
    world and normal whole-window composition remain intact underneath.
 8. Theme tokens are merged with the built-in defaults. The presenter owns only
-   drawing; the game continues to own input, state transitions, and callbacks.
+   drawing; the game continues to own keyboard/controller input, state
+   transitions, and callbacks. Pointer taps use only the host's source-safe
+   action facade, and panel dragging does not synthesize game actions.
 
-Version 0.7.4 includes seven data-only themes: Gen1 Modern, Modern Glass,
+Version 0.7.5 includes seven data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
@@ -221,14 +223,22 @@ it does not capture raw pointer coordinates, hide virtual controls, or add a
 second state/input owner. The engine draws `TouchControls` after `render.hud`,
 above the modern layer.
 
-The upstream audit found no public gameplay pointer event or semantic input
-facade. A first experimental layer can poll pointer state from `input.step`,
-reuse presenter hitboxes, exclude virtual-control hits, and translate taps
-through the real state selection plus normal Game Boy actions. Reliable
-release support should request `input.pointer` and source-safe `mod.input`
-press/tap hooks. See
-[`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md) for source findings,
+The host now exposes the `input.pointer` middleware and source-safe
+`mod.input` facade described by [gen1recomp issue #807](https://github.com/bryanthaboi/gen1recomp/issues/807).
+The mod uses them for row/card/grid taps, stable list scrolling, contextual
+direction/SELECT/START controls, and captured panel drags. TouchControls retain
+first refusal, direct callbacks remain untouched, and cancelled pointer
+lifecycles discard captures. See
+[`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md) for the contract,
 flow-by-flow rules, and the installed Modern Bag/category compatibility audit.
+
+Pointer captures are release-matched and bound to the top stack state plus its
+current internal mode/row model. Party and Manager internal modals block their
+parent rows, empty placeholders are inert, and only panel chrome can move a
+panel. Do not restore the old ChoiceBox `pressQueue` rewrite: renaming RIGHT to
+DOWN detached the edge from its live input source and could leave DOWN held
+until the user physically pressed it. Horizontal choices now use atomic
+`mod.input:tap` UP/DOWN actions.
 
 ## Theme API
 
@@ -264,11 +274,18 @@ keeps decorative pixels outside the content container. `pixelScale` and
 `slice`, `pixelScale`, and `pixelInset` preserve pixel-art sizing while other frame geometry follows the
 active UI scale. Asset-backed frames place the image edge `pixelInset` scaled
 pixels outside the panel, excluding the rest of the transparent slice space,
-so large pixel multipliers stay snug without covering panel content. v0.7.4
+so large pixel multipliers stay snug without covering panel content. v0.7.5
 also paints the panel surface through the snapped UI rectangle while keeping
 transparent frame inset space outside the container. Pixel mode suppresses separate
 rounded corners and top accent strips so the asset owns the panel chrome. It
 also exposes **PIXEL FRAME** to select one of the three shipped PNG borders.
+New installs use Classic Mono with PIXEL / FRAME 2. **PIXEL ART FONT** is also
+enabled by default and loads gen1recomp's bundled Plain Pixel TTF for all
+presenters. Its physical raster is snapped to the nearest authored 15-pixel
+multiple with nearest filtering, while its broad multilingual metrics are
+normalized to an ordinary UI line box. The system font remains a missing-glyph
+fallback; older hosts without the asset use it outright. Plain Pixel is by
+Douglas Vautour / Burpy Fresh under CC BY 4.0.
 Themes may provide `colors.health` tokens for `track`, `high`, `medium`, `low`,
 and `critical` states. HP bars use those tokens and retain numeric HP labels as
 the color-independent cue for color-vision accessibility.
@@ -311,8 +328,14 @@ its name and tokens without adding a duplicate choice.
   and extended-height treatment; side controls may layer over the lower edge.
 - Menu rows retain the current game selection and values; Summary uses a wider
   information panel when the display allows it.
-- Because pointer interaction is deferred, layout changes do not alter input
-  hit testing or controller navigation.
+- Pointer hit regions are registered from presenter geometry after each layout,
+  so responsive sizing, pixel-frame insets, and saved panel offsets keep taps
+  aligned with the rendered cards. Keyboard/controller navigation remains
+  engine-owned.
+- Manager options bypass `ManagerState:snapCursor()` because that host helper
+  intentionally has no options-row model; calling it would reset every hovered
+  setting to row one. PC grid adapters instead write the screen's public
+  zero-based row/column fields before injecting A.
 
 ## Development workflow (LÖVE 11.5)
 
@@ -392,7 +415,7 @@ for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
   classic fallback for any unmodeled branch.
 - Add visual presenters for move learning, PicBox, naming, Town Map/Fly/AREA,
   and the title Continue-info/save-selection card.
-- Design and test an opt-in touch/click input layer without breaking vanilla
-  controller/keyboard behavior.
+- Expand pointer coverage to atomic drag/drop inventory flows and replacement
+  screens whose interactions cannot be inferred from public row/grid state.
 - Expand portrait/landscape screenshot coverage and add a theme-pack example.
 - Update the official wiki/API reference as the released mod API evolves.

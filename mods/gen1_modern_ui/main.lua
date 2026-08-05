@@ -207,6 +207,8 @@ local function normalizedPercent(value, fallback, minimum, maximum)
   return math.floor(percent / 5 + 0.5) * 5
 end
 
+local nativeGenderSigns = false
+
 local function safeText(value)
   if value == nil then return "" end
   local text = tostring(value)
@@ -215,8 +217,10 @@ local function safeText(value)
   -- glyphs. Keep the names readable in the visual-only layer instead of
   -- emitting a tofu box; the extra space also keeps the fallback distinct
   -- from the species name itself.
-  text = text:gsub("\226\153\130", " M")
-  text = text:gsub("\226\153\128", " F")
+  if not nativeGenderSigns then
+    text = text:gsub("\226\153\130", " M")
+    text = text:gsub("\226\153\128", " F")
+  end
   return text
 end
 
@@ -307,10 +311,104 @@ local function titleFor(Strings, state, kind)
   return Strings(title or "MENU")
 end
 
+local PLAIN_PIXEL_FONT = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
+local PLAIN_PIXEL_GRID = 15
+
+local function useNativeGenderSigns(selected)
+  nativeGenderSigns = false
+  if selected and type(selected.hasGlyphs) == "function" then
+    local ok, supported = pcall(function()
+      return selected:hasGlyphs("♀") and selected:hasGlyphs("♂")
+    end)
+    nativeGenderSigns = ok and supported == true
+  end
+  return nativeGenderSigns
+end
+
+local function plainPixelRasterScale(pixels)
+  local displayDpi = 1
+  if love and love.graphics and type(love.graphics.getDPIScale) == "function" then
+    local ok, value = pcall(love.graphics.getDPIScale)
+    if ok and type(value) == "number" and value > 0 then displayDpi = value end
+  end
+  local requested = math.max(1, pixels * displayDpi)
+  local raster = math.max(PLAIN_PIXEL_GRID,
+    math.floor(requested / PLAIN_PIXEL_GRID + 0.5) * PLAIN_PIXEL_GRID)
+  return raster / pixels, raster
+end
+
 local function font(cache, size)
-  local key = math.max(10, math.floor(size or 16))
-  if not cache[key] then cache[key] = love.graphics.newFont(key) end
-  return cache[key]
+  local pixels = math.max(10, math.floor((size or 16) + 0.5))
+  local usePixel = cache and cache._usePixel == true
+  local family = usePixel and "pixel" or "system"
+  local pixelDpi, raster = plainPixelRasterScale(pixels)
+  local key = family .. ":" .. pixels
+    .. (usePixel and (":" .. raster) or "")
+  if cache[key] then
+    nativeGenderSigns = cache["gender:" .. key] == true
+    return cache[key]
+  end
+
+  local selected
+  if usePixel and not cache._pixelUnavailable then
+    -- Plain Pixel's authored cells raster cleanly at multiples of 15. The DPI
+    -- argument lets LÖVE build such a raster while preserving the requested
+    -- logical font size and therefore the layout's uniform x/y scale.
+    local ok, loaded = pcall(love.graphics.newFont,
+      PLAIN_PIXEL_FONT, pixels, "mono", pixelDpi)
+    if not ok then
+      -- LÖVE before 11.0 has no explicit font DPI argument. Those compatible
+      -- hosts retain the old path and still receive nearest filtering.
+      ok, loaded = pcall(love.graphics.newFont,
+        PLAIN_PIXEL_FONT, pixels, "mono")
+    end
+    if ok and loaded then
+      selected = loaded
+      if type(selected.setFilter) == "function" then
+        pcall(selected.setFilter, selected, "nearest", "nearest", 0)
+      end
+      local systemKey = "system:" .. pixels
+      local fallback = cache[systemKey]
+      if not fallback then
+        local fallbackOk, fallbackFont = pcall(love.graphics.newFont, pixels)
+        if fallbackOk and fallbackFont then
+          fallback = fallbackFont
+          cache[systemKey] = fallback
+        end
+      end
+      if fallback and type(selected.setFallbacks) == "function" then
+        pcall(selected.setFallbacks, selected, fallback)
+      end
+      if fallback and type(selected.setLineHeight) == "function" then
+        local rawHeight = selected:getHeight()
+        if rawHeight > 0 then
+          -- The multilingual face has intentionally broad global vertical
+          -- metrics. Match the system face's logical line box so switching
+          -- fonts does not make every menu much taller.
+          pcall(selected.setLineHeight, selected,
+            fallback:getHeight() / rawHeight)
+        end
+      end
+    else
+      cache._pixelUnavailable = true
+    end
+  end
+  if not selected then selected = love.graphics.newFont(pixels) end
+  cache["gender:" .. key] = useNativeGenderSigns(selected)
+  cache[key] = selected
+  return selected
+end
+
+local function textHeight(textFont)
+  if not textFont then return 0 end
+  local height = textFont:getHeight()
+  if type(textFont.getLineHeight) == "function" then
+    local ok, multiplier = pcall(textFont.getLineHeight, textFont)
+    if ok and type(multiplier) == "number" and multiplier > 0 then
+      height = height * multiplier
+    end
+  end
+  return height
 end
 
 local function removeLastTextCharacter(text)
@@ -413,7 +511,7 @@ end
 
 local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
   textFont = textFont or love.graphics.getFont()
-  lineGap = lineGap or (textFont:getHeight() + 2)
+  lineGap = lineGap or (textHeight(textFont) + 2)
   local lines = wrappedLines(text, maxWidth, textFont)
   love.graphics.setFont(textFont)
   for index, line in ipairs(lines) do
@@ -540,6 +638,27 @@ local function presenterRect(viewport)
     return fx, fy, fw, fh
   end
   return x, y, w, h
+end
+
+local function shiftedViewport(viewport, dx, dy)
+  if (tonumber(dx) or 0) == 0 and (tonumber(dy) or 0) == 0 then
+    return viewport
+  end
+  local out = copy(viewport or {})
+  local function shiftRect(rect)
+    if type(rect) ~= "table" then return rect end
+    local shifted = copy(rect)
+    if type(shifted.x) == "number" then shifted.x = shifted.x + dx end
+    if type(shifted.y) == "number" then shifted.y = shifted.y + dy end
+    return shifted
+  end
+  out.safe = shiftRect(out.safe)
+  out.fullSafe = shiftRect(out.fullSafe)
+  if type(out.safeX) == "number" then out.safeX = out.safeX + dx end
+  if type(out.safeY) == "number" then out.safeY = out.safeY + dy end
+  if type(out.x) == "number" then out.x = out.x + dx end
+  if type(out.y) == "number" then out.y = out.y + dy end
+  return out
 end
 
 local function panelWidthFor(viewport, availableW, maxWidth)
@@ -695,6 +814,111 @@ return function(mod)
   -- render.compose does not receive the Game object.  render.zones caches the
   -- live singleton immediately before it so both hooks inspect one frame.
   local currentGame
+  -- Pointer regions are rebuilt from the same presenter geometry used to
+  -- draw each frame. That keeps taps and drags aligned with responsive
+  -- layouts instead of maintaining a second set of screen-specific boxes.
+  local pointerRegions = {}
+  local pointerCaptures = {}
+  local pointerRuntime = { generation = 0, topOrder = 0, topState = nil }
+  local panelOffsetMemory = {}
+  local savedPanelOffsets
+  local pointerDrawContext
+  local hoveredPointer
+
+  -- Several released screens change modes without replacing their stack
+  -- state (Party actions, Manager overlays, Link stages, PC box tabs). A
+  -- pointer pressed before that transition must not release into the new
+  -- mode just because the Lua table identity stayed the same.
+  pointerRuntime.stateMode = function(state, kind)
+    if type(state) ~= "table" then return tostring(state) end
+    if kind == "mod_manager" then
+      return table.concat({ safeText(state.screen), tostring(state.optionRows),
+        tostring(state.overlay), tostring(state._gen1OptionDescription) }, ":")
+    elseif kind == "party" then
+      return tostring(state.submenu) .. ":" .. tostring(state.subItems)
+    elseif kind == "link" then
+      return safeText(state.stage)
+    elseif kind == "gen3_box" then
+      return safeText(state.mode)
+    elseif kind == "summary" then
+      return safeText(state.page)
+    elseif kind == "dex_entry" then
+      return safeText(state.view)
+    elseif kind == "choice" then
+      return tostring(state.pending)
+    elseif kind == "bag" then
+      local bag = type(state.modernBag) == "table" and state.modernBag or nil
+      return tostring(state.items) .. ":" .. tostring(bag and
+        (bag.pocket or bag.tab or bag.index))
+    elseif kind == "menu" or kind == "list" or kind == "shop_list"
+        or kind == "pc_list" or kind == "box_root"
+        or kind == "box_mon_list" then
+      return tostring(state.items)
+    elseif kind == "options" or kind == "mod_options" then
+      return tostring(state.rows)
+    end
+    return safeText(state.screenId or kind)
+  end
+
+  local function registerPointerRegion(x, y, w, h, metadata)
+    if not pointerDrawContext or type(x) ~= "number" or type(y) ~= "number"
+        or type(w) ~= "number" or type(h) ~= "number" or w <= 0 or h <= 0 then
+      return
+    end
+    local region = {
+      x = x, y = y, w = w, h = h,
+      kind = pointerDrawContext.kind,
+      state = pointerDrawContext.state,
+      layerKey = pointerDrawContext.layerKey,
+      viewport = pointerDrawContext.viewport,
+      order = pointerDrawContext.order,
+      generation = pointerRuntime.generation,
+      stateMode = pointerRuntime.stateMode(pointerDrawContext.state,
+        pointerDrawContext.kind),
+      modalOwner = pointerDrawContext.modalOwner,
+    }
+    for key, value in pairs(metadata or {}) do region[key] = value end
+    pointerRegions[#pointerRegions + 1] = region
+  end
+
+  local function panelOffsets()
+    if savedPanelOffsets ~= nil then return savedPanelOffsets end
+    local loaded
+    if mod.save and type(mod.save.get) == "function" then
+      local ok, value = pcall(mod.save.get, mod.save, "panelOffsets", {})
+      if ok and type(value) == "table" then loaded = value end
+    end
+    savedPanelOffsets = loaded or {}
+    return savedPanelOffsets
+  end
+
+  local function layerOffset(kind, viewport)
+    local _, _, width, height = presenterRect(viewport)
+    local key = safeText(kind or "screen")
+    local stored = panelOffsetMemory[key] or panelOffsets()[key]
+    local normalizedX = stored and tonumber(stored.x) or 0
+    local normalizedY = stored and tonumber(stored.y) or 0
+    normalizedX = clamp(normalizedX, -0.45, 0.45)
+    normalizedY = clamp(normalizedY, -0.45, 0.45)
+    return normalizedX * width, normalizedY * height
+  end
+
+  local function rememberLayerOffset(kind, viewport, x, y, persist)
+    local _, _, width, height = presenterRect(viewport)
+    local key = safeText(kind or "screen")
+    local normalized = {
+      x = clamp((tonumber(x) or 0) / math.max(1, width), -0.45, 0.45),
+      y = clamp((tonumber(y) or 0) / math.max(1, height), -0.45, 0.45),
+    }
+    panelOffsetMemory[key] = normalized
+    if persist and mod.save and type(mod.save.set) == "function" then
+      local values = copy(panelOffsets())
+      values[key] = copy(normalized)
+      pcall(mod.save.set, mod.save, "panelOffsets", values)
+      savedPanelOffsets = values
+    end
+    return normalized.x * width, normalized.y * height
+  end
 
   local function prepareImage(image)
     if not image or filteredImages[image] then return image end
@@ -942,7 +1166,10 @@ return function(mod)
   end
 
   local function currentTheme(viewport)
-    local base = themes[option("theme", "default")] or themes.default
+    local usePixelFont = option("pixelFont", true) ~= false
+    fontCache._usePixel = usePixelFont
+    local base = themes[option("theme", "gen1_modern_ui:classic_mono")]
+      or themes["gen1_modern_ui:classic_mono"] or themes.default
     local uiPercent, uiAuto = resolvedScalePercent(option("uiScale", 100),
       viewport, 75, 150)
     local fontPercent, fontAuto = resolvedScalePercent(option("fontScale", 100),
@@ -950,17 +1177,18 @@ return function(mod)
     local uiScale = uiPercent / 100
     local fontScale = fontPercent / 100
     local density = safeText(option("density", "auto"))
-    local frameStyle = safeText(option("frameStyle", "theme"))
-    local frameAsset = safeText(option("frameAsset", "1"))
+    local frameStyle = safeText(option("frameStyle", "pixel"))
+    local frameAsset = safeText(option("frameAsset", "2"))
     if frameAsset ~= "1" and frameAsset ~= "2" and frameAsset ~= "3" then
-      frameAsset = "1"
+      frameAsset = "2"
     end
     local frameScale = clamp(math.floor(
       tonumber(option("frameScale", 2)) or 2), 1, 4)
     local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
     local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
-    local key = ("%.3f:%.3f:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
+    local key = ("%.3f:%.3f:%s:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
       uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
+      usePixelFont and "pixel" or "system",
       frameStyle .. ":" .. frameAsset .. ":" .. frameScale,
       panelOpacity, foregroundOpacity)
     local bucket = themePresentationCache[base]
@@ -1084,15 +1312,15 @@ return function(mod)
   local optionSchema = {
     { key = "theme", label = "UI THEME", type = "choice",
       description = "Choose the color, contrast, and panel style used by the modern interface.",
-      choices = themeChoices, default = "default" },
+      choices = themeChoices, default = "gen1_modern_ui:classic_mono" },
     { key = "frameStyle", label = "UI FRAME STYLE", type = "choice",
       description = "Choose the panel border treatment. THEME uses the active theme's authored frame.",
       choices = { { "THEME", "theme" }, { "PIXEL", "pixel" },
-                  { "SOFT", "soft" }, { "PLAIN", "plain" } }, default = "theme" },
+                  { "SOFT", "soft" }, { "PLAIN", "plain" } }, default = "pixel" },
     { key = "frameAsset", label = "PIXEL FRAME", type = "choice",
       description = "Choose the authored PNG used when PIXEL framing is active.",
       choices = { { "FRAME 1", "1" }, { "FRAME 2", "2" },
-                  { "FRAME 3", "3" } }, default = "1" },
+                  { "FRAME 3", "3" } }, default = "2" },
     { key = "frameScale", label = "PIXEL FRAME SCALE", type = "choice",
       description = "Scale PNG pixel frames by a whole-number multiplier so their authored pixels remain visible.",
       choices = { { "1X", "1" }, { "2X", "2" }, { "3X", "3" },
@@ -1107,6 +1335,8 @@ return function(mod)
     { key = "fontScale", label = "FONT SCALE", type = "choice",
       description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
       choices = percentChoices(80, 200, true), default = "100" },
+    { key = "pixelFont", label = "PIXEL ART FONT", type = "toggle", default = true,
+      description = "Use gen1recomp's multilingual Plain Pixel font on its crisp 15-pixel raster grid. Older builds and missing glyphs fall back safely to the system font.", },
     { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
       description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
       choices = { { "INHERIT", "inherit" }, { "110%", "110" },
@@ -1142,6 +1372,10 @@ return function(mod)
     -- saves retain a player's explicit choice through the normal option store.
     { key = "minimalUi", label = "MINIMAL UI", type = "toggle", default = false,
       description = "Use a compact presentation with fewer previews and less extra detail.", },
+    { key = "pointerUi", label = "TOUCH / CLICK UI", type = "toggle", default = true,
+      description = "Enable row/grid hover and taps, global mouse A/B, and contextual arrow, SELECT, and START buttons.", },
+    { key = "dragPanels", label = "DRAG UI PANELS", type = "toggle", default = true,
+      description = "Allow touch or mouse dragging to reposition modern panels. Positions are saved per screen family.", },
     { key = "dialogueUi", label = "DIALOGUE UI", type = "toggle", default = true,
       description = "Use modern text boxes, choices, quantities, and confirmation prompts.", },
     { key = "menuUi", label = "MENU UI", type = "toggle", default = true,
@@ -1190,8 +1424,11 @@ return function(mod)
     -- third-party adapters) comes through this helper.  Keeping the decision
     -- here prevents one screen from accidentally blacking out the world when
     -- the user selected FLOATING or ADAPTIVE.
-    if worldVisibleLayout(viewport) then return false end
-    local x, y, w, h = fullViewportRect(viewport)
+    -- Panel offsets move the UI surface, not the world/backdrop underneath it.
+    local backdropViewport = pointerDrawContext
+      and pointerDrawContext.baseViewport or viewport
+    if worldVisibleLayout(backdropViewport) then return false end
+    local x, y, w, h = fullViewportRect(backdropViewport)
     setBackdrop(theme)
     love.graphics.rectangle("fill", x, y, w, h)
     return true
@@ -1540,8 +1777,8 @@ return function(mod)
         value, value)
     end
     if id == "frameAsset" then
-      local value = safeText(option("frameAsset", "1"))
-      if value ~= "1" and value ~= "2" and value ~= "3" then value = "1" end
+      local value = safeText(option("frameAsset", "2"))
+      if value ~= "1" and value ~= "2" and value ~= "3" then value = "2" end
       return ("Choose the authored pixel-frame border. Current frame: %s."):format(
         value)
     end
@@ -1582,9 +1819,11 @@ return function(mod)
     theme = "appearance", frameStyle = "appearance", frameAsset = "appearance",
     frameScale = "appearance",
     density = "appearance", layoutStyle = "appearance",
-    uiScale = "appearance", fontScale = "appearance", dialogueTextScale = "appearance",
+    uiScale = "appearance", fontScale = "appearance", pixelFont = "appearance",
+    dialogueTextScale = "appearance",
     panelOpacity = "appearance", foregroundOpacity = "appearance",
-    minimalUi = "appearance", hideOriginalUi = "appearance",
+    minimalUi = "appearance", pointerUi = "appearance", dragPanels = "appearance",
+    hideOriginalUi = "appearance",
     startMenuShortcut = "navigation", startMenuModMenus = "navigation",
     startMenuFastJump = "navigation",
     dialogueUi = "presenters", menuUi = "presenters", pokemonUi = "presenters",
@@ -1711,14 +1950,18 @@ return function(mod)
       return
     end
     -- The modern presenter can place YES/NO side by side on a wide window,
-    -- while ChoiceBox's released update only listens to up/down. Translate
-    -- horizontal presses at the input boundary so the engine retains all of
-    -- its existing selection, sound, and callback behavior.
-    for index, button in ipairs(input.pressQueue) do
-      if button == "left" then
-        input.pressQueue[index] = "up"
-      elseif button == "right" then
-        input.pressQueue[index] = "down"
+    -- while ChoiceBox only listens to up/down. Never rewrite a queued button
+    -- in place: Input associates each queue edge with its original live
+    -- source, so turning a released RIGHT edge into a source-less DOWN edge
+    -- can make DOWN remain held until the player presses it physically. Retire
+    -- the horizontal edge and enqueue an atomic, source-safe vertical tap.
+    for index = #input.pressQueue, 1, -1 do
+      local button = input.pressQueue[index]
+      local mapped = button == "left" and "up"
+        or (button == "right" and "down" or nil)
+      if mapped and mod.input and type(mod.input.tap) == "function" then
+        table.remove(input.pressQueue, index)
+        pcall(mod.input.tap, mod.input, game, mapped)
       end
     end
   end
@@ -2238,7 +2481,9 @@ return function(mod)
           source = mon,
         }
       end
-      if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+      if #rows == 0 then
+        rows[1] = { label = Strings("No POKéMON!"), enabled = false }
+      end
     elseif kind == "box_mon_list" then
       local mons, action = boxPokemonList(state)
       for _, mon in ipairs(mons or {}) do
@@ -2253,7 +2498,9 @@ return function(mod)
           image = imageCandidate(mon), source = mon,
         }
       end
-      if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+      if #rows == 0 then
+        rows[1] = { label = Strings("No POKéMON!"), enabled = false }
+      end
       footer = action == "RELEASE" and Strings("A  release    B  back")
         or action and Strings("A  %s / stats    B  back", action:lower()) or nil
     elseif kind == "summary" then
@@ -2288,7 +2535,9 @@ return function(mod)
           source = item,
         }
       end
-      if #rows == 0 then rows[1] = { label = Strings("Nothing here.") } end
+      if #rows == 0 then
+        rows[1] = { label = Strings("Nothing here."), enabled = false }
+      end
       footer = state.footer
       if state._gen1ModMenus then
         footer = Strings("A  open   SELECT  pin/unpin   B  back")
@@ -2361,7 +2610,9 @@ return function(mod)
       end
       rows[#rows + 1] = row
     end
-    if #rows == 0 then rows[1] = { label = Strings("Nothing here.") } end
+    if #rows == 0 then
+      rows[1] = { label = Strings("Nothing here."), enabled = false }
+    end
 
     local selected = state.cursor or 1
     local scroll = state.scroll or 0
@@ -2414,7 +2665,7 @@ return function(mod)
   local function minimumRowHeight(theme)
     local body = font(fontCache, theme.typography.body)
     local caption = font(fontCache, theme.typography.caption)
-    local textMinimum = math.max(body:getHeight(), caption:getHeight())
+    local textMinimum = math.max(textHeight(body), textHeight(caption))
       + theme.spacing.sm * 1.6
     return math.max(theme.density.rowHeight * densityFactor(), textMinimum)
   end
@@ -2462,8 +2713,8 @@ return function(mod)
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.
     local gutter = (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale
-    local titleHeight = font(fontCache, theme.typography.title):getHeight()
-    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local titleHeight = textHeight(font(fontCache, theme.typography.title))
+    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
     local header = safeText(title) ~= "" and (titleHeight +
       (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale)
       or (spacing.md or 13) * scale
@@ -2480,7 +2731,7 @@ return function(mod)
       local fitHeight = (h - gutter * 2 - header - footer) / rowCount
       -- Keep text comfortably legible, but do not reserve desktop-sized rows
       -- when the touch-safe landscape viewport is short.
-      local minLandscapeRow = font(fontCache, theme.typography.body):getHeight()
+      local minLandscapeRow = textHeight(font(fontCache, theme.typography.body))
         + (spacing.sm or 9) * 1.6
       rowHeight = math.min(rowHeight, math.max(minLandscapeRow, fitHeight))
     end
@@ -2506,7 +2757,7 @@ return function(mod)
     end
     if wrapRows then
       rowHeight = math.max(rowHeight,
-        bodyFont:getHeight() * 2 + spacing.sm * 2)
+        textHeight(bodyFont) * 2 + spacing.sm * 2)
     end
     local navigationMenu = kind == "menu" or kind == "box_root"
     local sidePanel = desktopFloat and landscape and navigationMenu and rowCount > 0
@@ -2529,7 +2780,7 @@ return function(mod)
         + (spacing.md or 13)) or (spacing.md or 13)
       footer = (spacing.sm or 9) + captionHeight
       rowHeight = math.min(rowHeight, math.max(
-        font(fontCache, theme.typography.body):getHeight() + (spacing.sm or 9) * 1.6,
+        textHeight(font(fontCache, theme.typography.body)) + (spacing.sm or 9) * 1.6,
         (h - gutter * 2 - header - footer) / math.max(1, rowCount)))
     end
     panelW = math.max(1, panelW)
@@ -2551,6 +2802,17 @@ return function(mod)
   end
 
   local function drawPanelFrame(theme, x, y, w, h, radius, fillColor)
+    -- Register the visible panel before choosing a frame style so plain and
+    -- theme-framed panels remain draggable through the same hit region.
+    if pointerDrawContext and not pointerDrawContext.primaryPanel then
+      pointerDrawContext.primaryPanel = { x = x, y = y, w = w, h = h }
+    end
+    local panelAction = ({
+      text = "a", summary = "a", dex_entry = "a", trainer_card = "a",
+    })[pointerDrawContext and pointerDrawContext.kind]
+    registerPointerRegion(x, y, w, h, {
+      role = "panel", dragHandle = true, action = panelAction,
+    })
     local frame = theme.frame or {}
     local style = frame.style or "pixel"
     if style == "none" then return end
@@ -2732,6 +2994,18 @@ return function(mod)
 
   local function drawRows(theme, layout, rows, selected, scroll, game)
     local colors = theme.colors
+    local pointerState = pointerDrawContext and pointerDrawContext.state
+    local pointerScrollable = pointerState and type(pointerState.scroll) == "number"
+      and layout.visible < #rows
+    local pointerScrollBias = pointerDrawContext
+      and pointerDrawContext.kind == "mod_manager"
+      and pointerState and pointerState.screen ~= "options" and 1 or 0
+    local selectableIndices = {}
+    for index, row in ipairs(rows) do
+      if row and not row.header and row.enabled ~= false then
+        selectableIndices[#selectableIndices + 1] = index
+      end
+    end
     if layout.horizontalChoice then
       local gap = theme.spacing.sm
       local width = math.max(1, (layout.w - theme.spacing.lg * 2
@@ -2740,14 +3014,21 @@ return function(mod)
       for index, row in ipairs(rows) do
         local rx = layout.x + theme.spacing.lg + (index - 1) * (width + gap)
         local ry = layout.y + layout.header
-        setColor(index == selected and colors.selected or colors.surfaceRaised)
+        local rowSelected = index == selected and row.enabled ~= false
+        registerPointerRegion(rx, ry, width, layout.rowHeight - 4, {
+          rowIndex = index, interactive = row and row.enabled ~= false,
+          dragHandle = false, rowCount = #rows,
+          selectionField = layout.pointerSelectionField,
+          selectableIndices = selectableIndices,
+        })
+        setColor(rowSelected and colors.selected or colors.surfaceRaised)
         love.graphics.rectangle("fill", rx, ry, width, layout.rowHeight - 4,
           theme.radii.sm or 8)
-        setColor(index == selected and colors.text or colors.textMuted)
+        setColor(rowSelected and colors.text or colors.textMuted)
         love.graphics.setFont(bodyFont)
         local label = truncate(safeText(row.label), width)
         love.graphics.print(label, rx + (width - bodyFont:getWidth(label)) / 2,
-          ry + (layout.rowHeight - bodyFont:getHeight()) / 2)
+          ry + (layout.rowHeight - textHeight(bodyFont)) / 2)
       end
       return
     end
@@ -2757,12 +3038,27 @@ return function(mod)
       local row = rows[index]
       if not row then break end
       local ry = layout.y + layout.header + (slot - 1) * layout.rowHeight
+      local rowSelected = index == selected and row.enabled ~= false
+      registerPointerRegion(layout.x + theme.spacing.sm, ry,
+        layout.w - theme.spacing.sm * 2, layout.rowHeight - 4, {
+          rowIndex = index,
+          interactive = not row.header and row.enabled ~= false,
+          dragHandle = false,
+          selectionField = layout.pointerSelectionField,
+          scrollable = pointerScrollable,
+          scrollValue = scroll,
+          scrollBias = pointerScrollBias,
+          visibleCount = layout.visible,
+          rowCount = #rows,
+          rowHeight = layout.rowHeight,
+          selectableIndices = selectableIndices,
+        })
       if row.category then
-        setColor(index == selected and colors.selected or colors.surfaceRaised)
+        setColor(rowSelected and colors.selected or colors.surfaceRaised)
         love.graphics.rectangle("fill", layout.x + theme.spacing.sm, ry,
           layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
           theme.radii.sm or 8)
-        setColor(index == selected and colors.text or colors.accent)
+        setColor(rowSelected and colors.text or colors.accent)
         local categoryFont = font(fontCache, theme.typography.body)
         local valueFont = font(fontCache, theme.typography.caption)
         local value = optionValue(game, row)
@@ -2772,23 +3068,23 @@ return function(mod)
         love.graphics.setFont(categoryFont)
         love.graphics.print(truncate(row.label, labelWidth, categoryFont),
           layout.x + theme.spacing.lg,
-          ry + (layout.rowHeight - categoryFont:getHeight()) / 2)
+          ry + (layout.rowHeight - textHeight(categoryFont)) / 2)
         if value ~= "" then
           love.graphics.setFont(valueFont)
-          setColor(index == selected and colors.text or colors.textMuted)
+          setColor(rowSelected and colors.text or colors.textMuted)
           love.graphics.print(truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont),
             layout.x + layout.w - theme.spacing.lg - valueFont:getWidth(
               truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont)),
-            ry + (layout.rowHeight - valueFont:getHeight()) / 2)
+            ry + (layout.rowHeight - textHeight(valueFont)) / 2)
         end
       elseif row.header then
         setColor(colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.caption))
         love.graphics.print(safeText(row.label):upper(),
           layout.x + theme.spacing.lg, ry + (layout.rowHeight -
-            love.graphics.getFont():getHeight()) / 2)
+            textHeight(love.graphics.getFont())) / 2)
         love.graphics.setFont(font(fontCache, theme.typography.body))
-      elseif index == selected then
+      elseif rowSelected then
         setColor(colors.selected)
         love.graphics.rectangle("fill", layout.x + theme.spacing.sm, ry,
           layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
@@ -2854,19 +3150,19 @@ return function(mod)
           valueLines = value ~= "" and wrappedLines(value, math.max(1, valueWidth), bodyFont) or {}
         end
         local lineCount = math.max(#labelLines, #valueLines)
-        local blockHeight = lineCount * bodyFont:getHeight()
+        local blockHeight = lineCount * textHeight(bodyFont)
           + math.max(0, lineCount - 1) * theme.spacing.xs
         local textY = ry + (layout.rowHeight - blockHeight) / 2
         love.graphics.setFont(bodyFont)
         for lineIndex, line in ipairs(labelLines) do
           love.graphics.print(line, textX,
-            textY + (lineIndex - 1) * (bodyFont:getHeight() + theme.spacing.xs))
+            textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
         for lineIndex, line in ipairs(valueLines) do
           local lineWidth = bodyFont:getWidth(line)
           love.graphics.print(line,
             layout.x + layout.w - theme.spacing.lg - lineWidth,
-            textY + (lineIndex - 1) * (bodyFont:getHeight() + theme.spacing.xs))
+            textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
       end
       if row.marker then
@@ -2980,8 +3276,8 @@ return function(mod)
     local rowCount = math.max(1, math.min(#(rows or {}), 6))
     local x, y, w, h = presenterRect(viewport)
     if kind == "choice" and w > h * 1.2 then rowCount = 1 end
-    local titleHeight = font(fontCache, theme.typography.title):getHeight()
-    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local titleHeight = textHeight(font(fontCache, theme.typography.title))
+    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
     local header = safeText(title) ~= "" and (titleHeight + theme.spacing.md)
       or theme.spacing.md
     local footer = shouldDrawHint(modalHint(kind, footerText))
@@ -3006,7 +3302,7 @@ return function(mod)
     -- TextBox pages in the released engine normally expose two visible lines.
     -- Size to the live wrapped content instead of reserving five lines for
     -- every message; longer page models can still grow up to five lines.
-    local lineGap = body:getHeight() + theme.spacing.xs
+    local lineGap = textHeight(body) + theme.spacing.xs
     local available = math.max(1, width - gutter * 2)
     local desiredLines = 0
     for _, line in ipairs(completeDialogueLines(state)) do
@@ -3041,7 +3337,7 @@ return function(mod)
     love.graphics.setFont(body)
     local available = panelW - spacing.lg * 2
     local lines = wrappedDialogueLines(state, body, available)
-    local lineGap = body:getHeight() + spacing.xs
+    local lineGap = textHeight(body) + spacing.xs
     local maxLines = math.max(1, math.floor((panelH - spacing.lg * 2) / lineGap))
     while #lines > maxLines do table.remove(lines, 1) end
     local textY = py + spacing.lg
@@ -3055,7 +3351,7 @@ return function(mod)
     if ready and not state.choice then
       setColor(colors.accent)
       love.graphics.print("v", px + panelW - spacing.lg - 8,
-        py + panelH - spacing.md - body:getHeight())
+        py + panelH - spacing.md - textHeight(body))
     end
     return { x = px, y = py, w = panelW, h = panelH }
   end
@@ -3068,8 +3364,8 @@ return function(mod)
     local spacing = theme.spacing
     local landscape = w > h * 1.2
     local rowHeight = minimumRowHeight(theme)
-    local titleHeight = font(fontCache, theme.typography.title):getHeight()
-    local captionHeight = font(fontCache, theme.typography.caption):getHeight()
+    local titleHeight = textHeight(font(fontCache, theme.typography.title))
+    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
     local header = safeText(title) ~= "" and (titleHeight + spacing.md)
       or spacing.md
     local hint = modalHint(kind, footerText)
@@ -3136,9 +3432,21 @@ return function(mod)
     local y = layout.y + layout.header - theme.spacing.md
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     for i, label in ipairs(labels) do
-      local width = love.graphics.getFont():getWidth(label) + theme.spacing.lg
+      local shown = i == active and ("[" .. label .. "]") or label
+      local textWidth = love.graphics.getFont():getWidth(shown)
+      local width = textWidth + theme.spacing.lg
+      local action
+      if i ~= active then
+        action = ((active % #labels) + 1 == i) and "right" or "left"
+      end
+      registerPointerRegion(x - theme.spacing.xs, y - theme.spacing.xs,
+        textWidth + theme.spacing.sm, textHeight(love.graphics.getFont())
+          + theme.spacing.sm, {
+          role = "control", action = action, interactive = true,
+          controlKey = "manager-tab:" .. i, dragHandle = false,
+        })
       setColor(i == active and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print(i == active and ("[" .. label .. "]") or label, x, y)
+      love.graphics.print(shown, x, y)
       x = x + width
     end
     love.graphics.setFont(font(fontCache, theme.typography.body))
@@ -3178,6 +3486,11 @@ return function(mod)
     if not overlay then return end
     drawPresenterBackdrop(theme, viewport)
     drawModalScrim(theme, viewport)
+    local vx, vy, vw, vh = presenterRect(viewport)
+    registerPointerRegion(vx, vy, vw, vh, {
+      role = "scrim", modalBlocker = true, interactive = true,
+      dragHandle = false,
+    })
     local lines = overlay.lines or {}
     local lineHeight = theme.typography.body + theme.spacing.sm
     local modalW = math.min(layout.w * 0.84, 620)
@@ -3186,6 +3499,11 @@ return function(mod)
         (overlay.kind == "confirm" and 3 or 1)))
     local mx = layout.x + (layout.w - modalW) / 2
     local my = layout.y + (layout.h - modalH) / 2
+    registerPointerRegion(mx, my, modalW, modalH, {
+      role = "modal", modalOwner = overlay,
+      activate = overlay.kind == "ok", interactive = true,
+      dragHandle = false,
+    })
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
@@ -3199,11 +3517,25 @@ return function(mod)
     local footerY = my + modalH - theme.spacing.lg - lineHeight
     if overlay.kind == "confirm" then
       local index = overlay.index or 1
+      local yesX = mx + theme.spacing.lg
+      local noX = mx + theme.spacing.lg + theme.spacing.xl * 2.75
+      local yesW = math.max(love.graphics.getFont():getWidth("YES") +
+        theme.spacing.md * 2, noX - yesX - theme.spacing.sm)
+      local noW = love.graphics.getFont():getWidth("NO") + theme.spacing.md * 2
+      registerPointerRegion(yesX - theme.spacing.sm, footerY - theme.spacing.sm,
+        yesW, lineHeight + theme.spacing.sm * 2, {
+          selectionState = overlay, selectionField = "index",
+          selectionIndex = 1, activate = true, dragHandle = false,
+        })
+      registerPointerRegion(noX - theme.spacing.sm, footerY - theme.spacing.sm,
+        noW, lineHeight + theme.spacing.sm * 2, {
+          selectionState = overlay, selectionField = "index",
+          selectionIndex = 2, activate = true, dragHandle = false,
+        })
       setColor(index == 1 and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print("YES", mx + theme.spacing.lg, footerY)
+      love.graphics.print("YES", yesX, footerY)
       setColor(index == 2 and theme.colors.accent or theme.colors.textMuted)
-      love.graphics.print("NO", mx + theme.spacing.lg + theme.spacing.xl * 2.75,
-        footerY)
+      love.graphics.print("NO", noX, footerY)
     else
       setColor(theme.colors.textMuted)
       drawHintIfUseful(theme, "A / B  CLOSE", mx + theme.spacing.lg, footerY,
@@ -3216,6 +3548,11 @@ return function(mod)
     if not help then return end
     drawPresenterBackdrop(theme, viewport)
     drawModalScrim(theme, viewport)
+    local vx, vy, vw, vh = presenterRect(viewport)
+    registerPointerRegion(vx, vy, vw, vh, {
+      role = "scrim", modalBlocker = true, interactive = true,
+      dragHandle = false,
+    })
     local spacing = theme.spacing
     local body = font(fontCache, theme.typography.body)
     local titleFont = font(fontCache, theme.typography.title * 0.82)
@@ -3233,13 +3570,17 @@ return function(mod)
     local widest = math.max(titleW, maxTextW)
     local modalW = math.min(layout.w - spacing.md * 2,
       math.max(240, widest + spacing.lg * 2))
-    local lineHeight = body:getHeight() + spacing.xs
-    local footerH = body:getHeight() + spacing.sm
-    local modalH = spacing.lg * 2 + titleFont:getHeight() + spacing.sm
+    local lineHeight = textHeight(body) + spacing.xs
+    local footerH = textHeight(body) + spacing.sm
+    local modalH = spacing.lg * 2 + textHeight(titleFont) + spacing.sm
       + #lines * lineHeight + footerH
     modalH = math.min(layout.h - spacing.md * 2, modalH)
     local mx = layout.x + (layout.w - modalW) / 2
     local my = layout.y + (layout.h - modalH) / 2
+    registerPointerRegion(mx, my, modalW, modalH, {
+      role = "modal", pointerCommand = "dismiss_help",
+      interactive = true, dragHandle = false,
+    })
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
@@ -3249,7 +3590,7 @@ return function(mod)
     love.graphics.print(truncate(title, modalW - spacing.lg * 2),
       mx + spacing.lg, my + spacing.md)
     love.graphics.setFont(body)
-    local textY = my + spacing.md + titleFont:getHeight() + spacing.sm
+    local textY = my + spacing.md + textHeight(titleFont) + spacing.sm
     for index, line in ipairs(lines) do
       setColor(theme.colors.text)
       love.graphics.print(line, mx + spacing.lg, textY + (index - 1) * lineHeight)
@@ -3354,34 +3695,34 @@ return function(mod)
     local bodyFont = font(fontCache, compact and theme.typography.body * 0.86
       or theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
-    local titleH = titleFont:getHeight()
-    local lineGap = compact and (bodyFont:getHeight() + spacing.xs)
+    local titleH = textHeight(titleFont)
+    local lineGap = compact and (textHeight(bodyFont) + spacing.xs)
       or (spacing.lg + 10)
-    local bodyLine = bodyFont:getHeight() + spacing.xs
+    local bodyLine = textHeight(bodyFont) + spacing.xs
     local titleOffset = spacing.md + titleH + spacing.xs
     local pageOffset = titleOffset
-    local levelOffset = pageOffset + bodyFont:getHeight() + spacing.xs
+    local levelOffset = pageOffset + textHeight(bodyFont) + spacing.xs
     local hpOffset = levelOffset + lineGap
     local statusOffset = hpOffset + lineGap
     local contentBottom
     if state.page == 2 then
       local moveGap = compact and bodyLine or 28
-      contentBottom = statusOffset + lineGap * 2 + bodyFont:getHeight()
-        + moveGap * 3 + bodyFont:getHeight()
+      contentBottom = statusOffset + lineGap * 2 + textHeight(bodyFont)
+        + moveGap * 3 + textHeight(bodyFont)
     else
       local spriteSize = compact and math.min(112, panelW * 0.24) or 150
       local spriteBottom = summarySprite
         and (statusOffset + lineGap * 2 + spacing.sm + spriteSize)
         or (statusOffset + lineGap)
       local statGap = compact and bodyLine or 28
-      local statsBottom = pageOffset + statGap * 5 + bodyFont:getHeight()
+      local statsBottom = pageOffset + statGap * 5 + textHeight(bodyFont)
       contentBottom = math.max(spriteBottom, statsBottom)
     end
     local panelH = math.min(h - gutter * 2,
-      contentBottom + spacing.lg + captionFont:getHeight() + spacing.md)
+      contentBottom + spacing.lg + textHeight(captionFont) + spacing.md)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local pageY = py + spacing.md + titleH + spacing.xs
-    local levelY = pageY + bodyFont:getHeight() + spacing.xs
+    local levelY = pageY + textHeight(bodyFont) + spacing.xs
     local hpY = levelY + lineGap
     local statusY = hpY + lineGap
     drawPresenterBackdrop(theme, viewport)
@@ -3430,7 +3771,7 @@ return function(mod)
       local moves = mon.moves or {}
       local moveX = px + spacing.lg
       local moveY = statusY + lineGap * 2
-      local moveGap = compact and (bodyFont:getHeight() + spacing.xs) or 28
+      local moveGap = compact and (textHeight(bodyFont) + spacing.xs) or 28
       local ppX = px + panelW - spacing.lg - bodyFont:getWidth("PP 00/00")
       local moveMax = math.max(24, ppX - spacing.sm - moveX)
       for i = 1, 4 do
@@ -3455,7 +3796,7 @@ return function(mod)
         px + spacing.lg, statusY + lineGap)
       local stats = mon.stats or {}
       local infoX = compact and (px + panelW * 0.48) or (px + panelW * 0.52)
-      local statGap = compact and (bodyFont:getHeight() + spacing.xs) or 28
+      local statGap = compact and (textHeight(bodyFont) + spacing.xs) or 28
       local statY = pageY
       local statRows = {
         { "ATTACK", stats.attack }, { "DEFENSE", stats.defense },
@@ -3825,7 +4166,9 @@ return function(mod)
           or state.softboiledFrom == index) or false,
       }
     end
-    if #rows == 0 then rows[1] = { label = Strings("No POKéMON!") } end
+    if #rows == 0 then
+      rows[1] = { label = Strings("No POKéMON!"), enabled = false }
+    end
     return rows
   end
 
@@ -3898,14 +4241,14 @@ return function(mod)
     for _, value in ipairs(def.types or {}) do types[#types + 1] = displayType(value) end
     drawFittedText(table.concat({ level, speciesName or "",
       table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoX,
-      y + spacing.md + titleFont:getHeight() + spacing.xs, infoW, captionFont)
+      y + spacing.md + textHeight(titleFont) + spacing.xs, infoW, captionFont)
     local stats = displayStats(game, mon, context == "box")
     local maxHP = stats.hp
     local shownHP = math.min(tonumber(mon.hp) or maxHP or 0,
       maxHP or math.huge)
     if maxHP then
-      local barY = y + spacing.md + titleFont:getHeight()
-        + captionFont:getHeight() + spacing.md
+      local barY = y + spacing.md + textHeight(titleFont)
+        + textHeight(captionFont) + spacing.md
       drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
       drawFittedText(("HP %d/%d%s"):format(shownHP, maxHP,
         mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12,
@@ -3913,7 +4256,7 @@ return function(mod)
     end
 
     local lowerY = y + math.max(artSize + spacing.md * 2,
-      titleFont:getHeight() + captionFont:getHeight() * 2 + spacing.xl * 2)
+      textHeight(titleFont) + textHeight(captionFont) * 2 + spacing.xl * 2)
     local lowerH = math.max(1, y + h - spacing.md - lowerY)
     love.graphics.setFont(bodyFont)
     local statText = {
@@ -3929,10 +4272,10 @@ return function(mod)
         x + spacing.md + (index - 1) * (statWidth + spacing.sm), lowerY,
         statWidth, bodyFont)
     end
-    local movesY = lowerY + bodyFont:getHeight() + spacing.sm
+    local movesY = lowerY + textHeight(bodyFont) + spacing.sm
     local moves = mon.moves or {}
-    local available = math.max(1, math.floor((lowerH - bodyFont:getHeight() - spacing.sm)
-      / math.max(1, bodyFont:getHeight() + spacing.xs)))
+    local available = math.max(1, math.floor((lowerH - textHeight(bodyFont) - spacing.sm)
+      / math.max(1, textHeight(bodyFont) + spacing.xs)))
     local count = math.min(#moves, 4, available)
     for index = 1, count do
       local move = moves[index]
@@ -3948,11 +4291,11 @@ return function(mod)
         - spacing.sm - moveX)
       setColor(colors.text)
       drawFittedText(moveName, moveX,
-        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs),
+        movesY + (index - 1) * (textHeight(bodyFont) + spacing.xs),
         moveMax, bodyFont)
       setColor(colors.textMuted)
       love.graphics.print(pp, x + w - spacing.md - ppWidth,
-        movesY + (index - 1) * (bodyFont:getHeight() + spacing.xs))
+        movesY + (index - 1) * (textHeight(bodyFont) + spacing.xs))
     end
     if #moves == 0 then
       setColor(colors.textMuted)
@@ -3987,7 +4330,7 @@ return function(mod)
     local desiredListH = desiredRows * rowHeight
     local detailBody = font(fontCache, theme.typography.body)
     local detailMinH = math.max(220,
-      170 + detailBody:getHeight() * 5 + spacing.sm * 5)
+      170 + textHeight(detailBody) * 5 + spacing.sm * 5)
     local desiredContentH = minimal and desiredListH
       or landscape and math.max(desiredListH, detailMinH)
       or detailMinH + spacing.sm + desiredListH
@@ -4021,7 +4364,8 @@ return function(mod)
       partyTitle)
     local listLayout = { x = listX, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
-      radius = theme.radii.sm, sidePanel = false }
+      radius = theme.radii.sm, sidePanel = false,
+      pointerSelectionField = "index" }
     drawRows(theme, listLayout, rows, selected, scroll, game)
     if detailW > 0 then
       drawMonDetail(game, party[selected], px + panelW - detailW,
@@ -4046,6 +4390,11 @@ return function(mod)
     -- selection, and cancellation remain with PartyMenu.
     if state.submenu and type(state.subItems) == "table" then
       drawModalScrim(theme, viewport)
+      local vx, vy, vw, vh = presenterRect(viewport)
+      registerPointerRegion(vx, vy, vw, vh, {
+        role = "scrim", modalBlocker = true, interactive = true,
+        dragHandle = false,
+      })
       local actionRows = {}
       for _, item in ipairs(state.subItems) do
         actionRows[#actionRows + 1] = { label = item.label or "", source = item }
@@ -4058,6 +4407,7 @@ return function(mod)
       local ax, ay = px + (panelW - actionW) / 2, py + (panelH - actionH) / 2
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", ax, ay, actionW, actionH, theme.radii.md)
+      if pointerDrawContext then pointerDrawContext.modalOwner = state.submenu end
       drawHeader(theme, { x = ax, y = ay, w = actionW, h = actionH, radius = theme.radii.md },
         Strings("POKéMON ACTIONS"), colors.surfaceRaised)
       local actionVisible = math.max(1, math.min(#actionRows,
@@ -4068,8 +4418,10 @@ return function(mod)
         math.max(0, #actionRows - actionVisible))
       drawRows(theme, { x = ax, y = ay, w = actionW, h = actionH,
         rowHeight = actionRowH, header = actionHeader,
-        footer = 0, visible = actionVisible, radius = theme.radii.sm },
+        footer = 0, visible = actionVisible, radius = theme.radii.sm,
+        pointerSelectionField = "subIndex" },
         actionRows, actionSelected, actionScroll, game)
+      if pointerDrawContext then pointerDrawContext.modalOwner = nil end
     end
     love.graphics.pop()
   end
@@ -4177,7 +4529,7 @@ return function(mod)
     local previewBody = font(fontCache, theme.typography.body)
     local previewCaption = font(fontCache, theme.typography.caption)
     local desiredPreviewH = math.max(190,
-      previewBody:getHeight() + previewCaption:getHeight() * 3
+      textHeight(previewBody) + textHeight(previewCaption) * 3
         + spacing.lg * 4 + 110)
     local desiredContentH = landscape and math.max(desiredListH, desiredPreviewH)
       or desiredPreviewH + spacing.sm + desiredListH
@@ -4337,7 +4689,7 @@ return function(mod)
       - (previewIconSize > 0 and previewIconSize + spacing.md or 0))
     local detailBodyFont = font(fontCache, theme.typography.body)
     local detailFont = font(fontCache, theme.typography.caption)
-    local detailLineGap = detailFont:getHeight() + spacing.xs
+    local detailLineGap = textHeight(detailFont) + spacing.xs
     local detailTitleLines = #wrappedLines(previewRow and previewRow.label
       or Strings("ITEM"), previewInfoW, detailBodyFont)
     local detailLines = 0
@@ -4376,7 +4728,7 @@ return function(mod)
     end
     if detailLines > 0 then
       detailMinH = math.max(detailMinH,
-        spacing.md + detailTitleLines * detailBodyFont:getHeight() + spacing.sm
+        spacing.md + detailTitleLines * textHeight(detailBodyFont) + spacing.sm
           + detailLines * detailLineGap + spacing.md)
     end
     local desiredContentH = minimalBag and desiredListH
@@ -4561,7 +4913,7 @@ return function(mod)
       previewRow and previewRow.label or Strings("ITEM"), previewInfoW,
       detailTitleFont)
     local detailFont = font(fontCache, theme.typography.caption)
-    local detailLineGap = detailFont:getHeight() + spacing.xs
+    local detailLineGap = textHeight(detailFont) + spacing.xs
     local detailLines = 0
     local function countDetail(text)
       if text and text ~= "" then
@@ -4582,7 +4934,7 @@ return function(mod)
     countDetail(itemValueText(previewItemId, previewDef))
     if detailLines > 0 then
       detailMinH = math.max(detailMinH,
-        spacing.md + detailTitleLines * detailTitleFont:getHeight() + spacing.sm
+        spacing.md + detailTitleLines * textHeight(detailTitleFont) + spacing.sm
           + detailLines * detailLineGap + spacing.md)
     end
     local desiredContentH = minimalContext and desiredListH
@@ -4775,6 +5127,11 @@ return function(mod)
       local c, r = (i - 1) % cols, math.floor((i - 1) / cols)
       local cx, cy = gx + c * cellW, gy + r * cellH
       local mon = list[i]
+      registerPointerRegion(cx + 2, cy + 2, cellW - 4, cellH - 4, {
+        gridRow = r, gridCol = c, activate = true,
+        gridRows = gridRows, gridCols = cols,
+        interactive = true, dragHandle = false,
+      })
       if i == selected then
         setColor(theme.colors.selected)
       else
@@ -4790,7 +5147,7 @@ return function(mod)
         local captionSize = cellW < 128 and 10 or theme.typography.caption
         local captionFont = font(fontCache, captionSize)
         local cellPad = math.max(3, math.min(spacing.sm, cellW * 0.08))
-        local captionH = captionFont:getHeight() + cellPad * 0.8
+        local captionH = textHeight(captionFont) + cellPad * 0.8
         local spriteAreaY = cy + cellPad
         local spriteAreaH = math.max(1, cellH - captionH - cellPad * 1.4)
         if img then
@@ -4813,7 +5170,8 @@ return function(mod)
         local level = mon.level and ("Lv " .. tostring(mon.level)) or ""
         local levelW = captionFont:getWidth(level)
         local nameMax = math.max(12, cellW - cellPad * 2 - levelW - cellPad)
-        local captionY = cy + cellH - captionH + (captionH - captionFont:getHeight()) / 2 - 1
+        local captionY = cy + cellH - captionH
+          + (captionH - textHeight(captionFont)) / 2 - 1
         love.graphics.print(truncate(name, nameMax), cx + cellPad, captionY)
         setColor(theme.colors.textMuted)
         if level ~= "" then
@@ -4874,9 +5232,9 @@ return function(mod)
     -- most of an ultrawide window.
     panelW = math.min(panelW, scaledPanelWidth(theme,
       page == "moves" and 720 or 620))
-    local lineGap = bodyFont:getHeight() + spacing.sm
+    local lineGap = textHeight(bodyFont) + spacing.sm
     local desiredHeroH = math.max(190,
-      math.min(250, bodyFont:getHeight() * 4 + spacing.lg * 3 + 70))
+      math.min(250, textHeight(bodyFont) * 4 + spacing.lg * 3 + 70))
     local desiredDetailH = lineGap * 4 + spacing.lg * 2
     local descriptionLines = 1
     local detailWidthEstimate = math.max(80,
@@ -4911,16 +5269,16 @@ return function(mod)
     local desiredContentH = page == "data"
       and desiredDetailH or math.max(desiredHeroH, desiredDetailH)
     local panelH = math.min(h - gutter * 2,
-      titleFont:getHeight() + spacing.xl + 12 + desiredContentH
-        + spacing.lg + captionFont:getHeight())
+      textHeight(titleFont) + spacing.xl + 12 + desiredContentH
+        + spacing.lg + textHeight(captionFont))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local heroX = px + spacing.lg
-    local heroY = py + titleFont:getHeight() + spacing.xl + 12
+    local heroY = py + textHeight(titleFont) + spacing.xl + 12
     local heroW = math.min(240, panelW * 0.34)
     local heroH = math.min(250, desiredHeroH)
     local detailX = heroX + heroW + spacing.xl
     local detailW = math.max(40, panelW - (detailX - px) - spacing.lg)
-    local footerY = py + panelH - spacing.lg - captionFont:getHeight() - 4
+    local footerY = py + panelH - spacing.lg - textHeight(captionFont) - 4
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -4959,44 +5317,45 @@ return function(mod)
       for _, stat in ipairs(stats) do
         drawFittedText(("%s  %s"):format(safeText(stat.key), safeText(stat.value)),
           tx, yy, maxW, bodyFont)
-        yy = yy + bodyFont:getHeight() + spacing.sm
+        yy = yy + textHeight(bodyFont) + spacing.sm
       end
       drawFittedText("BST  " .. safeText(state.stats.bst), tx, yy + 4,
         maxW, bodyFont)
-      yy = yy + bodyFont:getHeight() + spacing.md
+      yy = yy + textHeight(bodyFont) + spacing.md
       for _, evo in ipairs(state.stats.evolutions or {}) do
         local nextY = drawWrappedText((evo.label or "") .. " "
           .. (evo.name or ""), tx, yy, maxW, bodyFont,
-          bodyFont:getHeight() + spacing.xs)
+          textHeight(bodyFont) + spacing.xs)
         yy = nextY + spacing.xs
       end
     elseif page == "moves" then
       local ok, moveRows = pcall(function() return state:rows() end)
       local rows = ok and moveRows or {}
       local start = ((state.page or 1) - 1) * 10 + 1
-      local lineGap = bodyFont:getHeight() + spacing.sm
+      local lineGap = textHeight(bodyFont) + spacing.sm
       local remaining = math.max(0, #rows - start + 1)
       local requested = math.min(10, remaining)
       -- Keep the footer as a hard layout boundary.  Dex move pages can expose
       -- a tenth row (TM/HM); without reserving this space the final row can
       -- collide with the navigation hint on short landscape displays.
-      local contentBottom = footerY - spacing.sm - bodyFont:getHeight()
+      local contentBottom = footerY - spacing.sm - textHeight(bodyFont)
       if requested > 1 then
         local compressedGap = (contentBottom - heroY) / (requested - 1)
         lineGap = math.min(lineGap, compressedGap)
       end
-      lineGap = math.max(bodyFont:getHeight() + 1, lineGap)
+      lineGap = math.max(textHeight(bodyFont) + 1, lineGap)
       local maxVisible = math.max(1,
         math.floor((contentBottom - heroY) / lineGap) + 1)
       local visible = math.min(10, remaining, maxVisible)
       for offset = 0, visible - 1 do
         local row = rows[start + offset]
         drawWrappedText(row, tx, heroY + offset * lineGap, maxW, bodyFont,
-          bodyFont:getHeight() + spacing.xs)
+          textHeight(bodyFont) + spacing.xs)
       end
       if visible < requested then
         setColor(theme.colors.textMuted)
-        love.graphics.print("...", tx, footerY - captionFont:getHeight() - spacing.sm)
+        love.graphics.print("...", tx,
+          footerY - textHeight(captionFont) - spacing.sm)
         setColor(theme.colors.text)
       end
     else
@@ -5004,12 +5363,12 @@ return function(mod)
       drawFittedText("No. " .. safeText(def.dex), tx, heroY + spacing.md,
         maxW, bodyFont)
       drawFittedText(entry.kind, tx,
-        heroY + spacing.md + bodyFont:getHeight() + spacing.sm, maxW, bodyFont)
+        heroY + spacing.md + textHeight(bodyFont) + spacing.sm, maxW, bodyFont)
       drawFittedText(entry.heightM and ("HT " .. entry.heightM .. "m") or "",
-        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 2,
+        tx, heroY + spacing.md + (textHeight(bodyFont) + spacing.sm) * 2,
         maxW, bodyFont)
       drawFittedText(entry.weightKg and ("WT " .. entry.weightKg .. "kg") or "",
-        tx, heroY + spacing.md + (bodyFont:getHeight() + spacing.sm) * 3,
+        tx, heroY + spacing.md + (textHeight(bodyFont) + spacing.sm) * 3,
         maxW, bodyFont)
       local owned = state.forceOwned or (state.vanilla and state.vanilla.forceOwned)
         or (game.save and game.save.pokedex and game.save.pokedex.owned and
@@ -5020,7 +5379,7 @@ return function(mod)
       if text then
         local lines = wrappedLines(safeText(text):gsub("[\r\n\v\f]+", " "),
           panelW - spacing.lg * 2, bodyFont)
-        local lineHeight = bodyFont:getHeight() + spacing.sm
+        local lineHeight = textHeight(bodyFont) + spacing.sm
         for i, line in ipairs(lines) do
           local yy = descriptionY + (i - 1) * lineHeight
           if yy > footerY - lineHeight then break end
@@ -5101,7 +5460,8 @@ return function(mod)
       setColor(theme.colors.textMuted)
       love.graphics.print(level, levelX, y + spacing.sm)
     end
-    local barY = y + spacing.sm + font(fontCache, theme.typography.body):getHeight() + 5
+    local barY = y + spacing.sm
+      + textHeight(font(fontCache, theme.typography.body)) + 5
     drawBattleBar(theme, x + spacing.md, barY, w - spacing.md * 2, 8, hp, maxHP)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
@@ -5177,7 +5537,7 @@ return function(mod)
         setColor(i == (state.menuIndex or 1) and theme.colors.text or theme.colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.body))
         love.graphics.print(Strings(label), cx + spacing.sm,
-          cy + (cellH - love.graphics.getFont():getHeight()) / 2)
+          cy + (cellH - textHeight(love.graphics.getFont())) / 2)
       end
     elseif phase == "moveSelect" or phase == "mimicSelect" then
       local moves = phase == "mimicSelect" and state.mimicMoves
@@ -5216,22 +5576,22 @@ return function(mod)
         setColor(i == selected and theme.colors.text or theme.colors.textMuted)
         if move then
           love.graphics.print(truncate(label, labelMax), cx + spacing.sm,
-            cy + (cellH - moveFont:getHeight()) / 2)
+            cy + (cellH - textHeight(moveFont)) / 2)
         else
           love.graphics.print("-", cx + (cellW - moveFont:getWidth("-")) / 2,
-            cy + (cellH - moveFont:getHeight()) / 2)
+            cy + (cellH - textHeight(moveFont)) / 2)
         end
         setColor(theme.colors.textMuted)
         love.graphics.setFont(ppFont)
         love.graphics.print(pp, cx + cellW - spacing.md - ppW,
-          cy + (cellH - ppFont:getHeight()) / 2)
+          cy + (cellH - textHeight(ppFont)) / 2)
       end
     else
       local text = battleMessage(state)
       setColor(theme.colors.text)
       love.graphics.setFont(font(fontCache, theme.typography.body))
       local lines = wrappedLines(text, w - spacing.lg * 2)
-      local lineH = love.graphics.getFont():getHeight() + spacing.sm
+      local lineH = textHeight(love.graphics.getFont()) + spacing.sm
       for i, line in ipairs(lines) do
         if i > math.max(1, math.floor(contentH / lineH)) then break end
         love.graphics.print(line, x + spacing.lg, y + spacing.md + (i - 1) * lineH)
@@ -5344,8 +5704,10 @@ return function(mod)
       local ok, value = pcall(linkNetClass.defaultPort)
       if ok and value then defaultPort = safeText(value) end
     end
-    local function row(label, value)
-      rows[#rows + 1] = { label = safeText(label), value = value }
+    local function row(label, value, enabled)
+      rows[#rows + 1] = {
+        label = safeText(label), value = value, enabled = enabled,
+      }
     end
     if stage == "menu" then
       row("LINK CABLE (LAN)")
@@ -5385,7 +5747,7 @@ return function(mod)
       end
       row("CODE", code)
       row("POSITION", entry and entry.pos and
-        (safeText(entry.pos) .. " / 6") or "1 / 6")
+        (safeText(entry.pos) .. " / 6") or "1 / 6", false)
       selected = 1
       footer = "ARROWS  edit   A  connect   B  back"
     elseif stage == "addrEntry" then
@@ -5405,25 +5767,25 @@ return function(mod)
       row("HOST", digits)
       row("POSITION", state.addrPos and
         (safeText(state.addrPos) .. " / " .. safeText(#(state.addr or {})))
-        or "1 / 12")
-      row("PORT", defaultPort)
+        or "1 / 12", false)
+      row("PORT", defaultPort, false)
       selected = 1
       footer = "UP/DOWN  digit   LEFT/RIGHT  slot   A  connect   B  back"
     elseif stage == "onlineHosting" then
-      row("CODE", state.net and state.net.code or "??????")
-      row("STATUS", "WAITING FOR JOIN")
+      row("CODE", state.net and state.net.code or "??????", false)
+      row("STATUS", "WAITING FOR JOIN", false)
       footer = "B  cancel"
     elseif stage == "hosting" then
-      row("ADDRESS", state.net and state.net.address or "?")
-      row("STATUS", "WAITING FOR JOIN")
+      row("ADDRESS", state.net and state.net.address or "?", false)
+      row("STATUS", "WAITING FOR JOIN", false)
       footer = "B  cancel"
     elseif stage == "onlineJoining" or stage == "joining" then
-      row("STATUS", "CALLING...")
-      row("TARGET", state.net and state.net.target or "")
+      row("STATUS", "CALLING...", false)
+      row("TARGET", state.net and state.net.target or "", false)
       footer = "B  cancel"
     elseif stage == "waitMode" or stage == "waitHello" then
       row("STATUS", stage == "waitHello" and "CHECKING OTHER GAME"
-        or "WAITING FOR HOST")
+        or "WAITING FOR HOST", false)
       footer = "B  cancel"
     elseif stage == "notice" then
       for _, line in ipairs(state.noticeLines or {}) do row(line) end
@@ -5436,12 +5798,12 @@ return function(mod)
       end
       footer = "A  choose   B  back"
     elseif stage == "battleWait" or stage == "battleRunning" then
-      row("STATUS", "EXCHANGING DATA...")
+      row("STATUS", "EXCHANGING DATA...", false)
       footer = "B  cancel"
     else
-      row("STATUS", safeText(state.status or "WAITING..."))
+      row("STATUS", safeText(state.status or "WAITING..."), false)
     end
-    if #rows == 0 then row("WAITING...") end
+    if #rows == 0 then row("WAITING...", nil, false) end
 
     local layout = layoutFor(viewport, theme, "link", rows, Strings(title), footer)
     selected = clamp(selected, 1, #rows)
@@ -5573,8 +5935,165 @@ return function(mod)
       or kind == "quantity" or kind == "text"
   end
 
+  -- A/B are available globally through the mouse buttons, but a few screens
+  -- expose meaningful controls that cannot be represented by row clicks.
+  -- Surface only those extras, and leave mobile's native TouchControls alone:
+  -- they receive pointer first refusal and already provide the full pad.
+  local function pointerControlsFor(kind, state)
+    if not state then return {} end
+    local actions, seen = {}, {}
+    local function add(action)
+      if not seen[action] then
+        actions[#actions + 1] = action
+        seen[action] = true
+      end
+    end
+
+    if kind == "mod_manager" then
+      if state._gen1OptionDescription then return actions end
+      if state.overlay then
+        if state.overlay.kind == "confirm" then add("up"); add("down") end
+        return actions
+      elseif state.screen == "options" then
+        add("left"); add("right"); add("select")
+      elseif state.screen == "list" then
+        add("left"); add("right"); add("select"); add("start")
+      elseif state.screen == "detail" then
+        add("left"); add("right"); add("select")
+      end
+    elseif kind == "options" or kind == "mod_options" then
+      add("left"); add("right")
+    elseif kind == "quantity" then
+      add("down"); add("up")
+    elseif kind == "choice" then
+      add("left"); add("right")
+    elseif kind == "gen3_box" then
+      add("up"); add("down"); add("left"); add("right")
+      add("select"); add("start")
+    elseif kind == "link" then
+      local stage = state.stage
+      if stage == "codeEntry" or stage == "addrEntry" then
+        add("up"); add("down"); add("left"); add("right")
+      elseif stage == "battleOptions" then
+        add("up"); add("down")
+      end
+    elseif kind == "bag" and type(state.modernBag) == "table" then
+      add("left"); add("right")
+    end
+
+    if state.pageJump then add("left"); add("right") end
+    if type(state.onSelectKey) == "function" then add("select") end
+    return actions
+  end
+
+  local POINTER_CONTROL_LABEL = {
+    up = "^", down = "v", left = "<", right = ">",
+    select = "SELECT", start = "START",
+  }
+
+  POINTER_CONTROL_LABEL.forContext = function(kind, state, action)
+    if kind == "quantity" then
+      if action == "down" then return "-" end
+      if action == "up" then return "+" end
+    elseif kind == "mod_manager" then
+      if state.screen == "options" and action == "select" then return "HELP" end
+      if state.screen == "list" and action == "select" then return "TOGGLE" end
+      if state.screen == "list" and action == "start" then return "APPLY" end
+    elseif kind == "gen3_box" then
+      if action == "select" then
+        return state.mode == "party" and "BOX" or "PARTY"
+      end
+      if action == "start" then return "STATS" end
+    elseif kind == "bag" and type(state.modernBag) == "table" then
+      if action == "left" then return "< POCKET" end
+      if action == "right" then return "POCKET >" end
+    end
+    if state.pageJump then
+      if action == "left" then return "< PAGE" end
+      if action == "right" then return "PAGE >" end
+    end
+    return POINTER_CONTROL_LABEL[action] or action:upper()
+  end
+
+  local function drawPointerControls(theme, context)
+    if option("pointerUi", true) == false or not context
+        or not context.primaryPanel
+        or (context.viewport and context.viewport._gen1TouchVisible) then
+      return
+    end
+    local actions = pointerControlsFor(context.kind, context.state)
+    if #actions == 0 then return end
+    local panel = context.primaryPanel
+    local vx, vy, vw, vh = presenterRect(context.baseViewport or context.viewport)
+    local spacing = theme.spacing
+    local controlFont = font(fontCache, theme.typography.caption)
+    love.graphics.setFont(controlFont)
+    local gap = math.max(3, spacing.xs)
+    local buttonH = math.max(28, textHeight(controlFont) + spacing.sm)
+    local widths, dockW = {}, 0
+    for index, action in ipairs(actions) do
+      local label = POINTER_CONTROL_LABEL.forContext(
+        context.kind, context.state, action)
+      local width = math.max(buttonH,
+        controlFont:getWidth(label) + spacing.md)
+      widths[index] = width
+      dockW = dockW + width + (index > 1 and gap or 0)
+    end
+
+    local rightRoom = vx + vw - (panel.x + panel.w)
+    local leftRoom = panel.x - vx
+    local dockX, dockY
+    if rightRoom >= dockW + spacing.md * 2 then
+      dockX = panel.x + panel.w + spacing.md
+      dockY = clamp(panel.y + panel.h - buttonH, vy + spacing.sm,
+        vy + vh - buttonH - spacing.sm)
+    elseif leftRoom >= dockW + spacing.md * 2 then
+      dockX = panel.x - dockW - spacing.md
+      dockY = clamp(panel.y + panel.h - buttonH, vy + spacing.sm,
+        vy + vh - buttonH - spacing.sm)
+    else
+      -- Tight windows still get the controls, tucked into the footer. The
+      -- opaque chips intentionally replace the least-useful end of its hint.
+      dockX = clamp(panel.x + panel.w - dockW - spacing.md,
+        vx + spacing.sm, vx + vw - dockW - spacing.sm)
+      dockY = clamp(panel.y + panel.h - buttonH - spacing.xs,
+        vy + spacing.sm, vy + vh - buttonH - spacing.sm)
+    end
+
+    local x = dockX
+    for index, action in ipairs(actions) do
+      local width = widths[index]
+      local controlKey = safeText(context.layerKey) .. ":" .. action
+      local hovered = hoveredPointer
+        and hoveredPointer.controlKey == controlKey
+      setColor(hovered and theme.colors.selected
+        or (theme.colors.surfaceRaised or theme.colors.surface))
+      love.graphics.rectangle("fill", x, dockY, width, buttonH,
+        theme.radii.sm or 6)
+      setColor(hovered and theme.colors.text or theme.colors.textMuted)
+      local label = POINTER_CONTROL_LABEL.forContext(
+        context.kind, context.state, action)
+      love.graphics.print(label, x + (width - controlFont:getWidth(label)) / 2,
+        dockY + (buttonH - textHeight(controlFont)) / 2)
+      registerPointerRegion(x, dockY, width, buttonH, {
+        action = action, activate = true, interactive = true,
+        controlKey = controlKey, dragHandle = false,
+      })
+      x = x + width + gap
+    end
+  end
+
   local function drawModernStack(game, layers, viewport)
     local theme = responsiveTheme(currentTheme(viewport), viewport, responsiveThemeCache)
+    pointerRuntime.generation = pointerRuntime.generation + 1
+    pointerRegions = {}
+    pointerRuntime.topOrder = #layers
+    local nextTopState = layers[#layers] and layers[#layers].state or nil
+    if pointerRuntime.topState ~= nextTopState then
+      hoveredPointer = nil
+      for _, capture in pairs(pointerCaptures) do capture.invalid = true end
+    end
+    pointerRuntime.topState = nextTopState
     love.graphics.push("all")
     love.graphics.origin()
     local modalActive = false
@@ -5586,12 +6105,484 @@ return function(mod)
       local modal = index > 1 and isModalLayer(layer.kind)
       if modal and not modalActive then drawModalScrim(theme, viewport) end
       modalActive = modal
-      drawModern(game, layer.state, layer.kind, viewport, theme,
+      local offsetX, offsetY = layerOffset(layer.kind, viewport)
+      local layerViewport = shiftedViewport(viewport, offsetX, offsetY)
+      pointerDrawContext = {
+        kind = layer.kind, state = layer.state,
+        layerKey = safeText(layer.kind or "screen") .. ":" .. index,
+        viewport = layerViewport, baseViewport = viewport, order = index,
+      }
+      drawModern(game, layer.state, layer.kind, layerViewport, theme,
         modal, underKind, underState,
         overKind, overState)
+      if index == #layers then
+        drawPointerControls(theme, pointerDrawContext)
+      end
+      pointerDrawContext = nil
     end
+    pointerDrawContext = nil
     love.graphics.pop()
   end
+
+  local function pointerInputReady()
+    return mod.input and type(mod.input.tap) == "function"
+  end
+
+  local function pointerContains(region, x, y)
+    return type(x) == "number" and type(y) == "number"
+      and x >= region.x and x <= region.x + region.w
+      and y >= region.y and y <= region.y + region.h
+  end
+
+  pointerRuntime.stackTop = function(game)
+    local stack = game and game.stack
+    if not (stack and type(stack.top) == "function") then return nil end
+    local ok, top = pcall(stack.top, stack)
+    return ok and top or nil
+  end
+
+  pointerRuntime.regionAlive = function(game, region)
+    if not region or region.order ~= pointerRuntime.topOrder
+        or region.state ~= pointerRuntime.topState then return false end
+    local top = pointerRuntime.stackTop(game)
+    if top and top ~= region.state then return false end
+    if region.stateMode ~= pointerRuntime.stateMode(region.state, region.kind) then
+      return false
+    end
+
+    -- Manager overlays live inside ManagerState rather than as stack states.
+    -- A stale option-row region must not remain active while one of those
+    -- overlays is on screen, or its queued A edge can change the option below
+    -- the modal (and then run against a rebuilt row list).
+    local state = region.state
+    if region.kind == "choice" and state and state.pending ~= nil then
+      return false
+    end
+    if region.kind == "party" and state then
+      if region.modalOwner ~= nil and region.modalOwner ~= state.submenu then
+        return false
+      end
+      if state.submenu then
+        return region.modalBlocker == true
+          or region.modalOwner == state.submenu
+      end
+    end
+    if region.kind == "mod_manager" and state then
+      if state._gen1OptionDescription then
+        return region.pointerCommand == "dismiss_help"
+          or region.modalBlocker == true
+      end
+      if state.overlay then
+        return region.modalBlocker == true
+          or region.modalOwner == state.overlay
+          or region.selectionState == state.overlay
+      end
+      if region.selectionState and region.selectionState ~= state then
+        return false
+      end
+    end
+    return true
+  end
+
+  local function pointerHit(x, y)
+    -- Regions are appended in draw order. Only the active/top layer may own
+    -- hover or click; visible parents underneath a modal remain context, not
+    -- live hit targets. Reverse iteration still gives controls and rows first
+    -- refusal over their panel's drag surface.
+    for index = #pointerRegions, 1, -1 do
+      local region = pointerRegions[index]
+      if pointerContains(region, x, y)
+          and region.interactive ~= false
+          and pointerRuntime.regionAlive(currentGame, region) then
+        return region
+      end
+    end
+    return nil
+  end
+
+  pointerRuntime.insideUi = function(x, y)
+    for index = #pointerRegions, 1, -1 do
+      local region = pointerRegions[index]
+      if pointerContains(region, x, y)
+          and (region.role == "panel" or region.role == "modal"
+            or region.role == "scrim" or region.role == "control") then
+        return true
+      end
+    end
+    return false
+  end
+
+  pointerRuntime.targetKey = function(region)
+    if not region then return nil end
+    local owner = tostring(region.selectionState or region.state)
+    if region.controlKey then return "control:" .. safeText(region.controlKey) end
+    if region.pointerCommand then
+      return "command:" .. safeText(region.pointerCommand) .. ":" .. owner
+    end
+    if region.gridRow ~= nil and region.gridCol ~= nil then
+      return ("grid:%s:%s:%s"):format(owner, region.gridRow, region.gridCol)
+    end
+    if region.selectionField and region.selectionIndex ~= nil then
+      return ("selection:%s:%s:%s"):format(owner,
+        region.selectionField, region.selectionIndex)
+    end
+    if region.rowIndex ~= nil then
+      return ("row:%s:%s"):format(owner, region.rowIndex)
+    end
+    if region.role then
+      return ("%s:%s:%d:%d:%d:%d"):format(region.role, owner,
+        math.floor(region.x + 0.5), math.floor(region.y + 0.5),
+        math.floor(region.w + 0.5), math.floor(region.h + 0.5))
+    end
+    return "region:" .. owner
+  end
+
+  pointerRuntime.sameTarget = function(first, second)
+    local a, b = pointerRuntime.targetKey(first), pointerRuntime.targetKey(second)
+    return a ~= nil and a == b
+  end
+
+  local function pointerSelectionField(region)
+    local state = region and (region.selectionState or region.state)
+    if not state then return nil end
+    if region.selectionField then return region.selectionField end
+    if region.rowIndex == nil then return nil end
+    if region.kind == "mod_manager" then
+      return "cursor"
+    elseif region.kind == "party" and state.submenu then
+      return "subIndex"
+    elseif type(state.index) == "number" then
+      return "index"
+    elseif type(state.cursor) == "number" then
+      return "cursor"
+    elseif type(state.selected) == "number" then
+      return "selected"
+    end
+    return nil
+  end
+
+  local function setPointerSelection(region, desiredIndex, game)
+    local state = region and (region.selectionState or region.state)
+    if not state or not region
+        or not pointerRuntime.regionAlive(game or currentGame, region) then return false end
+    if region.gridRow ~= nil and region.gridCol ~= nil then
+      local rows = math.max(1, tonumber(region.gridRows) or region.gridRow + 1)
+      local cols = math.max(1, tonumber(region.gridCols) or region.gridCol + 1)
+      local row = clamp(math.floor(tonumber(region.gridRow) or 0), 0, rows - 1)
+      local col = clamp(math.floor(tonumber(region.gridCol) or 0), 0, cols - 1)
+      return pcall(function() state.row, state.col = row, col end)
+    end
+    local index = tonumber(desiredIndex or region.selectionIndex
+      or region.rowIndex)
+    local field = pointerSelectionField(region)
+    if not state or not index or not field then return false end
+    index = math.floor(index)
+    if tonumber(region.rowCount) then
+      index = clamp(index, 1, math.max(1, math.floor(region.rowCount)))
+    end
+
+    local ok = pcall(function()
+      state[field] = index
+      if region.kind == "party" and field == "index"
+          and state.game then
+        state.game.partyMenuSavedIndex = index
+      end
+
+      -- ManagerState:snapCursor() deliberately models every manager screen
+      -- except options. Calling it from an option-row hover therefore sees an
+      -- empty rowsForScreen() result and resets the cursor to one. Keep its
+      -- zero-based option scroll in sync here and reserve snapCursor for the
+      -- manager screens it actually owns.
+      if region.kind == "mod_manager" and state.screen == "options" then
+        local visible = math.max(1, tonumber(region.visibleCount) or 1)
+        local count = math.max(1, tonumber(region.rowCount) or index)
+        local scroll = clamp(tonumber(state.scroll) or 0, 0,
+          math.max(0, count - visible))
+        if index <= scroll then
+          scroll = index - 1
+        elseif index > scroll + visible then
+          scroll = index - visible
+        end
+        state.scroll = clamp(scroll, 0, math.max(0, count - visible))
+      elseif type(state.clampScroll) == "function" then
+        state:clampScroll()
+      elseif type(state.syncScroll) == "function" then
+        state:syncScroll()
+      elseif field == "cursor" and type(state.snapCursor) == "function" then
+        state:snapCursor()
+      end
+    end)
+    return ok
+  end
+
+  local function updatePointerHover(region, game)
+    if region and not pointerRuntime.regionAlive(game or currentGame, region) then
+      region = nil
+    end
+    hoveredPointer = region
+    if region and region.interactive ~= false
+        and (region.rowIndex ~= nil or region.selectionField ~= nil
+          or (region.gridRow ~= nil and region.gridCol ~= nil)) then
+      -- Hovering a row is the mouse equivalent of moving the native cursor.
+      -- Selection remains owned by the live state, so the next draw naturally
+      -- paints the same highlight used by keyboard/controller navigation.
+      setPointerSelection(region, nil, game)
+    end
+  end
+
+  local function pointerScroll(region, normalizedScroll)
+    local state = region and region.state
+    if not state or type(state.scroll) ~= "number"
+        or not region.scrollable
+        or not pointerRuntime.regionAlive(currentGame, region) then
+      return false
+    end
+    local maxScroll = math.max(0, (tonumber(region.rowCount) or 0)
+      - (tonumber(region.visibleCount) or 0))
+    local scroll = clamp(math.floor((tonumber(normalizedScroll) or 0) + 0.5),
+      0, maxScroll)
+    local bias = tonumber(region.scrollBias) or 0
+    return pcall(function()
+      state.scroll = scroll + bias
+
+      -- Presenter layouts keep the live cursor visible. Move that cursor to
+      -- the nearest selectable row as a drag scrolls; manager section headers
+      -- are deliberately skipped so a touch can never strand its cursor on
+      -- an inert heading.
+      local field = pointerSelectionField(region)
+      local current = field and tonumber(state[field])
+      if field and current then
+        local first = scroll + 1
+        local last = math.min(tonumber(region.rowCount) or first,
+          scroll + math.max(1, tonumber(region.visibleCount) or 1))
+        local target = clamp(current, first, last)
+        local selectable = region.selectableIndices
+        if type(selectable) == "table" and #selectable > 0 then
+          local nearest, distance
+          for _, candidate in ipairs(selectable) do
+            if candidate >= first and candidate <= last then
+              local candidateDistance = math.abs(candidate - target)
+              if not distance or candidateDistance < distance then
+                nearest, distance = candidate, candidateDistance
+              end
+            end
+          end
+          if nearest then target = nearest end
+        end
+        state[field] = target
+      end
+    end)
+  end
+
+  local function tapGameButton(game, button)
+    local ok, result = pcall(mod.input.tap, mod.input, game, button)
+    return ok and result ~= false
+  end
+
+  local function tapPointerAction(game, region)
+    if not region or not pointerRuntime.regionAlive(game, region) then return false end
+    if region.pointerCommand == "dismiss_help" then
+      if region.state and region.state._gen1OptionDescription then
+        region.state._gen1OptionDescription = nil
+        return true
+      end
+      return false
+    end
+    if region.action then return tapGameButton(game, region.action) end
+    local hasSelection = region.rowIndex ~= nil or region.selectionField ~= nil
+      or (region.gridRow ~= nil and region.gridCol ~= nil)
+    local selected = not hasSelection or setPointerSelection(region, nil, game)
+    if not selected then return false end
+    local canActivate = region.activate == true or region.rowIndex ~= nil
+      or region.kind == "text" or region.kind == "quantity"
+    if not canActivate then return false end
+    return tapGameButton(game, "a")
+  end
+
+  local function pointerCaptureKey(pointer)
+    local source = pointer and pointer.source or "mouse"
+    local id = pointer and pointer.id ~= nil and pointer.id or "mouse"
+    return tostring(source) .. ":" .. tostring(id)
+  end
+
+  -- The upstream hook fires after TouchControls has had first refusal. A
+  -- pointer that arrives here is therefore safe for the mod to capture for a
+  -- full lifecycle, including multi-touch drags and short click/tap pulses.
+  pointerRuntime.dispatch = function(next, game, pointer)
+    if type(pointer) ~= "table" then
+      return next(game, pointer)
+    end
+    local phase = pointer.phase
+    local key = pointerCaptureKey(pointer)
+    if option("pointerUi", true) == false or not pointerInputReady() then
+      -- A setting or compatibility change can happen in the middle of a
+      -- gesture. Never leave that pointer's old capture waiting to fire when
+      -- click support is enabled again later.
+      pointerCaptures[key] = nil
+      return next(game, pointer)
+    end
+    if phase == "pressed" then
+      local mouseAction
+      if pointer.source == "mouse" then
+        local button = tonumber(pointer.button)
+        if button == nil or button == 1 then
+          mouseAction = "a"
+        elseif button == 2 then
+          mouseAction = "b"
+        else
+          return next(game, pointer)
+        end
+      end
+
+      -- Right-click is always the global B action. Left-click resolves only
+      -- the active layer. A visible parent beneath a modal blocks click-
+      -- through but is never allowed to move its hidden cursor.
+      local region = mouseAction == "b" and nil
+        or pointerHit(pointer.x, pointer.y)
+      local insideUi = pointerRuntime.insideUi(pointer.x, pointer.y)
+      local blocked = mouseAction ~= "b" and not region and insideUi
+      if not region and not mouseAction and not blocked then
+        if pointer.source == "mouse" then updatePointerHover(nil, game) end
+        return next(game, pointer)
+      end
+      if region then setPointerSelection(region, nil, game) end
+      local startX = tonumber(pointer.x) or (region and region.x) or 0
+      local startY = tonumber(pointer.y) or (region and region.y) or 0
+      pointerCaptures[key] = {
+        region = region,
+        targetKey = pointerRuntime.targetKey(region),
+        buttonAction = blocked and nil or mouseAction,
+        blocked = blocked,
+        startX = startX,
+        startY = startY,
+        offsetX = region and select(1, layerOffset(region.kind, region.viewport)) or 0,
+        offsetY = region and select(2, layerOffset(region.kind, region.viewport)) or 0,
+        lastX = startX,
+        lastY = startY,
+        scrollStart = region and (tonumber(region.scrollValue)
+          or (region.state and tonumber(region.state.scroll)) or 0) or 0,
+        scrollStep = region and math.max(36,
+          (tonumber(region.rowHeight) or 1) * 1.40) or 36,
+        moved = false,
+      }
+      return true
+    end
+
+    local capture = pointerCaptures[key]
+    if not capture then
+      if phase == "moved" and pointer.source == "mouse" then
+        updatePointerHover(pointerHit(pointer.x, pointer.y), game)
+      end
+      return next(game, pointer)
+    end
+    if capture.region and not pointerRuntime.regionAlive(game, capture.region) then
+      capture.invalid = true
+    end
+    if phase == "moved" then
+      local x = tonumber(pointer.x) or capture.lastX
+      local y = tonumber(pointer.y) or capture.lastY
+      capture.lastX, capture.lastY = x, y
+      local totalX, totalY = x - capture.startX, y - capture.startY
+
+      local region = capture.region
+      local threshold = 6
+      if capture.invalid or not region then
+        if math.abs(totalX) >= threshold or math.abs(totalY) >= threshold then
+          capture.moved = true
+        end
+        return true
+      end
+      if region.scrollable and math.abs(totalY) >= threshold then
+        capture.moved = true
+        local distance = math.max(0, math.abs(totalY) - threshold)
+        local step = math.max(1, capture.scrollStep or 28)
+        -- Quantize from the gesture origin with a little hysteresis. This
+        -- keeps high-frequency touch move events from making long shop/bag
+        -- lists race several rows ahead of the finger.
+        local rows = math.floor((distance + step * 0.20) / step)
+        if rows > 0 then
+          capture.scrolled = true
+          pointerScroll(region, capture.scrollStart
+            + (totalY < 0 and rows or -rows))
+        end
+        return true
+      end
+
+      local panelDrag = region.dragHandle == true
+      if option("dragPanels", true) ~= false and panelDrag
+          and (math.abs(totalX) >= threshold or math.abs(totalY) >= threshold) then
+        capture.moved = true
+        capture.panelMoved = true
+        capture.offsetX, capture.offsetY = rememberLayerOffset(
+          region.kind, region.viewport,
+          capture.offsetX + totalX - (capture.dragX or 0),
+          capture.offsetY + totalY - (capture.dragY or 0), false)
+        capture.dragX, capture.dragY = totalX, totalY
+      elseif math.abs(totalX) >= threshold or math.abs(totalY) >= threshold then
+        -- Rows that do not scroll are click targets, not accidental panel
+        -- handles. Crossing the drag threshold cancels their click.
+        capture.moved = true
+      end
+      return true
+    end
+
+    pointerCaptures[key] = nil
+    if phase == "released" then
+      local x = tonumber(pointer.x) or capture.lastX
+      local y = tonumber(pointer.y) or capture.lastY
+      if not capture.invalid and not capture.moved then
+        if capture.region then
+          -- Re-hit on release and act through the current region, not the
+          -- table captured before a menu transition or responsive redraw.
+          local releasedOver = pointerHit(x, y)
+          if pointerRuntime.sameTarget(capture.region, releasedOver) then
+            tapPointerAction(game, releasedOver)
+          end
+        elseif capture.buttonAction == "b" then
+          tapGameButton(game, "b")
+        elseif capture.buttonAction == "a"
+            and not pointerRuntime.insideUi(x, y) then
+          tapGameButton(game, "a")
+        end
+      end
+      if capture.panelMoved and capture.region
+          and pointerRuntime.regionAlive(game, capture.region) then
+        rememberLayerOffset(capture.region.kind, capture.region.viewport,
+          capture.offsetX, capture.offsetY, true)
+      end
+      return true
+    elseif phase == "cancelled" then
+      return true
+    end
+    return next(game, pointer)
+  end
+
+  mod.hooks:wrap("input.pointer", function(next, game, pointer)
+    local forwarded = false
+    local function forward(...)
+      forwarded = true
+      return next(...)
+    end
+    local ok, result = pcall(pointerRuntime.dispatch, forward, game, pointer)
+    if ok then return result end
+    -- A malformed third-party state or unusual pointer payload must never
+    -- take down the client. Retire only this gesture and let the normal input
+    -- path continue. Errors raised by a downstream hook are not ours to hide.
+    if forwarded then error(result, 0) end
+    if type(pointer) == "table" then
+      local keyOk, failedKey = pcall(pointerCaptureKey, pointer)
+      if keyOk then pointerCaptures[failedKey] = nil end
+    end
+    hoveredPointer = nil
+    local message = tostring(result)
+    if pointerRuntime.lastError ~= message then
+      pointerRuntime.lastError = message
+      if mod.log and type(mod.log.warn) == "function" then
+        pcall(mod.log.warn, mod.log, "pointer interaction ignored: %s", message)
+      end
+    end
+    return next(game, pointer)
+  end, 100)
 
   -- TitleState and its menu are flattened into the same classic canvas. A
   -- whole-canvas clear would erase the logo and title Pokémon along with the
@@ -5682,6 +6673,14 @@ return function(mod)
     local layers, complete = presentationStack(game)
     if complete and #layers > 0 then
       drawModernStack(game, layers, viewportForTouchControls(game, viewport))
+    else
+      pointerRegions = {}
+      pointerRuntime.topOrder = 0
+      if pointerRuntime.topState ~= nil then
+        for _, capture in pairs(pointerCaptures) do capture.invalid = true end
+      end
+      pointerRuntime.topState = nil
+      hoveredPointer = nil
     end
   end, 100)
 end

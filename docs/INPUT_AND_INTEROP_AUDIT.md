@@ -1,89 +1,119 @@
 # Pointer input and UI interoperability audit
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 This audit records what released gen1recomp builds currently expose for
-click/touch interaction, what Gen1 Modern UI can safely implement without an
-engine patch, and how redesigned flows should coexist with replacement UI
-mods. The upstream source checked was `bryanthaboi/gen1recomp` `origin/dev` at
-commit `8da51aa`.
+click/touch interaction, what Gen1 Modern UI can safely implement through the
+released host hooks, and how redesigned flows should coexist with replacement
+UI mods. The upstream contract is tracked in
+[gen1recomp issue #807](https://github.com/bryanthaboi/gen1recomp/issues/807).
 
 ## Current engine input path
 
-There is no public gameplay pointer hook or semantic UI-action API today.
+The released `input.pointer` middleware reports `pressed`, `moved`, `released`,
+and `cancelled` phases with source, pointer ID, window-space coordinates,
+deltas, pressure, and mouse button metadata. The engine calls the hook only
+after `TouchControls` has had first refusal, and `return true` consumes the
+pointer for the remaining lifecycle. Pointers that begin outside virtual
+controls remain mod-visible even when they cross those controls later.
+Focus/visibility recovery emits `cancelled` so mods can clean up captures.
 
-- `love.touchpressed`, `love.touchmoved`, and `love.touchreleased` call the
-  corresponding `Game:touch*` methods.
-- `Game:touch*` forwards exclusively to `TouchControls`, whose hit testing is
-  limited to the virtual D-pad, A, B, START, and SELECT controls.
-- `StateStack`, `Menu`, and `ListMenu` have no pointer dispatch. Menus consume
-  Game Boy button edges from `game.input`.
-- Gameplay mouse events are ignored unless the touch-emulation environment
-  switch is enabled. The mouse wheel is reserved for overworld zoom.
-- FlexLove supports pointer and drag interaction, but it is used by launcher
-  and editor surfaces rather than the in-game `mod.ui` widgets.
+The released `mod.input` facade provides source-isolated `tap(game, button)`
+and tokenized `press(game, button)` / `release(token)` operations for the
+normal Game Boy buttons (`up`, `down`, `left`, `right`, `a`, `b`, `start`, and
+`select`). The engine cleans up held tokens during hot reload and input
+recovery. The first two hooks are sufficient for reliable pointer events and
+vanilla button parity; a semantic interaction model is still useful for
+replacement screens whose layout cannot be inferred from public state.
 
-The released `input.step` hook, available since gen1recomp v0.1.46, is the only
-general in-game input seam. It runs before queued edges are promoted and before
-the top state updates.
+## Implemented pointer layer
 
-## Safe first implementation without an engine patch
+Gen1 Modern UI caches hit regions from the same live presenter geometry used to
+draw each frame. Mouse movement over a supported row sets the live selection
+field without activating it. Row taps then call the owning state through
+`mod.input:tap(game, "a")`; they never invoke a row callback or private queue
+directly. Dialogue and quantity cards use the same normal action path.
+Captured touch IDs can scroll overflowing lists, while mouse or touch pointers
+that begin on panel chrome can drag a panel. Normalized per-screen-family
+offsets persist through `mod.save`. Desktop left/right clicks map to the
+source-safe `A`/`B` actions even outside modern panels; drags suppress the
+release action. Drag scrolling is quantized from the gesture origin with a
+dead zone and row-height hysteresis, keeping long shop and inventory lists
+stable under high-frequency move events.
 
-A compatibility-first pointer layer is feasible as an opt-in experiment:
+Only the top presented layer can own hover or activation. Parent lists remain
+visible beneath prompts, but a full modal blocker prevents their cursor from
+moving. A click activates only if press and release resolve to the same live
+target. Stack changes, in-place screen-mode changes, rebuilt row tables, modal
+changes, cancelled pointers, and disabling pointer support all invalidate the
+old capture. Empty placeholder rows are inert, and panel whitespace blocks the
+global A fallback instead of activating a missing item. Only explicit panel
+chrome is draggable; a small movement over an ordinary row cancels its click
+instead of unexpectedly moving the whole interface.
 
-1. Cache presenter hit regions from `render.hud` in window coordinates.
-2. Poll LÖVE touch and mouse state from `input.step`.
-3. Track begin, move, release, and captured drag state inside this mod.
-4. Ignore a pointer that begins inside a visible virtual-control hit region.
-5. Map a hit to the live state selection, then synthesize the normal Game Boy
-   action so the original state performs validation, sounds, callbacks, stack
-   changes, and timing.
+Custom public-state adapters cover categorized Manager options, Manager
+YES/NO/help overlays, Party action submenus, and Gen 3 PC box row/column grids.
+Desktop screens that expose meaningful directional, `select`, or `start`
+actions also render compact source-safe action buttons. Link code/address
+editors expose all four arrows, while waiting/status rows are intentionally
+non-interactive. The buttons are omitted when native TouchControls are visible
+because the engine already owns those inputs.
 
-This can provide taps for standard menus and adapter-backed screens, but it is
-not a complete public contract. Injecting a button currently requires either
-touching `game.input.pressQueue` or sharing the virtual controller's overlay
-source. Polling can also miss a very short press/release between fixed ticks.
-For those reasons, pointer support should ship experimental and default-off
-until the engine exposes the small hooks below.
+Horizontal input for side-by-side YES/NO cards is translated without renaming
+entries in `Input.pressQueue`. The old rewrite could turn a released RIGHT edge
+into a source-less DOWN hold, leaving the player walking down until a real DOWN
+press/release repaired the state. The current path removes the horizontal edge
+and asks `mod.input:tap` for an atomic UP/DOWN edge, preserving source identity.
 
-## Recommended upstream hooks
+The layer is opt-in through the **TOUCH / CLICK UI** and **DRAG UI PANELS**
+settings, both on by default for new installs. Hosts that do not expose the
+new APIs simply follow the existing keyboard/controller path. Semantic actions
+for atomic box transfer and other custom replacement screens remain future
+adapter work. Mouse-wheel input is deliberately out of scope for now; lists use
+hover, row clicks, keyboard/controller navigation, or captured drag scrolling.
 
-1. An `input.pointer` middleware event carrying `phase`, `source`, `id`, `x`,
-   `y`, `dx`, `dy`, and pressure where available. Mouse input should enter this
-   path even when touch emulation is disabled. `TouchControls` should report
-   whether it captured the pointer so the virtual controller retains priority.
-2. A source-safe public facade such as `mod.input:tap(game, button)` plus
-   tokenized press/release operations. This avoids collisions between a UI
-   tap, a held physical key, and the on-screen controls.
-3. An optional semantic interaction model for screens that want to expose
-   actions, tabs, items, and drag/drop targets independently of visual layout.
+## Native-to-pointer interaction matrix
 
-The first two hooks are sufficient for reliable pointer events and vanilla
-button parity. The third is what makes direct navigation durable across
-arbitrary replacement screens.
+The pointer contract follows each screen's released keyboard/controller model.
+It improves targeting without bypassing the state that owns validation,
+sounds, callbacks, networking, or stack order.
 
-## Improving flow without bypassing other mods
+| Surface | Native contract | Pointer contract |
+|---|---|---|
+| Generic Menu, Start menu, title menu, PC root | UP/DOWN choose, A activates, B cancels; some menus let START close. | Hover selects a live row; matching click sends A. Right-click sends B. No callback is called directly. |
+| Generic List, Bag, Shop, Player PC, Bill's PC | UP/DOWN choose, A activates, B cancels; optional L/R page jump and SELECT action. | Hover/click selects through the live index. Long lists drag-scroll by rows. Context buttons expose declared L/R/SELECT actions. |
+| OptionsMenu and public OptionRows screens | UP/DOWN choose; L/R/A adjust or activate; B/START exits. | Hover selects; click sends A. L/R buttons call the same option step path. |
+| YES/NO ChoiceBox | UP/DOWN toggles; A confirms after its normal hold; B selects NO/cancels. | Direct YES/NO targets select then send A. L/R buttons become source-safe UP/DOWN taps. Pending choices reject new pointer activation. |
+| QuantityBox | UP/DOWN changes amount; A confirms; B cancels. | The amount card confirms with A; −/+ buttons send DOWN/UP. |
+| Dialogue TextBox | A/B reveal, advance, or close according to live typewriter state. | Clicking the card sends A; right-click sends B. Dragging the card does not also advance it. |
+| Party list | UP/DOWN chooses a Pokémon; A opens the engine-built action list; B backs out. | Hover/click targets party rows. Detail space is chrome, not a second action owner. |
+| Party action submenu | UP/DOWN chooses an injected live action; A activates; B closes. | A modal blocker freezes the party cursor. Only submenu rows hover/click; actions still run through PartyMenu. |
+| Pokédex list and side action menu | UP/DOWN choose; L/R page jump; SELECT changes view; A opens the side menu; B backs out. | Species rows click through A. PAGE and SELECT controls are explicit; the pushed side Menu becomes the sole active pointer layer. |
+| Summary, Dex entry, Trainer Card | A or B advances/closes (Summary advances page before close). | The whole data card is a click-to-A surface; right-click remains B. |
+| Mod Manager list/detail/options | UP/DOWN choose; L/R changes tab/detail/value; A activates; SELECT and START are context actions; B backs out. | Live rows hover/click, tabs are clickable, and the dock labels HELP/TOGGLE/APPLY where appropriate. Inert headers/status rows cannot activate. |
+| Manager confirmations/help | UP/DOWN chooses YES/NO; A confirms; B cancels/closes. | Modal/scrim regions block underlying rows. YES/NO click through A; clicking the help card dismisses only presentation help. |
+| Gen 3 PC box | Public zero-based row/column grid; arrows navigate; A pick/place; SELECT switches party/box; START opens stats. | Cells set row/column and send A. Arrow, PARTY/BOX, and STATS controls send the corresponding source-safe buttons. Atomic drag/drop is not inferred. |
+| Link menus/trade list | UP/DOWN choose; A advances/chooses; B backs out. | Navigable rows hover/click normally. Networking and stage transitions remain LinkState-owned. |
+| Link code/address editors | Arrows edit digit and slot; A connects; B backs out. | All four arrow controls are exposed. The primary editable row may send A; position/port/status rows are display-only. |
+| Link waiting/running stages | Usually B cancel only. | Status rows are inert; right-click remains B. |
+| Battle presenter | Native battle input and queues. | The presenter remains WIP/off by default, so the classic battle surface owns interaction. |
+| Unknown/custom/capture screens | Screen-defined. | No inferred pointer adapter; the complete visible UI falls back to classic rendering. |
 
-The modern presentation is not required to copy the original 160x144 layout
-or force the same number of visible steps. The safe rule is to improve the
-layout and shortcuts while letting the live state own the resulting action.
+## Pointer safety invariants
 
-| Surface | Compatibility-safe direct interaction |
-|---|---|
-| Generic Menu/List | Set its live selection and inject A. Do not call a row callback directly; the state owns pop order, `keepOpen`, and sounds. |
-| Options | Select the live row, then inject left/right/A so custom `step` and `activate` functions still run. |
-| Pokédex | Tap a species to select + A. A DATA shortcut can be a short two-tick macro through the real side menu, preserving another mod's `onChoose`. |
-| Party | Select a card + A to build the real action list, including actions injected by other mods; then activate the selected live action normally. |
-| Bag tabs | Requires a bag-specific adapter because category state is not part of the standard `ListMenu` contract. |
-| Box drag/drop | Requires an adapter that translates drag intent into the screen's normal pick/place operations; no public atomic transfer API exists. |
-| Dialogue | Tap-to-advance can inject A/B. A public reveal/advance method would be preferable because held A/B currently only accelerates typing. |
-| YES/NO | Select the live choice + A, preserving its delay and callback ownership. |
-| Quantity | Buttons can inject repeated up/down edges; a slider needs a semantic setter or adapter. |
-| Naming | Set the live grid row/column and inject A; the grid already includes mod-provided glyph changes. |
-
-Direct cards, tabs, previews, and action shortcuts are therefore part of the
-design direction. They should be capability-driven rather than inferred from
-localized labels or private state shapes.
+- The top active layer is the only selectable layer.
+- Press and release must match the same semantic target.
+- A capture belongs to one stack state, screen mode, row model, and modal
+  identity; any change invalidates it.
+- Empty, disabled, header, status, and placeholder rows never send A.
+- Clicking blank UI consumes the pointer but performs no global action.
+- Clicking outside all UI maps left to A and right to B on desktop.
+- A drag never also becomes a click. Rows scroll only when the list actually
+  overflows; panel movement begins only on explicit chrome.
+- Synthetic directions are atomic `mod.input:tap` calls. The mod never renames
+  queued buttons or creates an unowned held direction.
+- All field writes are bounds-checked and protected; callbacks remain engine-
+  owned and execute through the normal input update.
 
 ## Installed inventory-mod findings
 
@@ -132,5 +162,5 @@ occupy the tall center between the D-pad and A/B controls, and modest overlap
 with START/SELECT is acceptable.
 
 Presentation must preserve typewriter progress, waits, choice delays,
-callbacks, and stack order. Once pointer input is available, tapping the text
-card advances it and tapping an option selects it directly.
+callbacks, and stack order. Tapping the text card advances it and tapping an
+option selects it directly through the owning state's normal action path.

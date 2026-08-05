@@ -4,8 +4,9 @@ A lightweight `overhaul` mod for released gen1recomp builds. It uses released
 UI/render hooks to paint supported menus in high-resolution safe
 window space, so portrait phones, landscape tablets, desktop windows, and
 ultrawide displays can use their available room instead of being confined to
-the original 160x144 layout. It is visual-only: the game remains responsible
-for input, state transitions, and callbacks.
+the original 160x144 layout. It is visual-first: the game remains responsible
+for keyboard/controller input, state transitions, and callbacks; pointer taps
+use only the host's source-safe action facade.
 
 ## Install a release
 
@@ -29,17 +30,47 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.6.7 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.7.5 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
 ## Input and compatibility
 
 - Keyboard and controller navigation remain vanilla because the overlay does
-  not replace states or consume input.
-- Touch and click activation remain owned by the engine. The mod adds one
-  compatibility-safe shortcut: left/right on the released touch d-pad (or the
-  equivalent keyboard/controller direction) jumps five rows in the Start menu.
+  not replace states or consume their input.
+- TouchControls remain the first refusal for virtual buttons. On hosts that
+  expose `input.pointer` and `mod.input`, supported modern rows and dialogue
+  cards accept touch or mouse taps; a tap selects the live row and sends the
+  normal source-safe `A` action, so the owning state still runs validation,
+  sounds, callbacks, and stack changes. Pointers that begin outside a modern
+  region fall through to the next hook.
+- Touch or mouse dragging can reposition supported panels when **DRAG UI
+  PANELS** is enabled. Offsets are normalized to the viewport and persisted by
+  screen family, so the layout remains usable across resolutions. A cancelled
+  pointer lifecycle discards its capture without changing game input.
+- Mouse movement over a modern row moves the live cursor without activating it.
+  This includes categorized UI Settings rows, PC box grid cells, and manager
+  confirmation choices. Touch-dragging a list with more rows than fit in the
+  card scrolls that live list in stable row-sized steps; dragging panel chrome
+  moves the panel instead.
+- Only the top modal layer can receive hover/click. Press and release must
+  still identify the same live row, and stack changes, in-place mode changes,
+  rebuilt row models, or cancellation invalidate the capture. Party/Manager
+  prompts block parent rows; empty/disabled rows and blank panel space do not
+  synthesize A.
+- Desktop left-click sends the source-safe `A` action and right-click sends
+  `B`, even outside a modern panel. A mouse gesture that crosses the drag
+  threshold does not also activate its button on release.
+- Screens that need more than row selection and A/B expose contextual desktop
+  buttons for directions, **SELECT**, and **START**. These buttons use the same
+  source-safe action facade and stay hidden when native TouchControls are
+  visible.
+- Side-by-side YES/NO cards translate L/R into atomic UP/DOWN taps. The mod
+  never renames a queued directional edge, which prevents an input source from
+  being detached and leaving DOWN held after the choice closes.
+- **TOUCH / CLICK UI** and **DRAG UI PANELS** can be disabled independently;
+  hosts without the new hooks retain the previous keyboard/controller-only
+  behavior.
 - **START MOD MENUS** collects rows appended by other mods and this mod's UI
   settings beneath one Start-menu entry by default. In the grouped submenu,
   highlight any row and press **SELECT** to pin/unpin it on the Start menu.
@@ -52,6 +83,13 @@ custom engine checkout or a patched binary.
 - **MINIMAL UI** defaults to off so new installs receive the richer Party,
   Pokédex, Bag, Shop, and PC presenters; enable it when a compact list is
   preferred.
+- New installs default to **Classic Mono**, **PIXEL** framing, **FRAME 2**, and
+  the bundled **PIXEL ART FONT**. The font preference applies Plain Pixel to
+  all modern presenters with nearest filtering, snaps its physical raster to
+  the authored 15-pixel grid, and normalizes line boxes so broad multilingual
+  metrics do not inflate every panel. It falls back safely on older game
+  builds that do not ship the asset and uses the system face for any missing
+  glyphs.
 - OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay

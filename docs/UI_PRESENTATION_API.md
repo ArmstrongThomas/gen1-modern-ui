@@ -1,12 +1,13 @@
 # UI presentation API
 
 This document describes the released mod API used by `gen1_modern_ui`. The
-mod is a visual overlay: it does not require an engine patch, replace states,
-or own input.
+mod is a visual-first overlay: it does not require an engine patch, replace
+states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.7.4 uses four released hooks plus a narrowly scoped class wrapper:
+Version 0.7.5 uses four released hooks plus a narrowly scoped class wrapper and
+the host's source-safe pointer/input hooks:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -198,6 +199,14 @@ The readability controls are applied before measurement and layout:
 - `fontScale` accepts `AUTO` or 80% through 200% in 5% steps and scales the
   cached title, body, caption, value, and hint fonts. Its `AUTO` value uses the
   same responsive viewport policy as `uiScale`.
+- `pixelFont` selects gen1recomp's bundled Plain Pixel face for every one of
+  those font roles. It defaults on, requests monochrome hinting and nearest
+  filtering, and snaps the physical glyph raster to the nearest multiple of
+  the face's authored 15-pixel grid. Its broad multilingual font metrics are
+  normalized to the equivalent system-font line box, so translated text keeps
+  its glyph coverage without making panels artificially tall. The system face
+  remains a missing-glyph fallback and replaces Plain Pixel entirely if the
+  engine asset is absent.
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
   confirmation prompts.
@@ -264,25 +273,59 @@ the engine's up/down cursor.
 
 ## Input behavior
 
-The overlay does not yet implement pointer handlers. Keyboard and controller
-input continues through the original game states and callbacks unchanged.
-The engine currently routes gameplay touch input only to `TouchControls`; it
-does not expose pointer events to `StateStack`, `Menu`, or `ListMenu`, and real
-mouse input is not routed to gameplay in the default configuration.
+Keyboard and controller input continues through the original game states and
+callbacks unchanged. The pointer layer is additive and activates when the
+host exposes the `input.pointer` middleware event and `mod.input` facade. The
+upstream contract is described in [gen1recomp issue #807](https://github.com/bryanthaboi/gen1recomp/issues/807).
 
-The one intentional shortcut is `startMenuFastJump`: it observes a queued
-left/right GB-button edge (including the released touch d-pad) while a
-StartMenu is active and moves its cursor by five rows. It does not capture the
-touch event or bypass the StartMenu's normal A/B callbacks.
+The engine gives `TouchControls` first refusal. A pointer that begins on a
+virtual D-pad, A, B, START, or SELECT control is not visible to this mod; a
+pointer that begins outside those controls remains mod-visible even if it
+later crosses them. Focus/visibility recovery can emit `cancelled`, which
+clears any captured drag without synthesizing a game action.
 
-An experimental mod-only implementation can poll LÖVE pointer state from the
-released `input.step` hook, reuse window-space presenter hitboxes, exclude
-virtual-control hits, and translate taps into the live state selection plus a
-normal Game Boy action. Direct row callbacks are not safe because the owning
-state also controls sounds, stack order, validation, and timing. Robust public
-support would benefit from an `input.pointer` event and a source-safe
-`mod.input` tap/press facade. Full source findings and per-screen interaction
-rules are in [`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md).
+Each HUD pass registers hit regions from the same presenter geometry used for
+the drawing. Mouse movement over a row, manager confirmation choice, or public
+row/column grid cell selects the live cursor without activation. A tap selects
+the live target and calls `mod.input:tap(game, "a")`, leaving validation,
+sounds, callbacks, stack order, and timing with the owning state. Text and
+quantity cards use the same normal action path. Direct row callbacks and
+private input queues are never used. A pointer that remains pressed scrolls an
+overflowing list in stable row-sized steps when it begins on a row, or drags
+the captured panel when it begins on panel chrome; normalized panel offsets
+are saved per screen family when released. Multiple touch IDs are tracked
+independently.
+
+Hit testing is modal and release-validated. Only the top presentation layer is
+interactive; internal Party/Manager prompts register blockers over their
+parent rows. The release must still be over the same semantic target, and a
+stack change, in-place screen-mode change, rebuilt row model, modal change, or
+cancelled lifecycle invalidates the capture. Empty/disabled placeholder rows
+never activate, and blank panel space consumes the click without falling
+through to global A. This keeps rapid clicking from invoking a callback against
+a state or row table that no longer owns the pixels being clicked.
+
+Desktop left-click maps to `A` and right-click maps to `B` globally, including
+outside presenter hit regions. Crossing the gesture threshold suppresses that
+button action on release.
+
+On desktop, a topmost presenter that needs directional, `select`, or `start`
+input can expose a compact action dock. Those controls call only
+`mod.input:tap`; they do not invoke state methods directly. The dock is hidden
+when native TouchControls are visible so the two control surfaces never
+compete.
+
+**TOUCH / CLICK UI** disables taps and pointer capture. **DRAG UI PANELS**
+disables only panel movement. Both settings default on and gracefully fall back
+to the previous behavior on older hosts that do not provide the new hooks. The
+`startMenuFastJump` shortcut remains independent: it observes a queued
+left/right GB-button edge and moves the Start-menu cursor by five rows.
+Side-by-side YES/NO navigation never rewrites that queue: L/R is consumed and
+reissued as an atomic source-safe UP/DOWN tap, preventing a remapped direction
+from becoming an unowned held button. Mouse-wheel input is not consumed; long
+lists currently use captured drag scrolling.
+Full source findings and per-screen interaction rules are in
+[`INPUT_AND_INTEROP_AUDIT.md`](INPUT_AND_INTEROP_AUDIT.md).
 
 ## Theme registration
 
@@ -299,6 +342,22 @@ if ui then
   })
 end
 ```
+
+New installs start with **Classic Mono**, **PIXEL** framing, **FRAME 2**, and
+**PIXEL ART FONT** enabled. The font toggle loads gen1recomp's bundled
+`assets/fonts/plainpixel/PlainPixel-Regular.ttf` for every presenter and uses
+nearest filtering. The rasterizer uses the closest physical 15-pixel multiple
+while preserving the requested logical UI size, and line layout uses normalized
+metrics rather than the face's intentionally broad multilingual bounding box.
+If an older compatible host does not contain that asset, the presenter falls
+back to LÖVE's system font without disabling the UI. The system face also acts
+as a fallback for any glyph outside Plain Pixel's extensive language coverage.
+Font selection is a user preference rather than a theme token, so every
+registered theme can use either face.
+
+Plain Pixel is by Douglas Vautour / Burpy Fresh and is published under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see the
+[font's source page](https://burpyfresh.itch.io/plain-pixel).
 
 Theme specs are merged with the built-in defaults. Supported token groups are
 semantic colors, typography sizes, spacing, corner radii, density, ornamental
@@ -362,11 +421,12 @@ theme refreshes its tokens and label without duplicating the option.
 ## Compatibility checklist
 
 - Call `next(game, viewport)` once before drawing.
-- Keep the overlay visual-only and leave state transitions to the game.
+- Keep the overlay visual-first and leave state transitions and callbacks to
+  the game; pointer taps may route through the host's source-safe action API.
 - Clear only `ctx.uiCanvas`, and only when the matching presenter is supported
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.7.4 targets released game
+- Do not assume a custom engine build: version 0.7.5 targets released game
   versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.

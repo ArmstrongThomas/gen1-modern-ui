@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.7.4 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.7.5 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -55,6 +55,13 @@ when the listing is enabled there.
   consistently to menus, rich screens, dialogue, and nested cards. Pixel mode
   also removes theme rounded corners and top accent strips so the PNG owns the
   panel chrome.
+- New installs use **Classic Mono**, **PIXEL** framing, and **FRAME 2**. The
+  new **PIXEL ART FONT** toggle is enabled by default and applies
+  gen1recomp's bundled Plain Pixel face to every modern presenter. Glyphs use
+  nearest filtering and a physical raster snapped to the face's native
+  15-pixel grid; normalized line boxes keep its broad multilingual metrics
+  from stretching layouts. Compatible older builds fall back to the system
+  font, which is also retained as a missing-glyph fallback.
 - Health bars use theme-aware teal/gold/orange/purple states instead of a
   red/green-only ramp, with numeric HP labels retained as the authoritative
   color-independent cue.
@@ -75,6 +82,27 @@ when the listing is enabled there.
 - **START MENU FAST JUMP** lets a left/right touch-button press (or the same
   directional input from a keyboard/controller) jump five rows in the Start
   menu, with normal up/down navigation unchanged.
+- Touch and mouse pointers can hover, tap modern rows and modal cards, scroll
+  long lists by touch-drag, and drag panel chrome through the host's
+  source-safe input hooks. TouchControls retain first refusal, while supported
+  panel positions are saved normalized per screen family. Keyboard/controller
+  navigation and engine callbacks remain unchanged.
+- Pointer activation is top-layer-only and release-matched. Party/Manager
+  prompts block the rows underneath, stale captures are discarded across
+  stack or in-place mode changes, blank panel space performs no action, and
+  empty/disabled rows cannot synthesize A against a missing item.
+- Desktop left-click maps to the normal `A` action and right-click maps to `B`,
+  including clicks outside a modern panel. Moving far enough to become a drag
+  suppresses the click action on release.
+- Grid cells and manager confirmation choices now participate in the same
+  hover/select path. Screens with meaningful directional, **SELECT**, or
+  **START** actions expose compact clickable controls on desktop; the dock is
+  omitted when the game's native touch controls are visible.
+- List dragging advances in deliberate row-sized steps with a short dead zone,
+  preventing long shop and inventory lists from racing ahead of the pointer.
+- Side-by-side YES/NO cards map L/R through atomic source-safe UP/DOWN taps;
+  queued directions are never renamed, preventing the remap from leaving the
+  player stuck walking down after a menu closes.
 - Press **SELECT** on any Gen1 Modern UI setting to open a short description;
   press **SELECT**, **A**, or **B** again to close it.
 - Optional classic-UI suppression: **HIDE ORIGINAL UI** defaults on and only
@@ -175,8 +203,8 @@ The [readability and scaling plan](docs/READABILITY_SCALING_PLAN.md) documents
 the shipped UI/font/dialogue sizing contract and its remaining mobile reflow
 QA requirements.
 The [input and interoperability audit](docs/INPUT_AND_INTEROP_AUDIT.md)
-documents the current engine pointer seams, safe direct-navigation rules, and
-the adapter plan for category bags and other replacement UIs.
+documents the upstream pointer contract, safe direct-navigation rules, and the
+adapter plan for category bags and other replacement UIs.
 
 ## Requests and bug reports
 
@@ -200,6 +228,8 @@ With LÖVE 11.5 installed, run the compositor regression from this repository:
 
 ```powershell
 $env:GEN1_UI_MAIN = (Resolve-Path 'mods/gen1_modern_ui/main.lua').Path
+$env:GEN1_UI_PLAIN_PIXEL_FONT =
+  (Resolve-Path '..\gen1recomp\assets\fonts\plainpixel\PlainPixel-Regular.ttf').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/compose_suppression
 ```
 
@@ -207,11 +237,20 @@ Set `$env:GEN1_UI_SHOTS = '1'` before that command to write the responsive
 Bag, Pokédex, Trainer, Party, Bill's PC, Shop, PC, title, and dialogue/modal
 gallery to the LÖVE save directory for visual QA.
 
+The focused font probe documents Plain Pixel's physical 15-pixel raster
+contract, normalized line box, and multilingual glyph behavior:
+
+```powershell
+$env:GEN1_PLAIN_PIXEL_FONT =
+  (Resolve-Path '..\gen1recomp\assets\fonts\plainpixel\PlainPixel-Regular.ttf').Path
+& 'C:\Program Files\LOVE\lovec.exe' tests/plain_pixel_render
+```
+
 After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.4.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.7.5.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -227,7 +266,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.7.4`) and push that commit to `main`. Each release includes a commit-based
+`0.7.5`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds
