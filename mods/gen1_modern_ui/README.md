@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.8.0 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.8.1 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -78,6 +78,49 @@ custom engine checkout or a patched binary.
   Disable grouping in the mod options to keep a flat list.
 - In this mod's options screen, press **SELECT** on a focused setting for a
   brief explanation; **SELECT**, **A**, or **B** closes the help card.
+- Source-mod compatibility is provided by the versioned
+  `mod.exports.gen1ModernUi` contract (`apiVersion = 1`). Supporting mods can
+  publish read-only screen models and source-owned semantic actions, then
+  register them through `mod.find("gen1_modern_ui").exports`:
+
+  ```lua
+  local ui = mod.find("gen1_modern_ui")
+  mod.exports.gen1ModernUi = {
+    apiVersion = 1,
+    screens = {}, -- see docs/UI_PRESENTATION_API.md for the full example
+    themes = {
+      profile = {
+        name = "My Theme",
+        frame = { style = "pixel", asset = mod.id .. ":frame" },
+      },
+    },
+    frames = {
+      frame = { asset = mod.assets:image("assets/frame.png") },
+    },
+  }
+  if ui and ui.exports and ui.exports.registerAdapter then
+    ui.exports.registerAdapter({ owner = mod.id,
+      contract = mod.exports.gen1ModernUi })
+  end
+  ```
+
+  Frame and theme IDs are namespaced to the source mod. PNGs use the standard
+  nearest-neighbor nine-slice renderer, repeating edge pixels and preserving
+  the seven-pixel authored inset. Source mods own their assets and may pass
+  public image/texture/catalog references resolved by the source mod instead of
+  private paths. Custom draw/render
+  callbacks, malformed models, unsupported versions, disabled mods, and
+  adapter errors fall back to the native UI. The UI never loads private
+  modules or arbitrary files from another mod. See
+  [`docs/UI_PRESENTATION_API.md`](../../docs/UI_PRESENTATION_API.md#compatibility-contract-v1)
+  and the [adapter examples](../../docs/examples/README.md).
+
+  Custom screen rows may use `image`, `icon`, `thumbnail`, `sprite`, or
+  `asset` references. For reuse, expose a public `assets` catalog from the
+  model and set a row's `image` to the catalog key. The generic presenter
+  aspect-fits public portraits, icons, badges, and animated descriptors with
+  nearest filtering; unavailable optional art falls back to the row text.
+
 - The presenter reads the complete visible state stack after the classic
   frame. It does not rebuild hook-provided descriptor tables or call callbacks
   directly.
@@ -92,6 +135,11 @@ custom engine checkout or a patched binary.
   grid. Layout uses the selected raster's real line metrics instead of
   rescaling them into a system-font line box. It falls back safely on older game builds that do not ship the asset
   and uses the system face for any missing glyphs.
+- The normal UI font remains the host/LÖVE font so the mod stays lightweight.
+  When a presenter encounters non-Latin Unicode text, it automatically uses
+  the game's Plain Pixel font for that render pass. This keeps Japanese,
+  Cyrillic, Greek, Arabic, CJK, emoji, and similar translation text readable
+  without adding a large fallback font to the mod package.
 - OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay
@@ -306,7 +354,7 @@ classic UI only when the corresponding modern presenter is enabled.
 
 ## Theme packs
 
-The UI theme option ships with seven lightweight built-ins:
+The UI theme option ships with nine lightweight built-ins:
 
 - **Gen1 Modern** — the stable, opaque default.
 - **Modern Glass** — the default palette with the world visible beneath it.
@@ -314,6 +362,8 @@ The UI theme option ships with seven lightweight built-ins:
 - **Pocket Green** — a classic handheld-inspired green palette.
 - **Midnight** and **Midnight Glass** — modern violet dark variants.
 - **Frost** — a bright modern theme with a translucent cool backdrop.
+- **Light** — a simple high-contrast light palette.
+- **Dark** — a simple high-contrast dark palette.
 
 Opaque themes prioritize maximum contrast. Glass themes intentionally show
 the independently rendered world through their backdrop and panels; they work
@@ -321,19 +371,42 @@ best with **HIDE ORIGINAL UI** enabled so the classic menu is removed first.
 All themes are token tables merged once at startup and add no assets, shaders,
 canvases, or per-theme rendering branches.
 
-Theme mods should depend on `gen1_modern_ui`, then register a data-only token
-pack from their entry chunk:
+For the complete source-mod contract, including screen models, semantic
+actions, public image catalogs, theme packs, frame packs, and fallback rules,
+see [`docs/CUSTOM_UI_AND_THEME_API.md`](../../docs/CUSTOM_UI_AND_THEME_API.md).
+Current integration templates are listed in
+[`docs/examples/README.md`](../../docs/examples/README.md).
+
+Theme mods should depend on `gen1_modern_ui`, resolve their own image assets
+with `mod.assets:image`, then register a data-only token/frame pack from their
+entry chunk. A mod can register any number of themes and frames;
+`registerFrame` namespaces an unqualified frame ID with the source mod ID,
+adds it to the PIXEL FRAME selector, and accepts the resulting public image
+object:
 
 ```lua
 return function(mod)
   local base = mod.find("gen1_modern_ui")
   if not base then return end
+  local frame = mod.assets:image("assets/midnight-frame.png")
+  base.exports.registerFrame({
+    owner = mod.id,
+    id = "midnight-frame",
+    asset = frame,
+  })
   base.exports.registerTheme({
+    owner = mod.id,
     id = mod.id .. ":midnight",
     name = "Midnight",
     colors = {
       surface = { 0.04, 0.05, 0.09, 0.98 },
       selected = { 0.35, 0.20, 0.72, 1 },
+    },
+    frame = {
+      style = "pixel",
+      asset = mod.id .. ":midnight-frame",
+      pixelInset = 7,
+      pixelScale = 2,
     },
   })
 end

@@ -1,7 +1,7 @@
 {
   "id": "gen1_modern_ui",
   "name": "Gen1 Modern UI",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "api": 2,
   "entry": "main.lua",
   "profile": "overhaul",
@@ -14,6 +14,6 @@
   "incompatible": [],
   "experimental": false,
   "affects_link": false,
-  "description": "Responsive modern menus, readability scaling, dialogue, Party, PC, Trainer, Pokedex, Bag, Shop, themes, and minimal mode",
+  "description": "Responsive modern menus, readability scaling, dialogue, Party, PC, Trainer, Pokedex, Bag, Shop, themes, frames, and versioned mod compatibility",
   "github": "ArmstrongThomas/gen1-modern-ui"
 }

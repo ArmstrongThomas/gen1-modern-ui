@@ -98,8 +98,9 @@ that file and appends the generated archive checksum.
    transitions, and callbacks. Pointer taps use only the host's source-safe
    action facade, and panel dragging does not synthesize game actions.
 
-Version 0.8.0 includes seven data-only themes: Gen1 Modern, Modern Glass,
-Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. The default
+Version 0.8.0 includes nine data-only themes: Gen1 Modern, Modern Glass,
+Classic Mono, Pocket Green, Midnight, Midnight Glass, Frost, Light, and Dark.
+The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
 classic UI is suppressed independently.
 
@@ -312,6 +313,20 @@ content-sized footprint stable. The built-in presenter executes no theme
 drawing callbacks and ships no ROM-derived art. Built-in and third-party
 themes share one live options list; re-registering a namespaced ID refreshes
 its name and tokens without adding a duplicate choice.
+
+The compatibility foundation also exposes the versioned
+`mod.exports.gen1ModernUi` contract (`apiVersion = 1`). Source mods may publish
+read-only screen models, source-owned semantic actions, and optional data-only
+`themes` and `frames`, then call `mod.find("gen1_modern_ui").exports.registerAdapter`.
+Frame IDs are namespaced to the source mod and may point to declared source
+paths or public image/texture/catalog references. Gen1 Modern UI owns the
+nearest-neighbor nine-slice rendering, integer pixel scale, and seven-pixel
+inset; source mods own assets and state transitions. Custom drawing callbacks,
+private module access, malformed models, unsupported versions, and adapter
+errors are rejected with an immediate vanilla fallback. `screen.render_visible`
+is preferred for precise suppression, while `render.compose` remains the
+older-host fallback. See [`UI_PRESENTATION_API.md`](UI_PRESENTATION_API.md#compatibility-contract-v1)
+and the [`examples/README.md`](examples/README.md) integration templates.
 
 ## Responsive behavior
 

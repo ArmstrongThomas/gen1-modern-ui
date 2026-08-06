@@ -6,8 +6,10 @@ states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.8.0 uses four released hooks plus a narrowly scoped class wrapper and
-the host's source-safe pointer/input hooks:
+Version 0.8.0 uses the preferred `screen.render_visible` hook when the host
+provides it, with the released `render.compose` path as a conservative fallback,
+plus a narrowly scoped class wrapper and the host's source-safe pointer/input
+hooks:
 
 1. The ordinary title `Menu:draw` method is wrapped using its published
    `titleUiBox` marker. On clients exposing `ui.state.decorate`, the same guard
@@ -19,7 +21,11 @@ the host's source-safe pointer/input hooks:
 
 2. `render.zones` caches the live `Game` reference for the current frame. This
    is needed because `render.compose` receives a renderer/context, not `Game`.
-3. `render.compose` snapshots every drawing state from the visible stack base
+3. On hosts exposing `screen.render_visible`, the adapter proof suppresses only
+   a supported modern state. The state remains in the stack, continues to
+   update, and still receives its normal input. A failed or incomplete proof
+   returns the host's original visibility decision.
+4. `render.compose` snapshots every drawing state from the visible stack base
    through the top. It first calls `next(renderer, ctx)`, allowing
    lower-priority compositor mods to inspect or take over the untouched
    canvases. When the result is not `true`, **HIDE ORIGINAL UI** is on, and
@@ -29,7 +35,7 @@ the host's source-safe pointer/input hooks:
    chain retains the complete classic slice. Returning the unclaimed result
    (`false`) lets the engine perform its normal composition, scaling, zones,
    fades, post-processing, and display effects.
-4. `render.hud` calls `next(game, viewport)` once, refreshes the live Game
+5. `render.hud` calls `next(game, viewport)` once, refreshes the live Game
    reference, and draws the complete modern stack bottom-up over the composed
    frame. The engine draws `TouchControls` after this hook, keeping mobile
    controls visible and active.
@@ -40,6 +46,11 @@ Conceptually, the released hooks are used like this:
 mod.hooks:wrap("render.zones", function(next, game, zones)
   currentGame = game
   return next(game, zones)
+end, 100)
+
+mod.hooks:wrap("screen.render_visible", function(next, visible, state)
+  if shouldHideSupportedState(state) then return false end
+  return next(visible, state)
 end, 100)
 
 mod.hooks:wrap("render.compose", function(next, renderer, ctx)
@@ -360,15 +371,34 @@ Full source findings and per-screen interaction rules are in
 ## Theme registration
 
 `gen1_modern_ui` exposes `mod.exports.version = 1`,
-`mod.exports.registerTheme(spec)`, and `mod.exports.themes`:
+`mod.exports.registerTheme(spec)`, `mod.exports.registerFrame(spec)`, and the
+public `mod.exports.themes`/`mod.exports.frames` catalogs. A theme or frame
+pack can use either direct registration, or publish `themes` and `frames` as
+part of its `gen1ModernUi` contract. Direct registration is useful for a
+theme-only mod that does not replace a screen. Each table may contain multiple
+entries; namespaced frame entries are also added to the PIXEL FRAME option so
+users can select them directly:
 
 ```lua
 local ui = mod.find("gen1_modern_ui")
 if ui then
+  local frame = mod.assets:image("assets/midnight-frame.png")
+  ui.exports.registerFrame({
+    owner = mod.id,
+    id = "midnight-frame",
+    asset = frame, -- public Image/ImageData resolved by this source mod
+  })
   ui.exports.registerTheme({
+    owner = mod.id,
     id = mod.id .. ":midnight", -- IDs other than default must be namespaced
     name = "Midnight",
     colors = { surface = { 0.04, 0.05, 0.09, 0.98 } },
+    frame = {
+      style = "pixel",
+      asset = mod.id .. ":midnight-frame",
+      pixelInset = 7,
+      pixelScale = 2,
+    },
   })
 end
 ```
@@ -444,11 +474,101 @@ frame = {
 ```
 
 The built-in choice order is Gen1 Modern (`default`), Modern Glass,
-Classic Mono, Pocket Green, Midnight, Midnight Glass, and Frost. Built-in IDs
+Classic Mono, Pocket Green, Midnight, Midnight Glass, Frost, Light, and Dark.
+Built-in IDs
 other than `default` use the `gen1_modern_ui:` namespace. Glass themes retain
 their authored alpha; use **HIDE ORIGINAL UI** to remove the classic menu layer
 before showing the world through them. Re-registering an existing namespaced
 theme refreshes its tokens and label without duplicating the option.
+
+## Compatibility contract (v1)
+
+Supporting source mods may publish a namespaced, versioned presentation model
+through `mod.exports.gen1ModernUi`. Gen1 Modern UI discovers the public export
+from known installed integrations and source mods can register an arbitrary
+owner explicitly through the public `registerAdapter` export. The model is
+read-only presentation data; semantic actions continue to call the source
+mod's own state and callbacks.
+
+```lua
+local ui = mod.find("gen1_modern_ui")
+
+mod.exports.gen1ModernUi = {
+  apiVersion = 1,
+  screens = {
+    Profile = {
+      match = function(state)
+        return state.screenId == "ExampleProfile"
+      end,
+      model = function(game, state)
+        return {
+          title = "PROFILE",
+          rows = state.publicRows or {},
+          index = state.cursor or 1,
+          scroll = state.scroll or 0,
+          footer = { "A select", "B back" },
+          details = state.publicDetails,
+          assets = { portrait = state.publicPortrait },
+        }
+      end,
+      actions = {
+        up = function(game, state) return state:move(-1) end,
+        down = function(game, state) return state:move(1) end,
+        select = function(game, state) return state:select() end,
+        back = function(game, state) return state:back() end,
+      },
+      layer = "screen",
+      canSuppressNative = true,
+    },
+  },
+  themes = {
+    profile = {
+      name = "Example Profile",
+      colors = { surface = { 0.08, 0.10, 0.16, 0.98 } },
+      frame = { style = "pixel", asset = "example_mod:profile-frame" },
+    },
+  },
+  frames = {
+    -- Resolve this through the source mod's own mod.assets:image API.
+    ["profile-frame"] = { asset = mod.assets:image("assets/profile-frame.png") },
+  },
+}
+
+if ui and ui.exports and ui.exports.registerAdapter then
+  ui.exports.registerAdapter({
+    owner = mod.id,
+    contract = mod.exports.gen1ModernUi,
+  })
+end
+```
+
+The source mod owns `assets/profile-frame.png` and resolves it through its own
+`mod.assets:image` API; its exported frame is namespaced to
+`example_mod:profile-frame`, and the theme references that public ID. A source
+mod may instead pass another public image/texture reference. A plain string is
+reserved for a host-resolved public asset path; it is not interpreted relative
+to another mod's private root. Gen1 Modern UI does not load arbitrary sibling
+files or private modules. It accepts data-only themes, frames, public
+sprite/catalog references, and host-resolved public paths, but rejects custom
+draw/render callbacks and model functions that leak callbacks. Frame PNGs use
+the same nearest-neighbor, nine-slice renderer as built-in themes, so source
+mods get repeating edges, integer pixel scaling, and the standard seven-pixel
+inset behavior.
+
+Screen models may also expose an `assets` catalog containing public image,
+texture, sprite-catalog, or host-resolved path references. A row can select an
+entry with `image = "portrait"` (or provide the reference directly through
+`image`, `icon`, `thumbnail`, `sprite`, or `asset`). The generic presenter
+aspect-fits these images, keeps nearest-neighbor filtering, and leaves missing
+optional art as a text-only row. This gives source mods reusable portraits,
+icons, badges, and animated image descriptors without adding draw callbacks or
+custom coordinate systems.
+
+Missing exports, unsupported API versions, malformed models, source-mod
+exceptions, disabled mods, and reload races immediately retain vanilla drawing
+for that state. The active adapter cache is refreshed when mods load and when a
+public export table is replaced. See the [`examples/README.md`](examples/README.md)
+index for the generic, Dex Radar, RBYMMO, and OptionRows source-mod templates.
 
 ## Compatibility checklist
 

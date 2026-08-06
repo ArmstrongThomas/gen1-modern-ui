@@ -41,11 +41,34 @@ root/child contract and the title Menu: Bill lists require verified full-stack
 ancestry, while the ordinary title Menu is suppressed independently so its
 shared title-art canvas is preserved.
 
-Future third-party presenters should expose `layer = "screen" | "modal"` and an
-explicit suppression-safety result. Adapter exceptions must remain narrower
-than their live semantic contract.
+The v1 source-mod contract now exposes `layer = "screen" | "modal"`,
+`canSuppressNative`, read-only models, source-owned semantic actions, and
+data-only namespaced themes and frames. Adapter exceptions remain narrower
+than their live semantic contract; custom draw callbacks are never accepted.
 
-## Delivery phases
+## Revised 1.0 delivery phases
+
+- **0.8.x — compatibility foundation:** versioned adapter registration and
+  discovery, namespaced themes and frames, model/action validation, reload and
+  disable invalidation, error isolation, `screen.render_visible`, and the
+  conservative `render.compose` fallback. RBYMMO and Dex Radar move to public
+  exports first, with an example source-mod adapter and API documentation.
+- **0.9.x — compatibility and polish:** migrate remaining installed-mod
+  integrations, test absence/disable/version mismatch/hot reload/malformed
+  models, and complete released-game QA across themes, palettes, pixel assets,
+  fonts, scaling, responsive layouts, nested modals, and pointer settings.
+  Controls/Bindings, Continue/save selection, battle, and touch/drag remain
+  explicitly WIP or deferred.
+- **1.0.0 — stable core UI:** require the documented contract, public RBYMMO
+  and Dex Radar adapters, source-mod-owned UI files that publish the contract,
+  precise suppression with fallback, stable presenters and input safety, and
+  synchronized manifest, changelog, API docs, and examples.
+- **After 1.0:** Controls/Bindings replacement, semantic save-slot cards,
+  battle, evolution/trade/Hall of Fame/Diploma/Credits/cinematics/minigames,
+  universal drag/drop or mouse interaction, custom third-party drawing, and
+  the permanently dropped Kid Mode remain out of scope.
+
+## Historical delivery phases
 
 - **P0 — safety and layering:** stack-aware presenter chain, TextBox and modal
   primitives, custom-draw detection, and failure fallback are shipped. Adapter

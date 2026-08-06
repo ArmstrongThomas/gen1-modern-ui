@@ -22,9 +22,9 @@ local DEFAULT_THEME = {
     selected = { 0.18, 0.43, 0.72, 1 },
     accent = { 0.48, 0.86, 1.00, 1 },
     text = { 0.96, 0.98, 1.00, 1 },
-    textMuted = { 0.62, 0.70, 0.82, 1 },
+    textMuted = { 0.74, 0.82, 0.92, 1 },
     onAccent = { 0.02, 0.05, 0.09, 1 },
-    divider = { 0.25, 0.34, 0.50, 0.90 },
+    divider = { 0.38, 0.50, 0.68, 0.94 },
     -- Health states intentionally use teal/gold/orange/purple rather than
     -- the usual green/yellow/red ramp. The adjacent numeric HP label remains
     -- the authoritative, non-color status cue.
@@ -59,11 +59,19 @@ local BUILTIN_THEMES = {
     id = "gen1_modern_ui:modern_glass",
     name = "Modern Glass",
     colors = {
-      backdrop = { 0.025, 0.045, 0.085, 0.38 },
-      surface = { 0.075, 0.105, 0.17, 0.84 },
-      surfaceRaised = { 0.12, 0.17, 0.27, 0.88 },
-      selected = { 0.18, 0.43, 0.72, 0.94 },
-      divider = { 0.25, 0.34, 0.50, 0.62 },
+      backdrop = { 0.018, 0.035, 0.070, 0.72 },
+      surface = { 0.055, 0.085, 0.15, 0.94 },
+      surfaceRaised = { 0.105, 0.155, 0.25, 0.96 },
+      selected = { 0.20, 0.48, 0.78, 0.98 },
+      textMuted = { 0.76, 0.84, 0.94, 1 },
+      divider = { 0.38, 0.52, 0.72, 0.92 },
+      health = {
+        track = { 0.14, 0.21, 0.31, 1 },
+        high = { 0.14, 0.78, 0.74, 1 },
+        medium = { 0.98, 0.76, 0.22, 1 },
+        low = { 1.00, 0.48, 0.18, 1 },
+        critical = { 0.86, 0.43, 0.96, 1 },
+      },
     },
   },
   {
@@ -73,18 +81,18 @@ local BUILTIN_THEMES = {
       backdrop = { 0.035, 0.035, 0.030, 0.76 },
       surface = { 0.96, 0.95, 0.89, 1 },
       surfaceRaised = { 0.86, 0.85, 0.78, 1 },
-      selected = { 0.75, 0.77, 0.68, 1 },
-      accent = { 0.08, 0.09, 0.07, 1 },
-      text = { 0.055, 0.060, 0.050, 1 },
-      textMuted = { 0.30, 0.31, 0.27, 1 },
+      selected = { 0.72, 0.77, 0.72, 1 },
+      accent = { 0.06, 0.09, 0.12, 1 },
+      text = { 0.035, 0.045, 0.055, 1 },
+      textMuted = { 0.25, 0.30, 0.36, 1 },
       onAccent = { 0.98, 0.98, 0.93, 1 },
-      divider = { 0.48, 0.49, 0.43, 0.82 },
+      divider = { 0.34, 0.40, 0.47, 0.94 },
       health = {
-        track = { 0.80, 0.80, 0.72, 1 },
-        high = { 0.02, 0.38, 0.36, 1 },
-        medium = { 0.56, 0.32, 0.02, 1 },
-        low = { 0.66, 0.20, 0.04, 1 },
-        critical = { 0.36, 0.08, 0.48, 1 },
+        track = { 0.78, 0.79, 0.72, 1 },
+        high = { 0.02, 0.34, 0.48, 1 },
+        medium = { 0.58, 0.32, 0.02, 1 },
+        low = { 0.74, 0.16, 0.03, 1 },
+        critical = { 0.42, 0.08, 0.52, 1 },
       },
     },
     radii = { sm = 2, md = 4, lg = 6 },
@@ -94,20 +102,20 @@ local BUILTIN_THEMES = {
     name = "Pocket Green",
     colors = {
       backdrop = { 0.035, 0.075, 0.040, 0.78 },
-      surface = { 0.80, 0.84, 0.63, 1 },
-      surfaceRaised = { 0.68, 0.75, 0.50, 1 },
-      selected = { 0.70, 0.78, 0.49, 1 },
-      accent = { 0.10, 0.22, 0.12, 1 },
-      text = { 0.08, 0.13, 0.09, 1 },
-      textMuted = { 0.20, 0.28, 0.17, 1 },
+      surface = { 0.84, 0.88, 0.70, 1 },
+      surfaceRaised = { 0.73, 0.80, 0.58, 1 },
+      selected = { 0.62, 0.73, 0.46, 1 },
+      accent = { 0.07, 0.20, 0.14, 1 },
+      text = { 0.045, 0.095, 0.065, 1 },
+      textMuted = { 0.18, 0.27, 0.19, 1 },
       onAccent = { 0.90, 0.95, 0.72, 1 },
-      divider = { 0.34, 0.44, 0.29, 0.90 },
+      divider = { 0.27, 0.38, 0.24, 0.96 },
       health = {
-        track = { 0.76, 0.81, 0.62, 1 },
-        high = { 0.02, 0.38, 0.36, 1 },
-        medium = { 0.56, 0.32, 0.02, 1 },
-        low = { 0.66, 0.20, 0.04, 1 },
-        critical = { 0.36, 0.08, 0.48, 1 },
+        track = { 0.73, 0.79, 0.59, 1 },
+        high = { 0.02, 0.34, 0.48, 1 },
+        medium = { 0.58, 0.32, 0.02, 1 },
+        low = { 0.74, 0.16, 0.03, 1 },
+        critical = { 0.42, 0.08, 0.52, 1 },
       },
     },
     radii = { sm = 2, md = 5, lg = 8 },
@@ -119,27 +127,41 @@ local BUILTIN_THEMES = {
       backdrop = { 0.018, 0.022, 0.040, 0.96 },
       surface = { 0.035, 0.045, 0.075, 1 },
       surfaceRaised = { 0.075, 0.090, 0.150, 1 },
-      selected = { 0.19, 0.12, 0.38, 1 },
-      accent = { 0.64, 0.47, 1.00, 1 },
+      selected = { 0.24, 0.18, 0.48, 1 },
+      accent = { 0.70, 0.58, 1.00, 1 },
       text = { 0.96, 0.95, 1.00, 1 },
-      textMuted = { 0.69, 0.67, 0.80, 1 },
+      textMuted = { 0.74, 0.76, 0.89, 1 },
       onAccent = { 0.05, 0.03, 0.10, 1 },
-      divider = { 0.22, 0.22, 0.34, 0.95 },
+      divider = { 0.34, 0.38, 0.54, 0.96 },
+      health = {
+        track = { 0.13, 0.16, 0.24, 1 },
+        high = { 0.14, 0.78, 0.74, 1 },
+        medium = { 0.98, 0.76, 0.22, 1 },
+        low = { 1.00, 0.48, 0.18, 1 },
+        critical = { 0.86, 0.43, 0.96, 1 },
+      },
     },
   },
   {
     id = "gen1_modern_ui:midnight_glass",
     name = "Midnight Glass",
     colors = {
-      backdrop = { 0.018, 0.022, 0.040, 0.42 },
-      surface = { 0.035, 0.045, 0.075, 0.84 },
-      surfaceRaised = { 0.075, 0.090, 0.150, 0.88 },
-      selected = { 0.19, 0.12, 0.38, 0.94 },
-      accent = { 0.64, 0.47, 1.00, 1 },
+      backdrop = { 0.018, 0.022, 0.040, 0.58 },
+      surface = { 0.035, 0.045, 0.075, 0.94 },
+      surfaceRaised = { 0.075, 0.090, 0.150, 0.96 },
+      selected = { 0.24, 0.18, 0.48, 0.98 },
+      accent = { 0.70, 0.58, 1.00, 1 },
       text = { 0.96, 0.95, 1.00, 1 },
-      textMuted = { 0.69, 0.67, 0.80, 1 },
+      textMuted = { 0.74, 0.76, 0.89, 1 },
       onAccent = { 0.05, 0.03, 0.10, 1 },
-      divider = { 0.22, 0.22, 0.34, 0.65 },
+      divider = { 0.34, 0.38, 0.54, 0.94 },
+      health = {
+        track = { 0.13, 0.16, 0.24, 1 },
+        high = { 0.14, 0.78, 0.74, 1 },
+        medium = { 0.98, 0.76, 0.22, 1 },
+        low = { 1.00, 0.48, 0.18, 1 },
+        critical = { 0.86, 0.43, 0.96, 1 },
+      },
     },
   },
   {
@@ -149,18 +171,62 @@ local BUILTIN_THEMES = {
       backdrop = { 0.055, 0.090, 0.140, 0.45 },
       surface = { 0.96, 0.98, 1.00, 1 },
       surfaceRaised = { 0.88, 0.93, 0.98, 1 },
-      selected = { 0.70, 0.84, 1.00, 1 },
+      selected = { 0.38, 0.63, 0.88, 1 },
       accent = { 0.04, 0.38, 0.66, 1 },
       text = { 0.055, 0.095, 0.160, 1 },
-      textMuted = { 0.28, 0.35, 0.45, 1 },
+      textMuted = { 0.24, 0.32, 0.43, 1 },
       onAccent = { 0.98, 1.00, 1.00, 1 },
-      divider = { 0.58, 0.68, 0.80, 0.82 },
+      divider = { 0.36, 0.49, 0.63, 0.96 },
       health = {
-        track = { 0.86, 0.90, 0.95, 1 },
-        high = { 0.02, 0.38, 0.36, 1 },
-        medium = { 0.56, 0.32, 0.02, 1 },
-        low = { 0.66, 0.20, 0.04, 1 },
-        critical = { 0.36, 0.08, 0.48, 1 },
+        track = { 0.82, 0.88, 0.94, 1 },
+        high = { 0.02, 0.34, 0.48, 1 },
+        medium = { 0.58, 0.32, 0.02, 1 },
+        low = { 0.74, 0.16, 0.03, 1 },
+        critical = { 0.42, 0.08, 0.52, 1 },
+      },
+    },
+  },
+  {
+    id = "gen1_modern_ui:light",
+    name = "Light",
+    colors = {
+      backdrop = { 0.78, 0.80, 0.84, 1 },
+      surface = { 0.98, 0.98, 0.96, 1 },
+      surfaceRaised = { 0.89, 0.90, 0.88, 1 },
+      selected = { 0.40, 0.63, 0.88, 1 },
+      accent = { 0.07, 0.24, 0.46, 1 },
+      text = { 0.035, 0.050, 0.085, 1 },
+      textMuted = { 0.24, 0.29, 0.36, 1 },
+      onAccent = { 1.00, 1.00, 1.00, 1 },
+      divider = { 0.36, 0.43, 0.52, 1 },
+      health = {
+        track = { 0.78, 0.85, 0.92, 1 },
+        high = { 0.02, 0.34, 0.48, 1 },
+        medium = { 0.58, 0.32, 0.02, 1 },
+        low = { 0.74, 0.16, 0.03, 1 },
+        critical = { 0.42, 0.08, 0.52, 1 },
+      },
+    },
+  },
+  {
+    id = "gen1_modern_ui:dark",
+    name = "Dark",
+    colors = {
+      backdrop = { 0.012, 0.016, 0.024, 1 },
+      surface = { 0.055, 0.065, 0.085, 1 },
+      surfaceRaised = { 0.105, 0.125, 0.155, 1 },
+      selected = { 0.25, 0.52, 0.78, 1 },
+      accent = { 0.52, 0.85, 1.00, 1 },
+      text = { 0.96, 0.98, 1.00, 1 },
+      textMuted = { 0.73, 0.78, 0.88, 1 },
+      onAccent = { 0.015, 0.035, 0.065, 1 },
+      divider = { 0.34, 0.44, 0.56, 1 },
+      health = {
+        track = { 0.14, 0.19, 0.27, 1 },
+        high = { 0.14, 0.78, 0.74, 1 },
+        medium = { 0.98, 0.76, 0.22, 1 },
+        low = { 1.00, 0.48, 0.18, 1 },
+        critical = { 0.86, 0.43, 0.96, 1 },
       },
     },
   },
@@ -208,6 +274,63 @@ local function normalizedPercent(value, fallback, minimum, maximum)
 end
 
 local nativeGenderSigns = false
+local activeFontCache
+local fontSizes = setmetatable({}, { __mode = "k" })
+
+-- Keep the compact host font as the default, but switch a screen to Plain
+-- Pixel when it contains a script the host face is unlikely to cover.  This
+-- deliberately uses code points rather than raw UTF-8 bytes so accented Latin
+-- text remains on the normal path while Japanese, Cyrillic, Greek, Arabic,
+-- CJK, emoji, and other non-Latin text receive the multilingual pixel-font
+-- fallback without adding another large font file to this mod.
+local function containsNonLatinText(value)
+  local text = tostring(value or "")
+  local index = 1
+  while index <= #text do
+    local first = text:byte(index)
+    local codepoint
+    local length
+    if first < 0x80 then
+      codepoint, length = first, 1
+    elseif first >= 0xC2 and first <= 0xDF then
+      local second = text:byte(index + 1)
+      if not second or second < 0x80 or second > 0xBF then return true end
+      codepoint = (first - 0xC0) * 0x40 + second - 0x80
+      length = 2
+    elseif first >= 0xE0 and first <= 0xEF then
+      local second, third = text:byte(index + 1), text:byte(index + 2)
+      if not second or not third or second < 0x80 or second > 0xBF
+          or third < 0x80 or third > 0xBF then return true end
+      codepoint = (first - 0xE0) * 0x1000
+        + (second - 0x80) * 0x40 + third - 0x80
+      length = 3
+    elseif first >= 0xF0 and first <= 0xF4 then
+      local second, third, fourth = text:byte(index + 1), text:byte(index + 2),
+        text:byte(index + 3)
+      if not second or not third or not fourth
+          or second < 0x80 or second > 0xBF
+          or third < 0x80 or third > 0xBF
+          or fourth < 0x80 or fourth > 0xBF then return true end
+      codepoint = (first - 0xF0) * 0x40000
+        + (second - 0x80) * 0x1000 + (third - 0x80) * 0x40
+        + fourth - 0x80
+      length = 4
+    else
+      -- Invalid UTF-8 is safer on the pixel path than being passed to a
+      -- renderer that may reject it or measure it inconsistently.
+      return true
+    end
+    if codepoint > 0x024F then return true end
+    index = index + length
+  end
+  return false
+end
+
+local function markNonLatinText(value)
+  if activeFontCache and containsNonLatinText(value) then
+    activeFontCache._forcePixel = true
+  end
+end
 
 local function safeText(value)
   if value == nil then return "" end
@@ -221,6 +344,7 @@ local function safeText(value)
     text = text:gsub("\226\153\130", " M")
     text = text:gsub("\226\153\128", " F")
   end
+  markNonLatinText(text)
   return text
 end
 
@@ -350,6 +474,7 @@ end
 local pixelFontMetrics = setmetatable({}, { __mode = "k" })
 local rawPrint = love.graphics.print
 local rawPrintf = love.graphics.printf
+local ensurePixelTextFont
 
 local function pixelTextDpi()
   if love and love.graphics and type(love.graphics.getDPIScale) == "function" then
@@ -370,11 +495,13 @@ local function snapPixelTextCoordinate(value)
 end
 
 local function drawText(text, x, y, ...)
+  if ensurePixelTextFont then ensurePixelTextFont(text) end
   return rawPrint(text, snapPixelTextCoordinate(x),
     snapPixelTextCoordinate(y), ...)
 end
 
 local function drawTextWrapped(text, x, y, width, align, ...)
+  if ensurePixelTextFont then ensurePixelTextFont(text) end
   if type(width) == "number" and love.graphics.getFont()
       and pixelFontMetrics[love.graphics.getFont()] then
     local dpi = pixelTextDpi()
@@ -408,13 +535,16 @@ end
 
 local function font(cache, size)
   local pixels = math.max(10, math.floor((size or 16) + 0.5))
-  local usePixel = cache and cache._usePixel == true
+  activeFontCache = cache or activeFontCache
+  local usePixel = cache and (cache._usePixel == true
+    or cache._forcePixel == true)
   local family = usePixel and "pixel" or "system"
   local raster, rasterScale = plainPixelRasterScale(pixels)
   local requestedRaster = usePixel and raster or pixels
   local key = family .. ":" .. requestedRaster
   if cache[key] then
     nativeGenderSigns = cache["gender:" .. key] == true
+    fontSizes[cache[key]] = pixels
     return cache[key]
   end
 
@@ -442,7 +572,7 @@ local function font(cache, size)
       if type(selected.setFilter) == "function" then
         pcall(selected.setFilter, selected, "nearest", "nearest", 0)
       end
-      local systemKey = "system:" .. raster
+      local systemKey = "fallback:system:" .. raster
       local fallback = cache[systemKey]
       if not fallback then
         local fallbackOk, fallbackFont = pcall(love.graphics.newFont, raster)
@@ -461,7 +591,28 @@ local function font(cache, size)
   if not selected then selected = love.graphics.newFont(pixels) end
   cache["gender:" .. key] = useNativeGenderSigns(selected)
   cache[key] = selected
+  fontSizes[selected] = pixels
   return selected
+end
+
+ensurePixelTextFont = function(text)
+  if not activeFontCache or not containsNonLatinText(text) then return end
+  activeFontCache._forcePixel = true
+  local current = love.graphics.getFont()
+  local pixels = (current and fontSizes[current]) or 16
+  local selected = font(activeFontCache, pixels)
+  if selected and selected ~= current then love.graphics.setFont(selected) end
+end
+
+local function fontForCurrentText(textFont)
+  textFont = textFont or love.graphics.getFont()
+  if activeFontCache and activeFontCache._forcePixel and textFont
+      and not pixelFontMetrics[textFont] then
+    local pixels = fontSizes[textFont]
+      or math.max(10, math.floor(textFont:getHeight() + 0.5))
+    return font(activeFontCache, pixels)
+  end
+  return textFont
 end
 
 local function textHeight(textFont)
@@ -493,7 +644,7 @@ end
 local function truncate(text, maxWidth, textFont)
   text = safeText(text)
   maxWidth = math.max(1, tonumber(maxWidth) or 1)
-  textFont = textFont or love.graphics.getFont()
+  textFont = fontForCurrentText(textFont)
   if textFont:getWidth(text) <= maxWidth then return text end
   local suffix = "..."
   while #text > 0 and textFont:getWidth(text .. suffix) > maxWidth do
@@ -505,7 +656,7 @@ end
 local wrapFittedText = false
 
 local function drawFittedText(text, x, y, maxWidth, textFont)
-  textFont = textFont or love.graphics.getFont()
+  textFont = fontForCurrentText(textFont)
   love.graphics.setFont(textFont)
   if wrapFittedText then
     drawTextWrapped(safeText(text), x, y, math.max(1, maxWidth), "left")
@@ -537,7 +688,7 @@ local function wrappedLines(text, maxWidth, textFont)
   local lines = {}
   text = safeText(text):gsub("\v", "\n"):gsub("\f", "\n")
   maxWidth = math.max(1, tonumber(maxWidth) or 1)
-  textFont = textFont or love.graphics.getFont()
+  textFont = fontForCurrentText(textFont)
   local function width(value) return textFont:getWidth(value) end
   local function appendWord(line, word)
     if word == "" then return line end
@@ -575,7 +726,8 @@ local function wrappedLines(text, maxWidth, textFont)
 end
 
 local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
-  textFont = textFont or love.graphics.getFont()
+  text = safeText(text)
+  textFont = fontForCurrentText(textFont)
   lineGap = lineGap or (textHeight(textFont) + 2)
   local lines = wrappedLines(text, maxWidth, textFont)
   love.graphics.setFont(textFont)
@@ -1026,6 +1178,436 @@ return function(mod)
   local pointerDrawContext
   local hoveredPointer
 
+  -- Third-party presenters are intentionally data-only. Source mods keep
+  -- ownership of their state and semantic actions, while this registry only
+  -- decides whether a public model can be rendered safely. Keeping the
+  -- registry on the mod object avoids spending another factory-scope local;
+  -- LuaJIT's 200-local limit is easy to hit in this deliberately broad
+  -- presenter module.
+  mod._gen1ModernCompatibility = {
+    apiVersion = API_VERSION,
+    adapters = {},
+    active = setmetatable({}, { __mode = "k" }),
+    errors = {},
+    legacy = {},
+    frames = {},
+    frameChoices = { { "FRAME 1", "1" }, { "FRAME 2", "2" },
+      { "FRAME 3", "3" } },
+    assetOwners = {},
+    knownOwners = { "rby_mmo", "dex_radar", "useful_dex", "gen3_box",
+      "modern_bag", "useful_bag", "dv_tracker",
+      "pokemon-gen1-recomp-mod-qol" },
+  }
+
+  -- Useful Bag is a separate source mod. Its current release deliberately
+  -- keeps the engine's BagMenu/ListMenu and decorates the live state with a
+  -- pocket projection instead of publishing the older `modernBag` model.
+  -- Recognize that documented runtime shape without calling its projection
+  -- function or reaching into its private modules. This keeps the source
+  -- mod in charge of inventory mutations, sorting, and callbacks while the
+  -- modern presenter owns only the visual pass.
+  function mod._gen1ModernCompatibility:isUsefulBagState(state)
+    if type(state) ~= "table" or state.screenId ~= "BagMenu"
+        or type(state.items) ~= "table" then return false end
+    if type(state.modernBag) == "table" then return true end
+    return type(state.__pocketIndex) == "number"
+      and type(state.__pocketIds) == "table"
+      and type(state.__project) == "function"
+  end
+
+  function mod._gen1ModernCompatibility:bagHasPockets(state)
+    return self:isUsefulBagState(state)
+  end
+
+  function mod._gen1ModernCompatibility:recordError(owner, message)
+    self.errors[owner or "unknown"] = safeText(message)
+  end
+
+  function mod._gen1ModernCompatibility:containsFunction(value, seen, active)
+    if type(value) ~= "table" then return type(value) == "function" end
+    seen = seen or {}
+    active = active or {}
+    if active[value] then return true end
+    if seen[value] then return false end
+    seen[value] = true
+    active[value] = true
+    for _, child in pairs(value) do
+      if self:containsFunction(child, seen, active) then return true end
+    end
+    active[value] = nil
+    return false
+  end
+
+  function mod._gen1ModernCompatibility:validate(contract)
+    if type(contract) ~= "table" then return false, "contract is not a table" end
+    if tonumber(contract.apiVersion) ~= self.apiVersion then
+      return false, "unsupported gen1ModernUi apiVersion"
+    end
+    if type(contract.screens) ~= "table" then
+      return false, "contract.screens is required"
+    end
+    if contract.themes ~= nil and type(contract.themes) ~= "table" then
+      return false, "contract.themes must be a table"
+    end
+    if contract.frames ~= nil and type(contract.frames) ~= "table" then
+      return false, "contract.frames must be a table"
+    end
+    if self:containsFunction(contract.themes)
+        or self:containsFunction(contract.frames) then
+      return false, "themes and frames cannot contain callbacks"
+    end
+    for frameId, frame in pairs(contract.frames or {}) do
+      if type(frameId) ~= "string" then
+        return false, "frame IDs must be strings"
+      end
+      local asset = type(frame) == "table"
+        and (frame.asset or frame.image or frame.texture or frame.path) or frame
+      if type(asset) ~= "string" and type(asset) ~= "userdata"
+          and type(asset) ~= "table" then
+        return false, "frame assets must be declared paths or public images"
+      end
+    end
+    for themeId, theme in pairs(contract.themes or {}) do
+      if type(themeId) ~= "string" or type(theme) ~= "table"
+          or (theme.id ~= nil and type(theme.id) ~= "string") then
+        return false, "theme IDs and specs must be strings and tables"
+      end
+    end
+    for screenId, screen in pairs(contract.screens) do
+      if type(screenId) ~= "string" or type(screen) ~= "table"
+          or type(screen.match) ~= "function"
+          or type(screen.model) ~= "function" then
+        return false, "screen descriptors require match and model functions"
+      end
+      if screen.draw or screen.render or screen.drawCallback then
+        return false, "custom draw callbacks are not supported"
+      end
+      if screen.layer ~= nil and type(screen.layer) ~= "string" then
+        return false, "screen.layer must be a string"
+      end
+      if screen.canSuppressNative ~= nil
+          and type(screen.canSuppressNative) ~= "boolean" then
+        return false, "screen.canSuppressNative must be boolean"
+      end
+      if screen.actions ~= nil and type(screen.actions) ~= "table" then
+        return false, "screen.actions must be a table"
+      end
+      if screen.themes ~= nil or screen.frames ~= nil then
+        return false, "themes and frames belong on the contract, not screens"
+      end
+      for action, callback in pairs(screen.actions or {}) do
+        if action ~= "up" and action ~= "down" and action ~= "left"
+            and action ~= "right" and action ~= "select" and action ~= "back"
+            and action ~= "start" and action ~= "hover" then
+          return false, "unsupported semantic action: " .. tostring(action)
+        end
+        if type(callback) ~= "function" then
+          return false, "semantic actions must be functions"
+        end
+      end
+    end
+    return true
+  end
+
+  function mod._gen1ModernCompatibility:ownerActive(owner)
+    if type(owner) ~= "string" or owner == "" or owner == MOD_ID
+        or type(mod.find) ~= "function" then return false end
+    local ok, handle = pcall(mod.find, owner)
+    return ok and type(handle) == "table"
+  end
+
+  function mod._gen1ModernCompatibility:clearOwnerAssets(owner)
+    local owned = self.assetOwners[owner]
+    if type(owned) ~= "table" then return end
+    for id in pairs(owned.frames or {}) do
+      self.frames[id] = nil
+      for index = #self.frameChoices, 1, -1 do
+        if self.frameChoices[index][2] == id then
+          table.remove(self.frameChoices, index)
+        end
+      end
+    end
+    for id in pairs(owned.themes or {}) do
+      themes[id] = nil
+      for index = #themeChoices, 1, -1 do
+        if themeChoices[index][2] == id then
+          table.remove(themeChoices, index)
+        end
+      end
+    end
+    self.assetOwners[owner] = nil
+  end
+
+  function mod._gen1ModernCompatibility:register(spec)
+    if type(spec) ~= "table" then
+      return false, "adapter registration must be a table"
+    end
+    local owner = spec.owner or spec.sourceModId or spec.modId
+    local contract = spec.contract or spec
+    if type(owner) ~= "string" or owner == "" or owner == MOD_ID then
+      return false, "adapter owner must be the source mod id"
+    end
+    local valid, reason = self:validate(contract)
+    if not valid then
+      self:recordError(owner, reason)
+      return false, reason
+    end
+    if not self:ownerActive(owner) then
+      return false, "source mod is not active"
+    end
+    self:clearOwnerAssets(owner)
+    self.errors[owner] = nil
+    self.adapters[owner] = {
+      owner = owner,
+      version = spec.version,
+      contract = contract,
+    }
+    -- Themes and frames are optional data extensions of the same public
+    -- contract. They are registered only through the Gen1 Modern UI export;
+    -- the source mod still owns the image/path and must use a namespaced ID.
+    if contract.frames ~= nil then
+      for frameId, frame in pairs(contract.frames) do
+        local frameSpec = type(frame) == "table" and copy(frame) or {
+          asset = frame,
+        }
+        frameSpec.owner = owner
+        frameSpec.id = frameSpec.id or frameId
+        local registered, frameError = self:registerFrame(frameSpec)
+        if not registered then
+          self:recordError(owner, "frame registration failed: "
+            .. tostring(frameError))
+        end
+      end
+    end
+    if contract.themes ~= nil and mod.exports
+        and type(mod.exports.registerTheme) == "function" then
+      for themeId, theme in pairs(contract.themes) do
+        if type(theme) == "table" then
+          local themeSpec = copy(theme)
+          themeSpec.id = themeSpec.id or themeId
+          themeSpec.owner = owner
+          if not themeSpec.id:find(":", 1, true) then
+            themeSpec.id = owner .. ":" .. themeSpec.id
+          end
+          local okTheme, themeError = pcall(mod.exports.registerTheme,
+            themeSpec)
+          if okTheme then
+            local owned = self.assetOwners[owner] or { themes = {}, frames = {} }
+            owned.themes[themeSpec.id] = true
+            self.assetOwners[owner] = owned
+          else
+            self:recordError(owner, "theme registration failed: "
+              .. tostring(themeError))
+          end
+        end
+      end
+    end
+    self.active = setmetatable({}, { __mode = "k" })
+    return true
+  end
+
+  function mod._gen1ModernCompatibility:unregister(owner)
+    if type(owner) ~= "string" then return false end
+    self.adapters[owner] = nil
+    self:clearOwnerAssets(owner)
+    self.active = setmetatable({}, { __mode = "k" })
+    return true
+  end
+
+  function mod._gen1ModernCompatibility:pruneAssets()
+    -- Direct theme/frame registration is useful for theme-only mods that do
+    -- not publish a screen adapter. Keep those assets tied to an active
+    -- source mod so a disable/reload cannot leave stale choices behind.
+    for owner in pairs(self.assetOwners) do
+      if not self:ownerActive(owner) then self:clearOwnerAssets(owner) end
+    end
+  end
+
+  function mod._gen1ModernCompatibility:registerFrame(spec)
+    if type(spec) ~= "table" then
+      return false, "frame registration must be a table"
+    end
+    local owner = spec.owner or spec.sourceModId or spec.modId
+    local id = spec.id
+    local asset = spec.asset or spec.image or spec.texture or spec.path
+    if type(owner) ~= "string" or owner == "" or owner == MOD_ID
+        or type(id) ~= "string" or id == "" then
+      return false, "frame owner and id are required"
+    end
+    if not id:find(":", 1, true) then id = owner .. ":" .. id end
+    if type(asset) ~= "string" and type(asset) ~= "userdata"
+        and type(asset) ~= "table" then
+      return false, "frame asset must be a declared path or public image"
+    end
+    if self:containsFunction(asset) then
+      return false, "frame assets cannot contain callbacks"
+    end
+    if not self:ownerActive(owner) then return false, "source mod is not active" end
+    self.frames[id] = asset
+    local label = safeText(spec.name or spec.label or id)
+    local found
+    for _, choice in ipairs(self.frameChoices) do
+      if choice[2] == id then
+        choice[1] = label
+        found = true
+        break
+      end
+    end
+    if not found then self.frameChoices[#self.frameChoices + 1] = { label, id } end
+    local owned = self.assetOwners[owner] or { themes = {}, frames = {} }
+    owned.frames[id] = true
+    self.assetOwners[owner] = owned
+    return id
+  end
+
+  function mod._gen1ModernCompatibility:frameAsset(value)
+    value = safeText(value)
+    if value == "1" then return "assets/pixel_frame1.png" end
+    if value == "2" then return "assets/pixel_frame2.png" end
+    if value == "3" then return "assets/pixel_frame3.png" end
+    if self.frames[value] ~= nil then return value end
+    return "assets/pixel_frame2.png"
+  end
+
+  function mod._gen1ModernCompatibility:adapterFor(game, state)
+    if type(state) ~= "table" then return nil end
+    self:discover()
+    for owner, entry in pairs(self.adapters) do
+      if self:ownerActive(owner) then
+        for screenId, screen in pairs(entry.contract.screens) do
+          local ok, matched = pcall(screen.match, state)
+          if not ok then
+            self:recordError(owner, "screen match failed: " .. tostring(screenId))
+          elseif matched == true then
+            local context = { owner = owner, id = screenId, screen = screen,
+              entry = entry }
+            self.active[state] = context
+            return context
+          end
+        end
+      else
+        self:unregister(owner)
+        self.errors[owner] = nil
+      end
+    end
+    self.active[state] = nil
+    return nil
+  end
+
+  function mod._gen1ModernCompatibility:discover()
+    self:pruneAssets()
+    if type(mod.find) ~= "function" then return 0 end
+    local discovered = 0
+    for _, owner in ipairs(self.knownOwners) do
+      local ok, handle = pcall(mod.find, owner)
+      local exports = ok and type(handle) == "table" and handle.exports or nil
+      local contract = type(exports) == "table"
+        and exports.gen1ModernUi or nil
+      local existing = self.adapters[owner]
+      if type(contract) == "table" then
+        local valid, reason = self:validate(contract)
+        if not valid then
+          if existing then self:unregister(owner) end
+          self:recordError(owner, reason)
+        else
+          -- Re-register when a reload replaces the public export table. Models
+          -- remain live when the table is mutated in place, while a new table
+          -- safely invalidates the old screen context and assets.
+          if not existing or existing.contract ~= contract then
+            local registered = self:register({ owner = owner, contract = contract,
+              version = handle.version })
+            if registered then discovered = discovered + 1 end
+          end
+        end
+      elseif existing then
+        self:unregister(owner)
+        self.errors[owner] = nil
+      end
+    end
+    return discovered
+  end
+
+  function mod._gen1ModernCompatibility:modelFor(game, state, context)
+    context = context or self.active[state] or self:adapterFor(game, state)
+    if not context or type(context.screen.model) ~= "function" then return nil end
+    local ok, model = pcall(context.screen.model, game, state)
+    if not ok or type(model) ~= "table" or self:containsFunction(model) then
+      self:recordError(context.owner, "screen model failed: " .. context.id)
+      self.active[state] = nil
+      return nil
+    end
+    if type(model.rows) ~= "table" then
+      self:recordError(context.owner, "screen model has no rows: " .. context.id)
+      self.active[state] = nil
+      return nil
+    end
+    local normalizedOk, normalized = pcall(function()
+      local out = {
+        title = model.title,
+        rows = {},
+        index = math.max(1, math.floor(tonumber(model.index) or 1)),
+        scroll = math.max(0, math.floor(tonumber(model.scroll) or 0)),
+        footer = copy(model.footer),
+        details = copy(model.details),
+        assets = copy(model.assets),
+      }
+      for index, row in ipairs(model.rows) do
+        if type(row) == "string" or type(row) == "number" then
+          out.rows[index] = { label = safeText(row) }
+        elseif type(row) == "table" then
+          out.rows[index] = copy(row)
+        else
+          out.rows[index] = { label = "" }
+        end
+      end
+      return out
+    end)
+    if not normalizedOk then
+      self:recordError(context.owner, "screen model normalization failed: "
+        .. context.id)
+      self.active[state] = nil
+      return nil
+    end
+    context.model = normalized
+    return normalized
+  end
+
+  function mod._gen1ModernCompatibility:action(game, state, action, payload)
+    local context = self.active[state] or self:adapterFor(game, state)
+    local callback = context and context.screen.actions
+      and context.screen.actions[action]
+    if type(callback) ~= "function" then return false end
+    local ok, result = pcall(callback, game, state, payload)
+    if not ok then
+      self:recordError(context.owner, "semantic action failed: " .. tostring(action))
+      self.active[state] = nil
+      return false
+    end
+    return result ~= false
+  end
+
+  -- These bridges are the compatibility-safe home for the currently shipped
+  -- public RBYMMO and Dex Radar state models. They remain until those mods
+  -- publish their versioned export; no private class/module identity is used.
+  mod._gen1ModernCompatibility.legacy = {
+    { kind = "rby_mmo_profile", match = isRbyMmoProfileState },
+    { kind = "rby_mmo_rank", match = isRbyMmoRankState },
+    { kind = "rby_mmo_char_pick", match = isRbyMmoCharacterPickState },
+    { kind = "dex_radar", match = function(state)
+      return type(state) == "table" and state.screenId == "DexRadar"
+        and type(state.rows) == "table" and type(state.monIndex) == "table"
+        and type(state.cursor) == "number" and type(state.mapLabel) == "string"
+    end },
+  }
+
+  function mod._gen1ModernCompatibility:legacyKind(state)
+    for _, bridge in ipairs(self.legacy) do
+      local ok, matched = pcall(bridge.match, state)
+      if ok and matched then return bridge.kind end
+    end
+    return nil
+  end
+
   -- Several released screens change modes without replacing their stack
   -- state (Party actions, Manager overlays, Link stages, PC box tabs). A
   -- pointer pressed before that transition must not release into the new
@@ -1061,8 +1643,9 @@ return function(mod)
       return tostring(state.pending)
     elseif kind == "bag" then
       local bag = type(state.modernBag) == "table" and state.modernBag or nil
-      return tostring(state.items) .. ":" .. tostring(bag and
-        (bag.pocket or bag.tab or bag.index))
+      local pocket = bag and (bag.pocket or bag.tab or bag.index)
+        or state.__pocketIndex or state.title
+      return tostring(state.items) .. ":" .. tostring(pocket)
     elseif kind == "menu" or kind == "list" or kind == "shop_list"
         or kind == "pc_list" or kind == "box_root"
         or kind == "box_mon_list" then
@@ -1431,6 +2014,8 @@ return function(mod)
   end
 
   local function themeAssetFor(value)
+    local registered = mod._gen1ModernCompatibility.frames[value]
+    if registered ~= nil then value = registered end
     local image = imageFor(value)
     if image then return image end
     return modAssetImage(value)
@@ -1519,6 +2104,11 @@ return function(mod)
 
   local function currentTheme(viewport)
     local usePixelFont = option("pixelFont", false) == true
+    activeFontCache = fontCache
+    -- Re-evaluate the automatic multilingual fallback for each modern render
+    -- pass. safeText and the draw wrappers can promote the complete screen
+    -- before its first font-dependent layout is painted.
+    fontCache._forcePixel = false
     fontCache._usePixel = usePixelFont
     local base = themes[option("theme", "gen1_modern_ui:classic_mono")]
       or themes["gen1_modern_ui:classic_mono"] or themes.default
@@ -1538,9 +2128,7 @@ return function(mod)
     local density = safeText(option("density", "auto"))
     local frameStyle = safeText(option("frameStyle", "pixel"))
     local frameAsset = safeText(option("frameAsset", "2"))
-    if frameAsset ~= "1" and frameAsset ~= "2" and frameAsset ~= "3" then
-      frameAsset = "2"
-    end
+    local frameValue = mod._gen1ModernCompatibility:frameAsset(frameAsset)
     local frameScale = clamp(math.floor(
       tonumber(option("frameScale", 2)) or 2), 1, 4)
     local dpiX = math.max(1, tonumber(viewport and viewport.dpiX) or 1)
@@ -1564,7 +2152,7 @@ return function(mod)
     theme.scale = copy(theme.scale or {})
     theme.scale.auto = uiAuto or fontAuto
     theme.frame = copy(theme.frame or {})
-    theme.frame.asset = "assets/pixel_frame" .. frameAsset .. ".png"
+    if frameStyle ~= "theme" then theme.frame.asset = frameValue end
     theme.frame.pixelScale = frameScale
     theme.frame.pixelDpiX = dpiX
     theme.frame.pixelDpiY = dpiY
@@ -1572,6 +2160,8 @@ return function(mod)
       theme.frame.style = frameStyle
     elseif frameStyle == "plain" then
       theme.frame.style = "none"
+    elseif frameStyle == "theme" and not theme.frame.style then
+      theme.frame.style = "pixel"
     end
     if theme.frame.style == "pixel" then
       -- Pixel frames carry their own corners and edge treatment. Do not
@@ -1626,9 +2216,25 @@ return function(mod)
     if spec.id ~= "default" and not spec.id:find(":", 1, true) then
       error("theme.id must be namespaced as mod_id:name")
     end
-    local theme = merge(DEFAULT_THEME, spec)
+    local owner = spec.owner or spec.sourceModId
+    if owner ~= nil then
+      assert(type(owner) == "string" and owner ~= "" and owner ~= MOD_ID,
+        "theme owner must be the source mod id")
+      assert(mod._gen1ModernCompatibility:ownerActive(owner),
+        "theme source mod is not active")
+    end
+    local publicSpec = copy(spec)
+    publicSpec.owner = nil
+    publicSpec.sourceModId = nil
+    local theme = merge(DEFAULT_THEME, publicSpec)
     theme.id = spec.id
     themes[spec.id] = theme
+    if owner then
+      local owned = mod._gen1ModernCompatibility.assetOwners[owner]
+        or { themes = {}, frames = {} }
+      owned.themes[spec.id] = true
+      mod._gen1ModernCompatibility.assetOwners[owner] = owned
+    end
     for _, choice in ipairs(themeChoices) do
       if choice[2] == spec.id then
         choice[1] = theme.name or spec.id
@@ -1643,8 +2249,22 @@ return function(mod)
 
   mod.exports = {
     version = API_VERSION,
+    compatibilityApiVersion = API_VERSION,
     registerTheme = registerTheme,
     themes = themes,
+    -- Source mods should pass their own public `mod.exports.gen1ModernUi`
+    -- table here. The UI never loads sibling files or private modules.
+    registerAdapter = function(spec)
+      return mod._gen1ModernCompatibility:register(spec)
+    end,
+    unregisterAdapter = function(owner)
+      return mod._gen1ModernCompatibility:unregister(owner)
+    end,
+    registerFrame = function(spec)
+      return mod._gen1ModernCompatibility:registerFrame(spec)
+    end,
+    frames = mod._gen1ModernCompatibility.frames,
+    frameChoices = mod._gen1ModernCompatibility.frameChoices,
     pixelFontTokens = {
       cellHeight = PLAIN_PIXEL_CELL_HEIGHT,
       rasterStep = PLAIN_PIXEL_RASTER_STEP,
@@ -1688,9 +2308,8 @@ return function(mod)
       choices = { { "THEME", "theme" }, { "PIXEL", "pixel" },
                   { "SOFT", "soft" }, { "PLAIN", "plain" } }, default = "pixel" },
     { key = "frameAsset", label = "PIXEL FRAME", type = "choice",
-      description = "Choose the authored PNG used when PIXEL framing is active.",
-      choices = { { "FRAME 1", "1" }, { "FRAME 2", "2" },
-                  { "FRAME 3", "3" } }, default = "2" },
+      description = "Choose the authored PNG used when PIXEL framing is active. Source mods may add namespaced borders.",
+      choices = mod._gen1ModernCompatibility.frameChoices, default = "2" },
     { key = "frameScale", label = "PIXEL FRAME SCALE", type = "choice",
       description = "Scale PNG pixel frames by a whole-number multiplier so their authored pixels remain visible.",
       choices = { { "1X", "1" }, { "2X", "2" }, { "3X", "3" },
@@ -2170,9 +2789,12 @@ return function(mod)
     end
     if id == "frameAsset" then
       local value = safeText(option("frameAsset", "2"))
-      if value ~= "1" and value ~= "2" and value ~= "3" then value = "2" end
+      local label = value
+      for _, choice in ipairs(mod._gen1ModernCompatibility.frameChoices) do
+        if choice[2] == value then label = choice[1] break end
+      end
       return ("Choose the authored pixel-frame border. Current frame: %s."):format(
-        value)
+        label)
     end
     if id == "fontScale" then
       if option("pixelFont", false) == true then
@@ -2540,25 +3162,25 @@ return function(mod)
       and type(state.row) == "number" and type(state.col) == "number"
   end
 
-  local function kindFor(state)
+  local function kindFor(state, game)
     if not state then return nil end
+    -- An explicitly registered source-mod contract always wins over a
+    -- legacy bridge. This lets RBYMMO/Dex Radar ship richer public models
+    -- without requiring a new hardcoded presenter in every UI release.
+    if mod._gen1ModernCompatibility:adapterFor(game, state) then
+      return "external"
+    end
     local id = state.screenId
     local class = classOf(state)
     -- RBY MMO's profile and leaderboard are plain local classes rather than
     -- engine widgets. Their stable screen ids and public payloads are the
     -- compatibility seam; do not rely on the mod's private class identity.
-    if isRbyMmoProfileState(state) then return "rby_mmo_profile" end
-    if isRbyMmoRankState(state) then return "rby_mmo_rank" end
-    if isRbyMmoCharacterPickState(state) then return "rby_mmo_char_pick" end
+    local legacyKind = mod._gen1ModernCompatibility:legacyKind(state)
+    if legacyKind then return legacyKind end
     -- Dex Radar 1.x publishes a stable screen id and keeps its complete
     -- presentation model on the screen instance.  Treat that public shape as
     -- the compatibility seam so the foreign screen can retain update/input
     -- ownership while this mod replaces only its 160x144 draw pass.
-    if id == "DexRadar" and type(state.rows) == "table"
-        and type(state.monIndex) == "table" and type(state.cursor) == "number"
-        and type(state.mapLabel) == "string" then
-      return "dex_radar"
-    end
     if isLinkState(state) then return "link" end
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
@@ -2625,6 +3247,7 @@ return function(mod)
   -- particular, the unfinished battle presenter remains opt-in and never
   -- blanks the stable native battle UI by default.
   local function presenterEnabled(kind)
+    if kind == "external" then return option("menuUi", true) ~= false end
     if kind == "battle" then return option("battleUiWip", false) == true end
     if kind == "link" then return option("menuUi", true) ~= false end
     if kind == "text" or kind == "choice" or kind == "quantity" then
@@ -2654,10 +3277,14 @@ return function(mod)
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   local function customDrawModeled(state, kind)
+    if kind == "external"
+        and mod._gen1ModernCompatibility.active[state] then return true end
     if kind == "link" and isLinkState(state) then return true end
     if kind == "mod_options" and isOptionRowsScreen(state) then return true end
-    if kind == "bag" and state.screenId == "BagMenu"
-        and type(state.modernBag) == "table" then return true end
+    if kind == "bag"
+        and mod._gen1ModernCompatibility:isUsefulBagState(state) then
+      return true
+    end
     if kind == "gen3_box" and isGen3Box(state) then return true end
     if kind == "dex_entry" and isUsefulDexEntry(state) then return true end
     if kind == "naming" and isNamingState(state) then return true end
@@ -2774,7 +3401,12 @@ return function(mod)
   end
 
   local function presenterReady(game, state, kind)
-    if kind == "summary" then
+    if kind == "external" then
+      local context = mod._gen1ModernCompatibility.active[state]
+        or mod._gen1ModernCompatibility:adapterFor(game, state)
+      return context and context.screen.canSuppressNative == true
+        and mod._gen1ModernCompatibility:modelFor(game, state, context) ~= nil
+    elseif kind == "summary" then
       local mon = summaryPokemon(state)
       return mon ~= nil and pokemonDefinition(game, mon.species) ~= nil
     elseif kind == "dex_entry" then
@@ -2783,13 +3415,67 @@ return function(mod)
     return true
   end
 
+  -- The new host hook asks about one state at a time while StateStack is
+  -- choosing its visible base. This predicate deliberately does not call
+  -- `visibleBase` or `presentationStack`, so it is safe inside that query.
+  local function canSuppressState(game, state)
+    if not (game and state and state ~= game.overworld)
+        or isTitleState(state) or state.capture
+        or option("hideOriginalUi", true) == false then
+      return false
+    end
+    local kind = kindFor(state, game)
+    return kind and presenterEnabled(kind)
+      and not hasUnknownDrawOverride(state, kind)
+      and presenterReady(game, state, kind) or false
+  end
+
+  -- Build a non-recursive proof for hosts that have screen.render_visible.
+  -- Managed modern states are treated as transparent for the base scan; an
+  -- unknown opaque state remains the native drawing boundary and prevents us
+  -- from blanking anything above it.
+  local function visibleSuppressionProof(game)
+    local stack = game and game.stack
+    local states = stack and stack.states
+    if type(states) ~= "table" then return false, {} end
+    local function rawOpaque(state)
+      if state and state._gen1ModernOpaqueManaged then
+        return state._gen1ModernOriginalOpaque == true
+      end
+      return state and state.isOpaque == true
+    end
+    local base = 1
+    for index = #states, 1, -1 do
+      local state = states[index]
+      if state and state ~= game.overworld and isTitleState(state) then
+        -- Title art is a shared native canvas; its menu decorator handles the
+        -- rows separately and the canvas must remain available.
+      elseif state and type(state.draw) == "function"
+          and rawOpaque(state) and not canSuppressState(game, state) then
+        base = index
+        break
+      end
+    end
+    local hidden = {}
+    for index = base, #states do
+      local state = states[index]
+      if state and state ~= game.overworld and not isTitleState(state)
+          and type(state.draw) == "function" then
+        if not canSuppressState(game, state) then return false, {} end
+        hidden[state] = true
+      end
+    end
+    return next(hidden) ~= nil, hidden
+  end
+
   local function syncStateVisibility(game, state)
     if not (game and state and state ~= game.overworld) then return end
-    local kind = kindFor(state)
+    local kind = kindFor(state, game)
     local revealWorld = worldVisibleLayout(nil)
       and option("hideOriginalUi", true) ~= false
     local eligible = revealWorld and kind and presenterEnabled(kind)
       and not state.capture and not hasUnknownDrawOverride(state, kind)
+      and presenterReady(game, state, kind)
     if eligible then
       if state._gen1ModernOpaqueManaged == nil then
         state._gen1ModernOpaqueManaged = true
@@ -2917,6 +3603,11 @@ return function(mod)
   -- after StateStack:push and is safe to use when the host exposes events;
   -- the per-step sweep remains the compatibility fallback for older clients.
   if mod.events and type(mod.events.on) == "function" then
+    -- Refresh public adapter exports after a mod reload or enable/disable
+    -- change. `discover` also removes adapters whose source mod vanished.
+    mod.events:on("mods.loaded", function()
+      mod._gen1ModernCompatibility:discover()
+    end, 90)
     mod.events:on("screen.pushed", function(payload)
       local state = payload and payload.state
       local game = state and state.game or currentGame
@@ -2975,7 +3666,7 @@ return function(mod)
         -- the canvas here rather than erasing the logo and title Pokémon.
         preserveUiCanvas = true
       elseif type(visible and visible.draw) == "function" then
-        local kind = kindFor(visible)
+        local kind = kindFor(visible, game)
         if not kind or not presenterEnabled(kind) or visible.capture
             or hasUnknownDrawOverride(visible, kind)
             or not presenterReady(game, visible, kind) then
@@ -3065,7 +3756,37 @@ return function(mod)
     local title = titleFor(Strings, state, kind)
     local footer
 
-    if kind == "mod_manager" then
+    if kind == "external" then
+      local context = mod._gen1ModernCompatibility.active[state]
+        or mod._gen1ModernCompatibility:adapterFor(game, state)
+      local model = mod._gen1ModernCompatibility:modelFor(game, state, context)
+      if not model then return nil end
+      title = safeText(model.title or "")
+      selected, scroll = model.index, model.scroll
+      for index, raw in ipairs(model.rows) do
+        local row = type(raw) == "table" and raw or { label = raw }
+        rows[index] = {
+          label = row.label or row.name or "",
+          value = row.value ~= nil and row.value or row.right,
+          enabled = row.enabled,
+          marker = row.marker,
+          header = row.header,
+          category = row.category,
+          image = row.image or row.icon or row.thumbnail or row.sprite
+            or row.asset or row.path,
+          assetCatalog = model.assets,
+          source = row,
+        }
+      end
+      if #rows == 0 then rows[1] = { label = "Nothing here.", enabled = false } end
+      footer = model.footer
+      if type(footer) == "table" then
+        local parts = {}
+        for _, part in ipairs(footer) do parts[#parts + 1] = safeText(part) end
+        footer = table.concat(parts, "   ")
+      end
+      return rows, selected, scroll, title, footer
+    elseif kind == "mod_manager" then
       return managerRowsFor(game, state)
     elseif kind == "options" or kind == "mod_options" then
       for _, row in ipairs(state.rows or {}) do
@@ -3267,6 +3988,17 @@ return function(mod)
   end
 
   local function contentWidthFor(theme, rows, title, footer, minWidth, maxWidth)
+    -- Detect translated labels before constructing the fonts used for the
+    -- measurement pass; otherwise the first width calculation could still
+    -- use the lightweight host face and only switch during painting.
+    title = safeText(title)
+    footer = safeText(footer)
+    for _, row in ipairs(rows or {}) do
+      if type(row) == "table" then
+        safeText(row.label)
+        safeText(row.value)
+      end
+    end
     local bodyFont = font(fontCache, theme.typography.body)
     local titleFont = font(fontCache, theme.typography.title)
     local widest = math.max(titleFont:getWidth(safeText(title)),
@@ -3686,6 +4418,9 @@ return function(mod)
           dragHandle = false, rowCount = #rows,
           selectionField = layout.pointerSelectionField,
           selectableIndices = selectableIndices,
+          adapterIndex = pointerDrawContext.kind == "external" and index or nil,
+          adapterAction = pointerDrawContext.kind == "external" and "select" or nil,
+          adapterHover = pointerDrawContext.kind == "external" and "hover" or nil,
         })
         setColor(rowSelected and colors.selected or colors.surfaceRaised)
         love.graphics.rectangle("fill", rx, ry, width, layout.rowHeight - 4,
@@ -3705,7 +4440,7 @@ return function(mod)
       if not row then break end
       local ry = layout.y + layout.header + (slot - 1) * layout.rowHeight
       local rowSelected = index == selected and row.enabled ~= false
-      registerPointerRegion(layout.x + theme.spacing.sm, ry,
+        registerPointerRegion(layout.x + theme.spacing.sm, ry,
         layout.w - theme.spacing.sm * 2, layout.rowHeight - 4, {
           rowIndex = index,
           interactive = not row.header and row.enabled ~= false,
@@ -3718,6 +4453,9 @@ return function(mod)
           rowCount = #rows,
           rowHeight = layout.rowHeight,
           selectableIndices = selectableIndices,
+          adapterIndex = pointerDrawContext.kind == "external" and index or nil,
+          adapterAction = pointerDrawContext.kind == "external" and "select" or nil,
+          adapterHover = pointerDrawContext.kind == "external" and "hover" or nil,
         })
       if row.category then
         setColor(rowSelected and colors.selected or colors.surfaceRaised)
@@ -3727,7 +4465,7 @@ return function(mod)
         setColor(rowSelected and colors.text or colors.accent)
         local categoryFont = font(fontCache, theme.typography.body)
         local valueFont = font(fontCache, theme.typography.caption)
-        local value = optionValue(game, row)
+        local value = safeText(optionValue(game, row))
         local valueWidth = value ~= "" and valueFont:getWidth(value) or 0
         local labelWidth = math.max(20, layout.w - theme.spacing.lg * 2
           - (valueWidth > 0 and valueWidth + theme.spacing.md or 0))
@@ -3770,7 +4508,12 @@ return function(mod)
       else
         setColor(row.enabled == false and colors.textMuted or colors.text)
       end
-      local icon = not row.header and not row.category and imageFor(row.image) or nil
+      local imageValue = row.image
+      if type(imageValue) == "string" and type(row.assetCatalog) == "table"
+          and row.assetCatalog[imageValue] ~= nil then
+        imageValue = row.assetCatalog[imageValue]
+      end
+      local icon = not row.header and not row.category and imageFor(imageValue) or nil
       if icon then
         paletteRuntime.setImage(icon, row.source and row.source.species
           and paletteRuntime.pokemon(game, row.source.species) or nil)
@@ -4408,12 +5151,19 @@ return function(mod)
     local def = pokemonDefinition(game, mon.species)
     local name = safeText(mon.nickname or (def and def.name)
       or mon.species or "POKéMON")
-    local summarySprite = state.page ~= 2
+    local isMovePage = state.page == 2
+    -- DV Tracker adds a third SummaryMenu page while retaining the source
+    -- SummaryMenu state and its normal page navigation. Read the public mon
+    -- record (or the mod's equivalent page payload) without requiring the
+    -- tracker or its private draw implementation.
+    local isDvPage = state.page == 3 or state.page == "dvs"
+      or state.view == "dvs" or state.dvsPage == true
+    local summarySprite = not isMovePage and not isDvPage
       and spriteFor(game, mon, nil, "summary") or nil
-    local page = state.page == 2 and "MOVES / EXPERIENCE" or
-      "STATUS / TRAINER DATA"
+    local page = isDvPage and "DVs / STAT EXP"
+      or isMovePage and "MOVES / EXPERIENCE" or "STATUS / TRAINER DATA"
     panelW = math.min(panelW, scaledPanelWidth(theme,
-      state.page == 2 and 680 or 640))
+      isMovePage and 680 or 640))
     local compact = panelW < 620
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
       or theme.typography.title)
@@ -4430,7 +5180,9 @@ return function(mod)
     local hpOffset = levelOffset + lineGap
     local statusOffset = hpOffset + lineGap
     local contentBottom
-    if state.page == 2 then
+    if isDvPage then
+      contentBottom = statusOffset + lineGap * 6 + textHeight(bodyFont)
+    elseif isMovePage then
       local moveGap = compact and bodyLine or 28
       contentBottom = statusOffset + lineGap * 2 + textHeight(bodyFont)
         + moveGap * 3 + textHeight(bodyFont)
@@ -4464,7 +5216,7 @@ return function(mod)
     local level = mon.level and ("LEVEL %d"):format(mon.level) or ""
     local hp = mon.stats and mon.stats.hp and ("HP  %d / %d"):format(mon.hp or 0, mon.stats.hp) or ""
     local status = mon.status or "OK"
-    if panelW < 620 and state.page ~= 2 then page = "STATUS" end
+    if panelW < 620 and not isMovePage and not isDvPage then page = "STATUS" end
     setColor(theme.colors.textMuted)
     drawFittedText(page, px + spacing.lg, pageY,
       panelW - spacing.lg * 2, bodyFont)
@@ -4475,7 +5227,7 @@ return function(mod)
       panelW - spacing.lg * 2, bodyFont)
     drawFittedText(("STATUS  %s"):format(status), px + spacing.lg, statusY,
       panelW - spacing.lg * 2, bodyFont)
-    if state.page ~= 2 then
+    if not isMovePage and not isDvPage then
       local sprite = summarySprite
       if sprite then
         local iw, ih = imageMetrics(sprite)
@@ -4490,7 +5242,7 @@ return function(mod)
         end
       end
     end
-    if state.page == 2 then
+    if isMovePage then
       drawFittedText(("EXP  %s"):format(safeText(mon.exp)), px + spacing.lg,
         statusY + lineGap, panelW - spacing.lg * 2, bodyFont)
       local moves = mon.moves or {}
@@ -4514,6 +5266,64 @@ return function(mod)
         setColor(theme.colors.textMuted)
         drawText(("PP %s"):format(pp), ppX,
           moveY + (i - 1) * moveGap)
+      end
+    elseif isDvPage then
+      local dvs = type(state.dvs) == "table" and state.dvs
+        or type(state.ivs) == "table" and state.ivs
+        or type(mon.dvs) == "table" and mon.dvs
+        or type(mon.ivs) == "table" and mon.ivs
+        or type(mon.stats) == "table" and (
+          (type(mon.stats.dvs) == "table" and mon.stats.dvs)
+          or (type(mon.stats.ivs) == "table" and mon.stats.ivs)) or {}
+      local statExp = type(state.statExp) == "table" and state.statExp
+        or type(mon.statExp) == "table" and mon.statExp or {}
+      local hpDv = dvs.hp or dvs.HP
+      if hpDv == nil and (dvs.attack ~= nil or dvs.atk ~= nil
+          or dvs.ATK ~= nil or dvs.defense ~= nil or dvs.def ~= nil
+          or dvs.DEF ~= nil or dvs.speed ~= nil or dvs.spd ~= nil
+          or dvs.SPD ~= nil or dvs.special ~= nil or dvs.spc ~= nil
+          or dvs.SPC ~= nil) then
+        hpDv = ((tonumber(dvs.attack or dvs.atk or dvs.ATK) or 0) % 2) * 8
+          + ((tonumber(dvs.defense or dvs.def or dvs.DEF) or 0) % 2) * 4
+          + ((tonumber(dvs.speed or dvs.spd or dvs.SPD) or 0) % 2) * 2
+          + ((tonumber(dvs.special or dvs.spc or dvs.SPC) or 0) % 2)
+      end
+      local function statValue(source, keys)
+        for _, key in ipairs(keys) do
+          if source[key] ~= nil then return safeText(source[key]) end
+        end
+        return "-"
+      end
+      local dvRows = {
+        { "HP", hpDv == nil and "-" or safeText(hpDv) },
+        { "ATTACK", statValue(dvs, { "attack", "atk", "ATK" }) },
+        { "DEFENSE", statValue(dvs, { "defense", "def", "DEF" }) },
+        { "SPEED", statValue(dvs, { "speed", "spd", "SPD" }) },
+        { "SPECIAL", statValue(dvs, { "special", "spc", "SPC" }) },
+      }
+      local expRows = {
+        { "HP", statValue(statExp, { "hp", "HP" }) },
+        { "ATTACK", statValue(statExp, { "attack", "atk", "ATK" }) },
+        { "DEFENSE", statValue(statExp, { "defense", "def", "DEF" }) },
+        { "SPEED", statValue(statExp, { "speed", "spd", "SPD" }) },
+        { "SPECIAL", statValue(statExp, { "special", "spc", "SPC" }) },
+      }
+      local leftX = px + spacing.lg
+      local rightX = px + panelW * 0.52
+      local valueGap = bodyFont:getWidth("DEFENSE") + spacing.sm
+      setColor(theme.colors.textMuted)
+      drawText("DVs", leftX, statusY + lineGap)
+      drawText("STAT EXP", rightX, statusY + lineGap)
+      for index = 1, #dvRows do
+        local rowY = statusY + lineGap * (index + 2)
+        setColor(theme.colors.textMuted)
+        drawText(dvRows[index][1], leftX, rowY)
+        drawText(expRows[index][1], rightX, rowY)
+        setColor(theme.colors.text)
+        drawFittedText(dvRows[index][2], leftX + valueGap, rowY,
+          math.max(24, rightX - spacing.sm - leftX - valueGap), bodyFont)
+        drawFittedText(expRows[index][2], rightX + valueGap, rowY,
+          math.max(24, px + panelW - spacing.lg - rightX - valueGap), bodyFont)
       end
     else
       local types = def and def.types or {}
@@ -4770,9 +5580,9 @@ return function(mod)
     for index, row in ipairs(profile) do
       local ry = contentY + spacing.md + (index - 1) * profileGap
       setColor(colors.textMuted)
-      love.graphics.print(row[1], profileX, ry)
+      drawText(row[1], profileX, ry)
       setColor(colors.text)
-      love.graphics.print(truncate(row[2], math.max(20,
+      drawText(truncate(row[2], math.max(20,
         profileX + profileW - valueX)), valueX, ry)
     end
 
@@ -4794,7 +5604,7 @@ return function(mod)
     local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     setColor(colors.textMuted)
-    love.graphics.print(Strings("BADGES  %d/%d", ownedCount, #badges),
+    drawText(Strings("BADGES  %d/%d", ownedCount, #badges),
       px + spacing.lg, gridY)
     gridY = gridY + theme.typography.caption + spacing.sm
     gridH = math.max(1, contentY + contentH - gridY)
@@ -4847,7 +5657,7 @@ return function(mod)
       local labelX = cx + spacing.sm + artSize + spacing.sm
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(owned and colors.text or colors.textMuted)
-      love.graphics.print(truncate(("%d  %s"):format(index, badgeName),
+      drawText(truncate(("%d  %s"):format(index, badgeName),
         math.max(20, cx + cellW - spacing.sm - labelX)), labelX,
         cy + (cellH - theme.typography.caption) / 2)
     end
@@ -5687,7 +6497,7 @@ return function(mod)
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     setColor(colors.textMuted)
-    local hint = type(state.modernBag) == "table"
+    local hint = mod._gen1ModernCompatibility:bagHasPockets(state)
       and "LEFT/RIGHT  pocket   A  use   B  back"
       or "A  use   SELECT  move   B  back"
     if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
@@ -8323,7 +9133,13 @@ return function(mod)
       end
     end
 
-    if kind == "mod_manager" then
+    if kind == "external" then
+      local context = mod._gen1ModernCompatibility.active[state]
+      local externalActions = context and context.screen.actions or {}
+      for _, action in ipairs({ "up", "down", "left", "right", "select", "back", "start" }) do
+        if type(externalActions[action]) == "function" then add(action) end
+      end
+    elseif kind == "mod_manager" then
       if state._gen1OptionDescription then return actions end
       if state.overlay then
         if state.overlay.kind == "confirm" then add("up"); add("down") end
@@ -8351,7 +9167,8 @@ return function(mod)
       elseif stage == "battleOptions" then
         add("up"); add("down")
       end
-    elseif kind == "bag" and type(state.modernBag) == "table" then
+    elseif kind == "bag"
+        and mod._gen1ModernCompatibility:bagHasPockets(state) then
       add("left"); add("right")
     elseif kind == "naming" then
       add("select"); add("start")
@@ -8396,7 +9213,8 @@ return function(mod)
         return state.mode == "party" and "BOX" or "PARTY"
       end
       if action == "start" then return "STATS" end
-    elseif kind == "bag" and type(state.modernBag) == "table" then
+    elseif kind == "bag"
+        and mod._gen1ModernCompatibility:bagHasPockets(state) then
       if action == "left" then return "< POCKET" end
       if action == "right" then return "POCKET >" end
     end
@@ -8468,7 +9286,9 @@ return function(mod)
       drawText(label, x + (width - controlFont:getWidth(label)) / 2,
         dockY + (buttonH - textHeight(controlFont)) / 2)
       registerPointerRegion(x, dockY, width, buttonH, {
-        action = action, activate = true, interactive = true,
+        action = context.kind == "external" and nil or action,
+        adapterAction = context.kind == "external" and action or nil,
+        activate = true, interactive = true,
         controlKey = controlKey, dragHandle = false,
       })
       x = x + width + gap
@@ -8717,11 +9537,18 @@ return function(mod)
   end
 
   local function updatePointerHover(region, game)
-      if region and not pointerRuntime.regionAlive(game or currentGame, region) then
-        region = nil
+    if region and not pointerRuntime.regionAlive(game or currentGame, region) then
+      region = nil
     end
+    local previous = hoveredPointer
     hoveredPointer = region
-    if region and region.interactive ~= false
+    if region and region.interactive ~= false and region.kind == "external"
+        and region.adapterIndex ~= nil and region.adapterHover
+        and (not previous or pointerRuntime.targetKey(previous)
+          ~= pointerRuntime.targetKey(region)) then
+      mod._gen1ModernCompatibility:action(game or currentGame,
+        region.state, region.adapterHover, region.adapterIndex)
+    elseif region and region.interactive ~= false
         and (region.rowIndex ~= nil or region.selectionField ~= nil
           or region.namingRow ~= nil
           or (region.gridRow ~= nil and region.gridCol ~= nil)) then
@@ -8789,6 +9616,10 @@ return function(mod)
         return true
       end
       return false
+    end
+    if region.adapterAction then
+      return mod._gen1ModernCompatibility:action(game, region.state,
+        region.adapterAction, region.adapterIndex)
     end
     if region.action then return tapGameButton(game, region.action) end
     local hasSelection = region.rowIndex ~= nil or region.selectionField ~= nil
@@ -9054,6 +9885,20 @@ return function(mod)
   mod.hooks:wrap("render.zones", function(next, game, zones)
     currentGame = game
     return next(game, zones)
+  end, 100)
+
+  -- Preferred native suppression on newer hosts. The released fallback below
+  -- still clears only uiCanvas for clients that do not expose this hook.
+  -- Support both the current `(visibleByDefault, state)` signature and the
+  -- early one-argument fixture used by development clients.
+  mod.hooks:wrap("screen.render_visible", function(next, visible, state)
+    local oneArgument = state == nil and type(visible) == "table"
+    if oneArgument then state, visible = visible, true end
+    local game = currentGame or (state and state.game)
+    local complete, hidden = visibleSuppressionProof(game)
+    if complete and hidden[state] then return false end
+    if oneArgument then return next(state) end
+    return next(visible, state)
   end, 100)
 
   -- render.compose receives the already-drawn world and UI canvases before

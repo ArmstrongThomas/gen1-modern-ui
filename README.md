@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.8.0 requires gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.8.1 requires gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line).
 
 ## Install the latest release
@@ -145,7 +145,7 @@ when the listing is enabled there.
   themselves to their visible content instead of reserving a wide empty card.
 - Content-sized option rows reserve enough width for long values and
   localized labels before falling back to safe, non-overlapping truncation.
-- Seven built-in themes spanning modern/classic, light/dark, opaque/glass
+- Nine built-in themes spanning modern/classic, light/dark, opaque/glass
   styles, plus density controls, cached scale metrics, and a public data-only
   theme API with scale tokens.
 - Nearest-neighbor, aspect-fit artwork and active sprite-pack compatibility.
@@ -177,6 +177,22 @@ manager, while preserving custom entries added by other authors. Sprite
 replacement packs such as **Gold_Silver_Sprites** are used when they are
 enabled. Unknown or unsupported screens remain vanilla instead of being forced
 through an incorrect layout.
+
+### Versioned source-mod UI contract
+
+Gen1 Modern UI 0.8.x also exposes a public compatibility foundation through
+`mod.exports.gen1ModernUi` (`apiVersion = 1`). Supporting mods may publish
+read-only screen models, source-owned semantic actions, and data-only
+namespaced themes and pixel frames. Their own assets stay in the source mod;
+Gen1 Modern UI supplies the shared nearest-neighbor nine-slice renderer and
+seven-pixel frame inset. Custom draw callbacks and private-state reach-through
+are rejected. Missing, malformed, unsupported, disabled, or failing adapters
+fall back to the native UI, with `screen.render_visible` preferred for precise
+suppression and `render.compose` retained for older hosts.
+
+See the [custom UI and theme guide](docs/CUSTOM_UI_AND_THEME_API.md), the
+[compatibility API](docs/UI_PRESENTATION_API.md#compatibility-contract-v1)
+and [source-mod adapter examples](docs/examples/README.md).
 
 Mod settings screens built with gen1recomp's public `src.ui.OptionRows`
 contract are also recognized. The current compatibility pass covers

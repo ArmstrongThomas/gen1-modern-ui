@@ -118,12 +118,17 @@ sounds, callbacks, networking, or stack order.
 
 ## Installed inventory-mod findings
 
-The installed category inventory mod is Modern Bag 1.2.0. It still uses a
-standard `ListMenu` and preserves live row objects, so the generic presenter
-can display its current category rows. It stores pocket/cursor/swap state in a
-private `list.modernBag` table, rebuilds the rows during update, and wraps draw.
-It exports category definitions but not the current pocket or a semantic
-pocket setter.
+The installed category inventory mod is a standalone Useful Bag release. It
+still uses a standard `ListMenu` and preserves live row objects, so the modern
+presenter can display its current six-pocket projection. Its public runtime
+shape includes the current `items`, `title`, `index`, `scroll`, pocket index,
+and pocket IDs; the source mod continues to own projection, sorting, cursor,
+and item callbacks. The legacy bridge recognizes that shape without invoking
+its projection function. The drop-in contract migration is documented in
+[`useful_bag_adapter.lua`](examples/useful_bag_adapter.lua).
+
+Older Modern Bag builds that expose only a `modernBag` capability remain
+supported through the same specialized presenter path when present.
 
 Other installed inventory extensions also modify the live screen rather than
 providing a common presentation model:
@@ -137,20 +142,37 @@ objects. It must never rebuild another mod's categories or callbacks. Generic
 row presentation displays `right` or an explicit `displayValue`; opaque
 `value` payloads are deliberately not stringified.
 
-## Presenter adapter direction
+## Versioned presenter compatibility contract
 
-A future adapter registry should be versioned and namespaced. An adapter may
-match a stable `screenId` or state capability and return a read-only semantic
-model containing title, rows, tabs, cards, selection, scroll, footer, details,
-and source references. It should also declare `layer = "screen" | "modal"`
-and whether it can safely suppress classic drawing for the complete visible
-stack. Errors or missing capabilities must immediately fall back to vanilla.
+The compatibility foundation is now the versioned `mod.exports.gen1ModernUi`
+contract (`apiVersion = 1`). A supporting mod may publish screen descriptors
+with `match(state)`, a read-only `model(game, state)`, optional source-owned
+semantic actions (`up`, `down`, `left`, `right`, `select`, `back`, `start`, and
+`hover`), `layer`, and `canSuppressNative`. Models may contain title, rows,
+selection, scroll, footer, details, assets, and public source references.
 
-Optional semantic actions may translate a tap or drag into the screen's normal
-input/state operation, but adapters must not replace gameplay callbacks. For a
-category bag, the ideal exporting mod contract is a `bagModel(list)` reader and
-`selectPocket(list, pocketId)` action that saves cursors, clears swap state,
-and refreshes rows through that mod's own implementation.
+The same contract may declare data-only `themes` and `frames`. Frame IDs are
+namespaced by the source mod, and assets must be host-resolved declared paths
+or public image, texture, sprite, or catalog references owned by that source
+mod. A source mod should resolve its private PNG through `mod.assets:image`
+before publishing it. Nine-slice
+rendering, nearest filtering, integer pixel scale, and the seven-pixel authored
+inset are provided by Gen1 Modern UI. Third-party draw/render callbacks are
+never accepted.
+
+Source mods can register explicitly through `mod.find("gen1_modern_ui").exports`
+or expose their contract for discovery by a known integration. Gen1 Modern UI
+never reaches into private modules or executes arbitrary files from another
+mod. A source mod may load its own optional adapter file and then publish the
+result through `mod.exports`.
+
+The registry validates the contract, isolates match/model/action errors,
+invalidates state caches on reload or disable, and falls back to the native
+renderer on missing exports, unsupported versions, malformed data, or an
+incomplete suppression proof. `screen.render_visible` is the preferred precise
+suppression hook. Older hosts retain the `render.compose` UI-canvas clearing
+fallback. The full contract example is in
+[`UI_PRESENTATION_API.md`](UI_PRESENTATION_API.md#compatibility-contract-v1).
 
 ## Dialogue is first-class UI
 
@@ -165,3 +187,11 @@ with START/SELECT is acceptable.
 Presentation must preserve typewriter progress, waits, choice delays,
 callbacks, and stack order. Tapping the text card advances it and tapping an
 option selects it directly through the owning state's normal action path.
+
+## DV Tracker compatibility
+
+The DV Tracker third SummaryMenu page remains source-owned for navigation, but
+the modern Summary presenter recognizes its public page marker and reads the
+selected record's `dvs` and `statExp` tables. If either table is absent, the
+page remains safe and renders an em dash for that value rather than falling
+back to the first status page.
