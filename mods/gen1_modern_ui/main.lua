@@ -277,61 +277,6 @@ local nativeGenderSigns = false
 local activeFontCache
 local fontSizes = setmetatable({}, { __mode = "k" })
 
--- Keep the compact host font as the default, but switch a screen to Plain
--- Pixel when it contains a script the host face is unlikely to cover.  This
--- deliberately uses code points rather than raw UTF-8 bytes so accented Latin
--- text remains on the normal path while Japanese, Cyrillic, Greek, Arabic,
--- CJK, emoji, and other non-Latin text receive the multilingual pixel-font
--- fallback without adding another large font file to this mod.
-local function containsNonLatinText(value)
-  local text = tostring(value or "")
-  local index = 1
-  while index <= #text do
-    local first = text:byte(index)
-    local codepoint
-    local length
-    if first < 0x80 then
-      codepoint, length = first, 1
-    elseif first >= 0xC2 and first <= 0xDF then
-      local second = text:byte(index + 1)
-      if not second or second < 0x80 or second > 0xBF then return true end
-      codepoint = (first - 0xC0) * 0x40 + second - 0x80
-      length = 2
-    elseif first >= 0xE0 and first <= 0xEF then
-      local second, third = text:byte(index + 1), text:byte(index + 2)
-      if not second or not third or second < 0x80 or second > 0xBF
-          or third < 0x80 or third > 0xBF then return true end
-      codepoint = (first - 0xE0) * 0x1000
-        + (second - 0x80) * 0x40 + third - 0x80
-      length = 3
-    elseif first >= 0xF0 and first <= 0xF4 then
-      local second, third, fourth = text:byte(index + 1), text:byte(index + 2),
-        text:byte(index + 3)
-      if not second or not third or not fourth
-          or second < 0x80 or second > 0xBF
-          or third < 0x80 or third > 0xBF
-          or fourth < 0x80 or fourth > 0xBF then return true end
-      codepoint = (first - 0xF0) * 0x40000
-        + (second - 0x80) * 0x1000 + (third - 0x80) * 0x40
-        + fourth - 0x80
-      length = 4
-    else
-      -- Invalid UTF-8 is safer on the pixel path than being passed to a
-      -- renderer that may reject it or measure it inconsistently.
-      return true
-    end
-    if codepoint > 0x024F then return true end
-    index = index + length
-  end
-  return false
-end
-
-local function markNonLatinText(value)
-  if activeFontCache and containsNonLatinText(value) then
-    activeFontCache._forcePixel = true
-  end
-end
-
 local function safeText(value)
   if value == nil then return "" end
   local text = tostring(value)
@@ -344,7 +289,6 @@ local function safeText(value)
     text = text:gsub("\226\153\130", " M")
     text = text:gsub("\226\153\128", " F")
   end
-  markNonLatinText(text)
   return text
 end
 
@@ -495,20 +439,30 @@ local function snapPixelTextCoordinate(value)
 end
 
 local function drawText(text, x, y, ...)
-  if ensurePixelTextFont then ensurePixelTextFont(text) end
-  return rawPrint(text, snapPixelTextCoordinate(x),
+  local current = love.graphics.getFont()
+  local selected = ensurePixelTextFont
+    and ensurePixelTextFont(text, current) or current
+  if selected and selected ~= current then love.graphics.setFont(selected) end
+  local result = rawPrint(text, snapPixelTextCoordinate(x),
     snapPixelTextCoordinate(y), ...)
+  if selected and selected ~= current then love.graphics.setFont(current) end
+  return result
 end
 
 local function drawTextWrapped(text, x, y, width, align, ...)
-  if ensurePixelTextFont then ensurePixelTextFont(text) end
+  local current = love.graphics.getFont()
+  local selected = ensurePixelTextFont
+    and ensurePixelTextFont(text, current) or current
+  if selected and selected ~= current then love.graphics.setFont(selected) end
   if type(width) == "number" and love.graphics.getFont()
       and pixelFontMetrics[love.graphics.getFont()] then
     local dpi = pixelTextDpi()
     width = math.max(1, math.floor(width * dpi + 0.5) / dpi)
   end
-  return rawPrintf(text, snapPixelTextCoordinate(x),
+  local result = rawPrintf(text, snapPixelTextCoordinate(x),
     snapPixelTextCoordinate(y), width, align, ...)
+  if selected and selected ~= current then love.graphics.setFont(current) end
+  return result
 end
 
 local function useNativeGenderSigns(selected)
@@ -533,11 +487,10 @@ local function plainPixelRasterScale(pixels)
   return raster, rasterScale
 end
 
-local function font(cache, size)
+local function font(cache, size, forcePixel)
   local pixels = math.max(10, math.floor((size or 16) + 0.5))
   activeFontCache = cache or activeFontCache
-  local usePixel = cache and (cache._usePixel == true
-    or cache._forcePixel == true)
+  local usePixel = forcePixel == true or cache and cache._usePixel == true
   local family = usePixel and "pixel" or "system"
   local raster, rasterScale = plainPixelRasterScale(pixels)
   local requestedRaster = usePixel and raster or pixels
@@ -595,24 +548,26 @@ local function font(cache, size)
   return selected
 end
 
-ensurePixelTextFont = function(text)
-  if not activeFontCache or not containsNonLatinText(text) then return end
-  activeFontCache._forcePixel = true
-  local current = love.graphics.getFont()
-  local pixels = (current and fontSizes[current]) or 16
-  local selected = font(activeFontCache, pixels)
-  if selected and selected ~= current then love.graphics.setFont(selected) end
+ensurePixelTextFont = function(text, current)
+  current = current or love.graphics.getFont()
+  if not activeFontCache or not current or pixelFontMetrics[current]
+      or activeFontCache._usePixel == true or tostring(text or "") == ""
+      or type(current.hasGlyphs) ~= "function" then
+    return current
+  end
+  local ok, supported = pcall(current.hasGlyphs, current,
+    tostring(text or ""))
+  -- A font API failure is not evidence that the glyph is missing. Keep the
+  -- selected face unless LÖVE explicitly reports incomplete coverage.
+  if not ok or supported == true then return current end
+  local pixels = fontSizes[current]
+    or math.max(10, math.floor(current:getHeight() + 0.5))
+  return font(activeFontCache, pixels, true) or current
 end
 
-local function fontForCurrentText(textFont)
+local function fontForCurrentText(textFont, text)
   textFont = textFont or love.graphics.getFont()
-  if activeFontCache and activeFontCache._forcePixel and textFont
-      and not pixelFontMetrics[textFont] then
-    local pixels = fontSizes[textFont]
-      or math.max(10, math.floor(textFont:getHeight() + 0.5))
-    return font(activeFontCache, pixels)
-  end
-  return textFont
+  return ensurePixelTextFont(text, textFont) or textFont
 end
 
 local function textHeight(textFont)
@@ -644,7 +599,7 @@ end
 local function truncate(text, maxWidth, textFont)
   text = safeText(text)
   maxWidth = math.max(1, tonumber(maxWidth) or 1)
-  textFont = fontForCurrentText(textFont)
+  textFont = fontForCurrentText(textFont, text)
   if textFont:getWidth(text) <= maxWidth then return text end
   local suffix = "..."
   while #text > 0 and textFont:getWidth(text .. suffix) > maxWidth do
@@ -656,13 +611,21 @@ end
 local wrapFittedText = false
 
 local function drawFittedText(text, x, y, maxWidth, textFont)
-  textFont = fontForCurrentText(textFont)
+  local previousFont = love.graphics.getFont()
+  text = safeText(text)
+  textFont = fontForCurrentText(textFont, text)
   love.graphics.setFont(textFont)
   if wrapFittedText then
-    drawTextWrapped(safeText(text), x, y, math.max(1, maxWidth), "left")
+    drawTextWrapped(text, x, y, math.max(1, maxWidth), "left")
+    if previousFont and previousFont ~= textFont then
+      love.graphics.setFont(previousFont)
+    end
     return
   end
   drawText(truncate(text, maxWidth, textFont), x, y)
+  if previousFont and previousFont ~= textFont then
+    love.graphics.setFont(previousFont)
+  end
 end
 
 local utf8TextLibrary
@@ -688,7 +651,7 @@ local function wrappedLines(text, maxWidth, textFont)
   local lines = {}
   text = safeText(text):gsub("\v", "\n"):gsub("\f", "\n")
   maxWidth = math.max(1, tonumber(maxWidth) or 1)
-  textFont = fontForCurrentText(textFont)
+  textFont = fontForCurrentText(textFont, text)
   local function width(value) return textFont:getWidth(value) end
   local function appendWord(line, word)
     if word == "" then return line end
@@ -726,13 +689,17 @@ local function wrappedLines(text, maxWidth, textFont)
 end
 
 local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
+  local previousFont = love.graphics.getFont()
   text = safeText(text)
-  textFont = fontForCurrentText(textFont)
+  textFont = fontForCurrentText(textFont, text)
   lineGap = lineGap or (textHeight(textFont) + 2)
   local lines = wrappedLines(text, maxWidth, textFont)
   love.graphics.setFont(textFont)
   for index, line in ipairs(lines) do
     drawText(line, x, y + (index - 1) * lineGap)
+  end
+  if previousFont and previousFont ~= textFont then
+    love.graphics.setFont(previousFont)
   end
   return y + #lines * lineGap, #lines
 end
@@ -1121,15 +1088,16 @@ local function isRbyMmoCharacterPickState(state)
 end
 
 return function(mod)
+  local runtime = {}
   local okStrings, engineStrings = pcall(require, "src.core.Strings")
-  local function fallbackStrings(value, ...)
+  runtime.fallbackStrings = function(value, ...)
     if select("#", ...) == 0 then return value end
     local ok, formatted = pcall(string.format, value, ...)
     return ok and formatted or value
   end
-  local Strings = okStrings and engineStrings or fallbackStrings
+  local Strings = okStrings and engineStrings or runtime.fallbackStrings
   local okTypeChart, typeChart = pcall(require, "src.battle.TypeChart")
-  local function displayType(value)
+  runtime.displayType = function(value)
     if okTypeChart and type(typeChart.displayName) == "function" then
       local ok, name = pcall(typeChart.displayName, value)
       if ok and name then return name end
@@ -1196,6 +1164,7 @@ return function(mod)
     assetOwners = {},
     knownOwners = { "rby_mmo", "dex_radar", "useful_dex", "gen3_box",
       "modern_bag", "useful_bag", "dv_tracker",
+      "quality_of_life", "qol", "dramatic_shape", "dramatic_shape_voxel",
       "pokemon-gen1-recomp-mod-qol" },
   }
 
@@ -1550,6 +1519,22 @@ return function(mod)
         footer = copy(model.footer),
         details = copy(model.details),
         assets = copy(model.assets),
+        -- Battle adapters use the same read-only model contract, with a
+        -- small set of semantic fields that the built-in presenter already
+        -- understands. No callbacks or drawing functions cross this seam.
+        kind = model.kind,
+        phase = model.phase,
+        mode = model.mode,
+        presentation = model.presentation,
+        voxel = model.voxel,
+        voxel3d = model.voxel3d,
+        isVoxelBattle = model.isVoxelBattle,
+        player = copy(model.player),
+        enemy = copy(model.enemy),
+        moves = copy(model.moves),
+        message = model.message,
+        overlays = copy(model.overlays),
+        slots = copy(model.slots),
       }
       for index, row in ipairs(model.rows) do
         if type(row) == "string" or type(row) == "number" then
@@ -1656,7 +1641,7 @@ return function(mod)
     return safeText(state.screenId or kind)
   end
 
-  local function registerPointerRegion(x, y, w, h, metadata)
+  runtime.registerPointerRegion = function(x, y, w, h, metadata)
     if not pointerDrawContext or type(x) ~= "number" or type(y) ~= "number"
         or type(w) ~= "number" or type(h) ~= "number" or w <= 0 or h <= 0 then
       return
@@ -1677,7 +1662,7 @@ return function(mod)
     pointerRegions[#pointerRegions + 1] = region
   end
 
-  local function panelOffsets()
+  runtime.panelOffsets = function()
     if savedPanelOffsets ~= nil then return savedPanelOffsets end
     local loaded
     if mod.save and type(mod.save.get) == "function" then
@@ -1688,10 +1673,10 @@ return function(mod)
     return savedPanelOffsets
   end
 
-  local function layerOffset(kind, viewport)
+  runtime.layerOffset = function(kind, viewport)
     local _, _, width, height = presenterRect(viewport)
     local key = safeText(kind or "screen")
-    local stored = panelOffsetMemory[key] or panelOffsets()[key]
+    local stored = panelOffsetMemory[key] or runtime.panelOffsets()[key]
     local normalizedX = stored and tonumber(stored.x) or 0
     local normalizedY = stored and tonumber(stored.y) or 0
     normalizedX = clamp(normalizedX, -0.45, 0.45)
@@ -1699,7 +1684,7 @@ return function(mod)
     return normalizedX * width, normalizedY * height
   end
 
-  local function rememberLayerOffset(kind, viewport, x, y, persist)
+  runtime.rememberLayerOffset = function(kind, viewport, x, y, persist)
     local _, _, width, height = presenterRect(viewport)
     local key = safeText(kind or "screen")
     local normalized = {
@@ -1708,7 +1693,7 @@ return function(mod)
     }
     panelOffsetMemory[key] = normalized
     if persist and mod.save and type(mod.save.set) == "function" then
-      local values = copy(panelOffsets())
+      local values = copy(runtime.panelOffsets())
       values[key] = copy(normalized)
       pcall(mod.save.set, mod.save, "panelOffsets", values)
       savedPanelOffsets = values
@@ -1716,7 +1701,7 @@ return function(mod)
     return normalized.x * width, normalized.y * height
   end
 
-  local function prepareImage(image)
+  runtime.prepareImage = function(image)
     if not image or filteredImages[image] then return image end
     if type(image.setFilter) == "function" then
       pcall(image.setFilter, image, "nearest", "nearest", 0)
@@ -1795,7 +1780,7 @@ return function(mod)
   -- point after the mod has been imported.  Prefer the loader-provided asset
   -- helper for theme-owned files, while retaining the ordinary image lookup
   -- for engine and third-party paths.
-  local function modAssetImage(relative)
+  runtime.modAssetImage = function(relative)
     if type(relative) ~= "string" or relative == "" or not mod.assets or
         type(mod.assets.image) ~= "function" then
       return nil
@@ -1806,7 +1791,7 @@ return function(mod)
       return mod.assets:image(relative)
     end)
     if ok and image then
-      image = prepareImage(image)
+      image = runtime.prepareImage(image)
       modAssetCache[relative] = image
       return image
     end
@@ -1814,7 +1799,7 @@ return function(mod)
     return nil
   end
 
-  local function markAnimated(image, options)
+  runtime.markAnimated = function(image, options)
     if not image or type(options) ~= "table" or options.animated ~= true then
       return image
     end
@@ -1873,7 +1858,7 @@ return function(mod)
     return image
   end
 
-  local function imageMetrics(image)
+  runtime.imageMetrics = function(image)
     if not image then return nil, nil end
     local okW, width = pcall(function() return image:getWidth() end)
     local okH, height = pcall(function() return image:getHeight() end)
@@ -1885,7 +1870,7 @@ return function(mod)
     return width, height
   end
 
-  local function drawImage(image, x, y, rotation, scaleX, scaleY)
+  runtime.drawImage = function(image, x, y, rotation, scaleX, scaleY)
     if not image then return false end
     return paletteRuntime.withImage(image, function()
       local animation = animatedImages[image]
@@ -1906,42 +1891,42 @@ return function(mod)
     end)
   end
 
-  local function drawImageFit(image, x, y, w, h, maxScale)
-    local iw, ih = imageMetrics(image)
+  runtime.drawImageFit = function(image, x, y, w, h, maxScale)
+    local iw, ih = runtime.imageMetrics(image)
     if not iw or not ih or w <= 0 or h <= 0 then return false end
     local scale = math.min(w / iw, h / ih)
     if maxScale then scale = math.min(scale, maxScale) end
     scale = math.max(0.01, scale)
     setColor({ 1, 1, 1, 1 })
-    return drawImage(image, x + (w - iw * scale) / 2,
+    return runtime.drawImage(image, x + (w - iw * scale) / 2,
       y + (h - ih * scale) / 2, 0, scale, scale)
   end
 
-  local function imageFor(value, options)
+  runtime.imageFor = function(value, options)
     local descriptor
     value, descriptor = imageDescriptor(value)
     if not value then return nil end
     options = merge(descriptor, options or {})
     if type(value) == "userdata" then
-      local image = prepareImage(value)
-      return markAnimated(image, options)
+      local image = runtime.prepareImage(value)
+      return runtime.markAnimated(image, options)
     end
     if imageCache[value] == false then return nil end
     if imageCache[value] then
-      return markAnimated(imageCache[value], options)
+      return runtime.markAnimated(imageCache[value], options)
     end
     if not (love and love.graphics and love.graphics.newImage) then return nil end
     local ok, image = pcall(love.graphics.newImage, value)
     if ok and image then
-      imageCache[value] = prepareImage(image)
-      return markAnimated(imageCache[value], options)
+      imageCache[value] = runtime.prepareImage(image)
+      return runtime.markAnimated(imageCache[value], options)
     end
     imageCache[value] = false
     return nil
   end
 
   function paletteRuntime.worldImage(game, value)
-    return paletteRuntime.setImage(imageFor(value), paletteRuntime.world(game))
+    return paletteRuntime.setImage(runtime.imageFor(value), paletteRuntime.world(game))
   end
 
   -- Presenter helpers are declared in stages below; initialize the shared
@@ -1973,7 +1958,7 @@ return function(mod)
       paletteRuntime.setImage(cache[cacheKey].image, paletteRuntime.world(game))
       return cache[cacheKey]
     end
-    local image = imageFor(imageValue)
+    local image = runtime.imageFor(imageValue)
     if not image or not love.graphics.newQuad then
       cache[cacheKey] = false
       return nil
@@ -1999,7 +1984,7 @@ return function(mod)
   function mod._gen1ModernSpecialPresenters.drawImageFitRegion(image, x, y,
       w, h)
     if type(image) ~= "table" or not image.image or not image.quad then
-      return drawImageFit(image, x, y, w, h)
+      return runtime.drawImageFit(image, x, y, w, h)
     end
     local iw, ih = image.width or 16, image.height or 16
     if w <= 0 or h <= 0 or iw <= 0 or ih <= 0 then return false end
@@ -2013,12 +1998,12 @@ return function(mod)
     end)
   end
 
-  local function themeAssetFor(value)
+  runtime.themeAssetFor = function(value)
     local registered = mod._gen1ModernCompatibility.frames[value]
     if registered ~= nil then value = registered end
-    local image = imageFor(value)
+    local image = runtime.imageFor(value)
     if image then return image end
-    return modAssetImage(value)
+    return runtime.modAssetImage(value)
   end
 
   -- PokePCFollowers registers its 6-frame overworld sheets as `frames = 1`
@@ -2027,7 +2012,7 @@ return function(mod)
   -- appears as a paper-thin sliver in modern party/box rows. Keep this
   -- compatibility rule path-scoped so unrelated authored tall artwork is
   -- never silently reinterpreted.
-  local function knownSheetOptions(value, image, staticFrame)
+  runtime.knownSheetOptions = function(value, image, staticFrame)
     local raw = value
     if type(raw) == "table" then
       raw = raw.image or raw.texture or raw.path or raw.asset
@@ -2049,12 +2034,12 @@ return function(mod)
       staticFrame = staticFrame }
   end
 
-  local function option(key, default)
+  runtime.option = function(key, default)
     local value = mod.options:get(key)
     return value == nil and default or value
   end
 
-  local function drawHint(theme, value, x, y, maxWidth)
+  runtime.drawHint = function(theme, value, x, y, maxWidth)
     local text = safeText(value)
     local size = theme.typography.caption
     local selected = font(fontCache, size)
@@ -2066,7 +2051,7 @@ return function(mod)
     drawText(truncate(text, maxWidth), x, y)
   end
 
-  local function hintHasExtraControls(value)
+  runtime.hintHasExtraControls = function(value)
     local text = safeText(value):upper()
     -- "A select" is an action label, not the physical SELECT button. Leave
     -- standalone SELECT/START tokens intact so pages with extra controls
@@ -2083,58 +2068,59 @@ return function(mod)
       or hasWord("UP") or hasWord("DOWN")
   end
 
-  local function hintIsBasicButtonText(value)
+  runtime.hintIsBasicButtonText = function(value)
     local text = safeText(value)
     return text:match("%f[%a]A%f[%A]") ~= nil
       or text:match("%f[%a]B%f[%A]") ~= nil
   end
 
-  local function shouldDrawHint(value)
+  runtime.shouldDrawHint = function(value)
     local text = safeText(value)
     if text == "" then return false end
-    if not hintIsBasicButtonText(text) then return true end
-    return hintHasExtraControls(text)
+    if not runtime.hintIsBasicButtonText(text) then return true end
+    return runtime.hintHasExtraControls(text)
   end
 
-  local function drawHintIfUseful(theme, value, x, y, maxWidth)
-    if not shouldDrawHint(value) then return false end
-    drawHint(theme, value, x, y, maxWidth)
+  runtime.drawHintIfUseful = function(theme, value, x, y, maxWidth)
+    if not runtime.shouldDrawHint(value) then return false end
+    runtime.drawHint(theme, value, x, y, maxWidth)
     return true
   end
 
-  local function currentTheme(viewport)
-    local usePixelFont = option("pixelFont", false) == true
+  runtime.currentTheme = function(viewport, fontState)
+    local usePixelFont = runtime.option("pixelFont", false) == true
     activeFontCache = fontCache
-    -- Re-evaluate the automatic multilingual fallback for each modern render
-    -- pass. safeText and the draw wrappers can promote the complete screen
-    -- before its first font-dependent layout is painted.
-    fontCache._forcePixel = false
+    -- The explicit preference is screen-wide. Automatic fallback is decided
+    -- separately for each measured/drawn string from Font:hasGlyphs, so an
+    -- unsupported row can never change the face used by its neighbours or by
+    -- later frames while a menu scrolls.
+    fontCache._fontState = fontState
     fontCache._usePixel = usePixelFont
-    local base = themes[option("theme", "gen1_modern_ui:classic_mono")]
+    local base = themes[runtime.option("theme", "gen1_modern_ui:classic_mono")]
       or themes["gen1_modern_ui:classic_mono"] or themes.default
-    local uiPercent, uiAuto = resolvedScalePercent(option("uiScale", 100),
+    local uiPercent, uiAuto = resolvedScalePercent(runtime.option("uiScale", 100),
       viewport, 75, 150)
     local fontPercent, fontAuto
     if usePixelFont then
       fontPercent = tonumber(normalizedPixelFontScale(
-        option("fontScale", 100), true)) or 100
+        runtime.option("fontScale", 100), true)) or 100
       fontAuto = false
     else
-      fontPercent, fontAuto = resolvedScalePercent(option("fontScale", 100),
+      fontPercent, fontAuto = resolvedScalePercent(runtime.option("fontScale", 100),
         viewport, 80, 200)
     end
     local uiScale = uiPercent / 100
     local fontScale = fontPercent / 100
-    local density = safeText(option("density", "auto"))
-    local frameStyle = safeText(option("frameStyle", "pixel"))
-    local frameAsset = safeText(option("frameAsset", "2"))
+    local density = safeText(runtime.option("density", "auto"))
+    local frameStyle = safeText(runtime.option("frameStyle", "pixel"))
+    local frameAsset = safeText(runtime.option("frameAsset", "2"))
     local frameValue = mod._gen1ModernCompatibility:frameAsset(frameAsset)
     local frameScale = clamp(math.floor(
-      tonumber(option("frameScale", 2)) or 2), 1, 4)
+      tonumber(runtime.option("frameScale", 2)) or 2), 1, 4)
     local dpiX = math.max(1, tonumber(viewport and viewport.dpiX) or 1)
     local dpiY = math.max(1, tonumber(viewport and viewport.dpiY) or 1)
-    local panelOpacity = clamp((tonumber(option("panelOpacity", 100)) or 100) / 100, 0, 1)
-    local foregroundOpacity = clamp((tonumber(option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
+    local panelOpacity = clamp((tonumber(runtime.option("panelOpacity", 100)) or 100) / 100, 0, 1)
+    local foregroundOpacity = clamp((tonumber(runtime.option("foregroundOpacity", 100)) or 100) / 100, 0, 1)
     local key = ("%.3f:%.3f:%s:%s:%s:%s:%s:%.3f:%.3f"):format(uiScale, fontScale,
       uiAuto and "auto" or "manual", fontAuto and "auto" or "manual", density,
       usePixelFont and "pixel" or "system",
@@ -2183,14 +2169,14 @@ return function(mod)
     return theme
   end
 
-  local function dialogueMultiplier()
-    local value = option("dialogueTextScale", "inherit")
+  runtime.dialogueMultiplier = function()
+    local value = runtime.option("dialogueTextScale", "inherit")
     if value == nil or value == "inherit" then return 1 end
     return normalizedPercent(value, 100, 100, 200) / 100
   end
 
-  local function dialogueTheme(theme)
-    local multiplier = dialogueMultiplier()
+  runtime.dialogueTheme = function(theme)
+    local multiplier = runtime.dialogueMultiplier()
     if multiplier == 1 then return theme end
     local key = ("%.3f"):format(multiplier)
     local bucket = dialogueThemeCache[theme]
@@ -2209,7 +2195,7 @@ return function(mod)
     return out
   end
 
-  local function registerTheme(spec)
+  runtime.registerTheme = function(spec)
     assert(type(spec) == "table", "theme must be a table")
     assert(type(spec.id) == "string" and spec.id ~= "",
       "theme.id must be a non-empty string")
@@ -2245,12 +2231,12 @@ return function(mod)
     return spec.id
   end
 
-  for _, theme in ipairs(BUILTIN_THEMES) do registerTheme(theme) end
+  for _, theme in ipairs(BUILTIN_THEMES) do runtime.registerTheme(theme) end
 
   mod.exports = {
     version = API_VERSION,
     compatibilityApiVersion = API_VERSION,
-    registerTheme = registerTheme,
+    registerTheme = runtime.registerTheme,
     themes = themes,
     -- Source mods should pass their own public `mod.exports.gen1ModernUi`
     -- table here. The UI never loads sibling files or private modules.
@@ -2276,21 +2262,21 @@ return function(mod)
       dialogueMin = 1.10, dialogueMax = 2.00, dialogueStep = 0.05,
     },
     getScaleTokens = function(viewport)
-      local uiPercent = resolvedScalePercent(option("uiScale", 100),
+      local uiPercent = resolvedScalePercent(runtime.option("uiScale", 100),
         viewport, 75, 150)
-      local pixelFont = option("pixelFont", false) == true
+      local pixelFont = runtime.option("pixelFont", false) == true
       local fontPercent = pixelFont
-        and tonumber(normalizedPixelFontScale(option("fontScale", 100), true))
-        or resolvedScalePercent(option("fontScale", 100), viewport, 80, 200)
+        and tonumber(normalizedPixelFontScale(runtime.option("fontScale", 100), true))
+        or resolvedScalePercent(runtime.option("fontScale", 100), viewport, 80, 200)
       return {
         uiScale = uiPercent / 100,
         fontScale = fontPercent / 100,
-        dialogueTextScale = dialogueMultiplier(),
+        dialogueTextScale = runtime.dialogueMultiplier(),
       }
     end,
   }
 
-  local function percentChoices(minimum, maximum, includeAuto)
+  runtime.percentChoices = function(minimum, maximum, includeAuto)
     local choices = {}
     if includeAuto then choices[#choices + 1] = { "AUTO", "auto" } end
     for percent = minimum, maximum, 5 do
@@ -2320,7 +2306,7 @@ return function(mod)
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
     { key = "uiScale", label = "UI SCALE", type = "choice",
       description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 150%, or choose AUTO for responsive window sizing.",
-      choices = percentChoices(75, 150, true), default = "100" },
+      choices = runtime.percentChoices(75, 150, true), default = "100" },
     { key = "fontScale", label = "FONT SCALE", type = "choice",
       description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
       choices = FONT_SCALE_CHOICES, default = "100" },
@@ -2338,6 +2324,10 @@ return function(mod)
     -- the WIP status explicit without disrupting the game's native battle UI.
     { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false,
       description = "Show the experimental battle presenter. It is unfinished and off by default.", },
+    { key = "battleUiMode", label = "BATTLE UI MODE", type = "choice",
+      description = "AUTO frames ordinary 2D battles and uses compact scene-safe placement for voxel/3D battles. Both keep native battle animations running.",
+      choices = { { "AUTO", "auto" }, { "2D FRAMED", "full" },
+                  { "SCENE HUD", "hud" } }, default = "auto" },
     { key = "layoutStyle", label = "LAYOUT STYLE", type = "choice",
       description = "Choose adaptive floating panels or a full-screen themed presentation.",
       choices = { { "ADAPTIVE", "auto" }, { "FLOATING", "floating" },
@@ -2390,18 +2380,18 @@ return function(mod)
   -- remain world-visible just like FLOATING on new installs; FULL SCREEN is
   -- the explicit opt-in for a themed backdrop behind the panel. The old
   -- boolean can still preserve a previous FULL treatment during migration.
-  local function layoutStyle(viewport)
-    local selected = option("layoutStyle", nil)
+  runtime.layoutStyle = function(viewport)
+    local selected = runtime.option("layoutStyle", nil)
     if selected == "full" or selected == "floating" then return selected end
     -- Migrate the old boolean only when a user explicitly disabled it. The
     -- new adaptive default is floating on every device, including phones.
     if (selected == nil or selected == "auto")
-        and option("desktopFloating", true) == false then return "full" end
+        and runtime.option("desktopFloating", true) == false then return "full" end
     return "floating"
   end
 
-  local function worldVisibleLayout(viewport)
-    return layoutStyle(viewport) ~= "full"
+  runtime.worldVisibleLayout = function(viewport)
+    return runtime.layoutStyle(viewport) ~= "full"
   end
 
   -- Filled screens (Party, Pokédex, Trainer Card, PC, and several third-
@@ -2412,7 +2402,7 @@ return function(mod)
   -- fallback, or an unsupported/custom draw becomes active.
   local syncWorldVisibility
 
-  local function drawPresenterBackdrop(theme, viewport)
+  runtime.drawPresenterBackdrop = function(theme, viewport)
     -- Every rich presenter (Party, PC, Trainer Card, Pokédex, Bag, and
     -- third-party adapters) comes through this helper.  Keeping the decision
     -- here prevents one screen from accidentally blacking out the world when
@@ -2420,14 +2410,14 @@ return function(mod)
     -- Panel offsets move the UI surface, not the world/backdrop underneath it.
     local backdropViewport = pointerDrawContext
       and pointerDrawContext.baseViewport or viewport
-    if worldVisibleLayout(backdropViewport) then return false end
+    if runtime.worldVisibleLayout(backdropViewport) then return false end
     local x, y, w, h = fullViewportRect(backdropViewport)
     setBackdrop(theme)
     love.graphics.rectangle("fill", x, y, w, h)
     return true
   end
 
-  local function drawModalScrim(theme, viewport)
+  runtime.drawModalScrim = function(theme, viewport)
     local x, y, w, h = presenterRect(viewport)
     -- Nested prompts are still composited over their live parent, but the
     -- parent/world should read as context rather than a second active card.
@@ -2440,31 +2430,31 @@ return function(mod)
   local choiceClass = mod.ui and mod.ui.ChoiceBox
   local quantityClass = mod.ui and mod.ui.QuantityBox
   local textBoxClass = mod.ui and mod.ui.TextBox
-  local function optionalClass(path)
+  runtime.optionalClass = function(path)
     local ok, class = pcall(require, path)
     return ok and class or false
   end
-  local trainerCardClass = optionalClass("src.ui.TrainerCard")
-  local optionsClass = optionalClass("src.ui.OptionsMenu")
-  local partyClass = optionalClass("src.ui.PartyMenu")
-  local summaryClass = optionalClass("src.ui.SummaryMenu")
-  local dexEntryClass = optionalClass("src.ui.DexEntryMenu")
+  local trainerCardClass = runtime.optionalClass("src.ui.TrainerCard")
+  local optionsClass = runtime.optionalClass("src.ui.OptionsMenu")
+  local partyClass = runtime.optionalClass("src.ui.PartyMenu")
+  local summaryClass = runtime.optionalClass("src.ui.SummaryMenu")
+  local dexEntryClass = runtime.optionalClass("src.ui.DexEntryMenu")
   mod._gen1ModernSpecialClasses = {
-    moveLearn = optionalClass("src.ui.MoveLearnMenu"),
-    picBox = optionalClass("src.ui.PicBox"),
-    naming = optionalClass("src.ui.NamingScreen"),
-    townMap = optionalClass("src.ui.TownMap"),
-    quarantineReport = optionalClass("src.ui.QuarantineReport"),
+    moveLearn = runtime.optionalClass("src.ui.MoveLearnMenu"),
+    picBox = runtime.optionalClass("src.ui.PicBox"),
+    naming = runtime.optionalClass("src.ui.NamingScreen"),
+    townMap = runtime.optionalClass("src.ui.TownMap"),
+    quarantineReport = runtime.optionalClass("src.ui.QuarantineReport"),
   }
-  local managerClass = optionalClass("src.mods.ManagerState")
-  local titleClass = optionalClass("src.ui.TitleState")
+  local managerClass = runtime.optionalClass("src.mods.ManagerState")
+  local titleClass = runtime.optionalClass("src.ui.TitleState")
   -- LinkState is a released custom state rather than a Menu/ListMenu.  Keep
   -- it optional so older clients simply fall back to their native link UI.
-  local linkClass = optionalClass("src.link.LinkState")
+  local linkClass = runtime.optionalClass("src.link.LinkState")
   local runtimeClasses = {
-    linkCodeEntry = optionalClass("src.link.CodeEntry"),
-    linkNet = optionalClass("src.link.Net"),
-    stats = optionalClass("src.pokemon.Stats"),
+    linkCodeEntry = runtime.optionalClass("src.link.CodeEntry"),
+    linkNet = runtime.optionalClass("src.link.Net"),
+    stats = runtime.optionalClass("src.pokemon.Stats"),
   }
   -- The released overworld is a singleton class table rather than a normal
   -- instance. Its drawUI method is therefore a legitimate raw field. Capture
@@ -2473,13 +2463,13 @@ return function(mod)
   -- Quality of Life's location banner) are allowed when the world draw itself
   -- remains the released renderer, so they do not disable every menu layered
   -- over the overworld.
-  local overworldClass = optionalClass("src.world.OverworldController")
+  local overworldClass = runtime.optionalClass("src.world.OverworldController")
   runtimeClasses.overworldDraw = overworldClass
     and rawget(overworldClass, "draw") or nil
   runtimeClasses.overworldDrawUI = overworldClass
     and rawget(overworldClass, "drawUI") or nil
 
-  local function isTitleState(state)
+  runtime.isTitleState = function(state)
     if not (state and titleClass) then return false end
     -- v0.1.68 can omit the screenId stamp on the title instance while still
     -- exposing the released TitleState class. Accept either identity signal.
@@ -2487,7 +2477,7 @@ return function(mod)
       or inherits(classOf(state), titleClass)
   end
 
-  local function isLinkState(state)
+  runtime.isLinkState = function(state)
     return linkClass and state and inherits(classOf(state), linkClass) or false
   end
 
@@ -2498,7 +2488,7 @@ return function(mod)
   -- to the complete 20x18 title canvas so the artwork behind the panel has a
   -- deliberate, uniform grayscale treatment. The original box is restored as
   -- soon as the menu is popped or either presentation toggle is disabled.
-  local function syncTitleMenuPalette(game, state)
+  runtime.syncTitleMenuPalette = function(game, state)
     if not (game and state and menuClass
         and inherits(classOf(state), menuClass)
         and type(state.titleUiBox) == "table") then
@@ -2507,10 +2497,10 @@ return function(mod)
     local stack = game.stack and game.stack.states
     local titleOnStack = false
     for _, visible in ipairs(type(stack) == "table" and stack or {}) do
-      if isTitleState(visible) then titleOnStack = true break end
+      if runtime.isTitleState(visible) then titleOnStack = true break end
     end
-    local modern = titleOnStack and option("hideOriginalUi", true) ~= false
-      and option("menuUi", true) ~= false
+    local modern = titleOnStack and runtime.option("hideOriginalUi", true) ~= false
+      and runtime.option("menuUi", true) ~= false
     if modern then
       if not state._gen1OriginalTitleUiBox then
         state._gen1OriginalTitleUiBox = copy(state.titleUiBox)
@@ -2522,7 +2512,7 @@ return function(mod)
     end
   end
 
-  local function openModernOptions(game)
+  runtime.openModernOptions = function(game)
     if not (game and mod.ui and type(mod.ui.push) == "function") then return end
     local manager = mod.ui.push(game, "ManagerState")
     if not manager or type(manager.openOptions) ~= "function" then return manager end
@@ -2550,7 +2540,7 @@ return function(mod)
   -- A label fallback keeps older third-party rows usable, but authors should
   -- provide ids so renaming a menu does not create a second pin.
   local pinCache
-  local function pinKey(item)
+  runtime.pinKey = function(item)
     if type(item) ~= "table" then return nil end
     if type(item.id) == "string" and item.id ~= "" then return item.id end
     if type(item.label) == "string" and item.label ~= "" then
@@ -2559,7 +2549,7 @@ return function(mod)
     return nil
   end
 
-  local function pinMap()
+  runtime.pinMap = function()
     local ok, stored = false, nil
     if mod.save and type(mod.save.get) == "function" then
       ok, stored = pcall(mod.save.get, mod.save, "startMenuPins", {})
@@ -2575,21 +2565,21 @@ return function(mod)
     return pinCache
   end
 
-  local function isPinned(item)
-    local key = pinKey(item)
+  runtime.isPinned = function(item)
+    local key = runtime.pinKey(item)
     if not key then return false end
-    local pins = pinMap()
+    local pins = runtime.pinMap()
     if pins[key] ~= nil then return pins[key] == true end
     -- Migrate the old direct-shortcut setting for existing saves. An
     -- explicit pin-map value always wins, so SELECT can unpin it normally.
     return key == "gen1_modern_ui.options"
-      and option("startMenuShortcut", false) == true
+      and runtime.option("startMenuShortcut", false) == true
   end
 
-  local function setPinned(item, pinned)
-    local key = pinKey(item)
+  runtime.setPinned = function(item, pinned)
+    local key = runtime.pinKey(item)
     if not key then return nil end
-    local pins = pinMap()
+    local pins = runtime.pinMap()
     pins[key] = pinned == true
     if mod.save and type(mod.save.set) == "function" then
       pcall(mod.save.set, mod.save, "startMenuPins", pins)
@@ -2597,14 +2587,14 @@ return function(mod)
     return pins[key]
   end
 
-  local function togglePinned(item)
-    local key = pinKey(item)
+  runtime.togglePinned = function(item)
+    local key = runtime.pinKey(item)
     if not key then return nil end
-    local nextPinned = not isPinned(item)
-    return setPinned(item, nextPinned)
+    local nextPinned = not runtime.isPinned(item)
+    return runtime.setPinned(item, nextPinned)
   end
 
-  local function decoratePinned(item)
+  runtime.decoratePinned = function(item)
     if type(item) ~= "table" then return item end
     local decorated = {}
     for key, value in pairs(item) do decorated[key] = value end
@@ -2612,15 +2602,15 @@ return function(mod)
     return decorated
   end
 
-  local function uiSettingsRow(game)
+  runtime.uiSettingsRow = function(game)
     return {
       id = "gen1_modern_ui.options",
       label = "UI SETTINGS",
-      onSelect = function() openModernOptions(game) end,
+      onSelect = function() runtime.openModernOptions(game) end,
     }
   end
 
-  local function openModMenus(game, items)
+  runtime.openModMenus = function(game, items)
     if not (game and mod.ui and mod.ui.Menu and type(mod.ui.Menu.new) == "function") then
       return
     end
@@ -2652,9 +2642,9 @@ return function(mod)
     -- presentation layer without rewriting labels or guessing at vanilla rows.
     local canGroupModMenus = mod.ui and mod.ui.Menu
       and type(mod.ui.Menu.new) == "function"
-    local groupingEnabled = option("startMenuModMenus", true) ~= false
+    local groupingEnabled = runtime.option("startMenuModMenus", true) ~= false
       and canGroupModMenus
-    local settings = uiSettingsRow(game)
+    local settings = runtime.uiSettingsRow(game)
     local added, addedSet, hasOriginal, hasGroup, hasSettings = {}, {}, false,
       false, false
     local settingsItem
@@ -2671,7 +2661,7 @@ return function(mod)
         else
           added[#added + 1] = item
           addedSet[item] = true
-          if isPinned(item) then pinnedDirect[item] = true end
+          if runtime.isPinned(item) then pinnedDirect[item] = true end
         end
       end
     end
@@ -2693,7 +2683,7 @@ return function(mod)
         local item = out[index]
         if addedSet[item] and not pinnedDirect[item] then
           table.remove(out, index)
-        elseif item.id == "gen1_modern_ui.options" and not isPinned(item) then
+        elseif item.id == "gen1_modern_ui.options" and not runtime.isPinned(item) then
           -- Respect an already-present descriptor supplied by another hook,
           -- but keep the unpinned row grouped with the canonical settings.
           table.remove(out, index)
@@ -2704,15 +2694,15 @@ return function(mod)
       -- a stable visual PINNED marker without mutating another mod's row.
       for index, item in ipairs(out) do
         if pinnedDirect[item] or (item.id == "gen1_modern_ui.options"
-            and isPinned(item)) then
-          out[index] = decoratePinned(item)
+            and runtime.isPinned(item)) then
+          out[index] = runtime.decoratePinned(item)
         end
       end
       if #groupedItems > 0 and hasOriginal and not hasGroup then
         local grouped = {
           id = "gen1_modern_ui.mod_menus",
           label = Strings("MOD MENUS"),
-          onSelect = function() openModMenus(game, groupedItems) end,
+          onSelect = function() runtime.openModMenus(game, groupedItems) end,
         }
         if mod.ui and type(mod.ui.insertBefore) == "function" then
           mod.ui.insertBefore(out, "MODS", grouped)
@@ -2733,8 +2723,8 @@ return function(mod)
 
     -- A pinned UI SETTINGS row is direct even while grouping is enabled. This
     -- also migrates the former START UI SETTINGS shortcut setting via isPinned.
-    if groupingEnabled and isPinned(settings) and not hasSettings then
-      local directSettings = decoratePinned(settings)
+    if groupingEnabled and runtime.isPinned(settings) and not hasSettings then
+      local directSettings = runtime.decoratePinned(settings)
       if mod.ui and type(mod.ui.insertBefore) == "function" then
         mod.ui.insertBefore(out, "OPTION", directSettings)
       else
@@ -2751,14 +2741,14 @@ return function(mod)
   -- only Menu-like states that explicitly close on START are eligible.  A
   -- single press advances five rows and the ordinary up/down/A/B behavior is
   -- left entirely to the engine's state.
-  local function pendingPress(input, button)
+  runtime.pendingPress = function(input, button)
     for _, queued in ipairs(input and input.pressQueue or {}) do
       if queued == button then return true end
     end
     return false
   end
 
-  local function consumePending(input, buttons)
+  runtime.consumePending = function(input, buttons)
     local queue = input and input.pressQueue
     if type(queue) ~= "table" then return false end
     local consumed = false
@@ -2771,24 +2761,24 @@ return function(mod)
     return consumed
   end
 
-  local function optionDescription(id)
+  runtime.optionDescription = function(id)
     if id == "__reset" then
       return "Restore every Gen1 Modern UI setting to its default value."
     end
     if id == "uiScale" then
-      local percent, auto = resolvedScalePercent(option("uiScale", 100),
+      local percent, auto = resolvedScalePercent(runtime.option("uiScale", 100),
         nil, 75, 150)
       local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
       return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %s."):format(
         label)
     end
     if id == "frameScale" then
-      local value = clamp(math.floor(tonumber(option("frameScale", 2)) or 2), 1, 4)
+      local value = clamp(math.floor(tonumber(runtime.option("frameScale", 2)) or 2), 1, 4)
       return ("Scale PNG pixel-frame artwork by %dX using nearest-neighbor sampling. Current setting: %dX."):format(
         value, value)
     end
     if id == "frameAsset" then
-      local value = safeText(option("frameAsset", "2"))
+      local value = safeText(runtime.option("frameAsset", "2"))
       local label = value
       for _, choice in ipairs(mod._gen1ModernCompatibility.frameChoices) do
         if choice[2] == value then label = choice[1] break end
@@ -2797,20 +2787,20 @@ return function(mod)
         label)
     end
     if id == "fontScale" then
-      if option("pixelFont", false) == true then
+      if runtime.option("pixelFont", false) == true then
         local scale = (tonumber(normalizedPixelFontScale(
-          option("fontScale", 100), true)) or 100) / 100
+          runtime.option("fontScale", 100), true)) or 100) / 100
         return ("Scale Plain Pixel glyphs by %dX. Integer steps keep its authored raster crisp."):format(
           scale)
       end
-      local percent, auto = resolvedScalePercent(option("fontScale", 100),
+      local percent, auto = resolvedScalePercent(runtime.option("fontScale", 100),
         nil, 80, 200)
       local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
       return ("Scale readable interface text before measuring and laying out content. Current effective size: %s."):format(
         label)
     end
     if id == "dialogueTextScale" then
-      local value = option("dialogueTextScale", "inherit")
+      local value = runtime.option("dialogueTextScale", "inherit")
       local label = value == "inherit" and "INHERIT" or
         (normalizedPercent(value, 100, 100, 200) .. "%")
       return ("Scale dialogue, choice, quantity, and confirmation text. Current setting: %s."):format(label)
@@ -2848,16 +2838,17 @@ return function(mod)
     startMenuFastJump = "navigation",
     startMenuQuickView = "navigation", startMenuInset = "navigation",
     dialogueUi = "presenters", menuUi = "presenters", pokemonUi = "presenters",
-    managerUi = "presenters", spriteAnimation = "presenters", battleUiWip = "presenters",
+    managerUi = "presenters", spriteAnimation = "presenters",
+    battleUiWip = "presenters", battleUiMode = "presenters",
     desktopFloating = "advanced", __reset = "advanced",
   }
 
-  local function ensureOptionCategories(state)
+  runtime.ensureOptionCategories = function(state)
     if not (state and state.screen == "options" and state.currentMod
         and state.currentMod.id == MOD_ID and type(state.optionRows) == "table") then
       return
     end
-    local pixelEnabled = option("pixelFont", false) == true
+    local pixelEnabled = runtime.option("pixelFont", false) == true
     local fontSchema
     for _, descriptor in ipairs(optionSchema) do
       if descriptor.key == "fontScale" then
@@ -2869,7 +2860,7 @@ return function(mod)
       fontSchema.label = pixelEnabled and "PIXEL ART FONT SCALE" or "FONT SCALE"
       fontSchema.choices = pixelEnabled
         and PIXEL_FONT_SCALE_CHOICES or FONT_SCALE_CHOICES
-      local stored = option("fontScale", 100)
+      local stored = runtime.option("fontScale", 100)
       local normalized = normalizedPixelFontScale(stored, pixelEnabled)
       if tostring(stored) ~= normalized and type(state.setOption) == "function" then
         pcall(state.setOption, state, MOD_ID, "fontScale", normalized)
@@ -2939,7 +2930,7 @@ return function(mod)
     rebuild()
   end
 
-  local function optionState(game)
+  runtime.optionState = function(game)
     local top = game and game.stack and game.stack.top and game.stack:top()
     if not (top and top.screenId == "ManagerState" and top.screen == "options"
         and type(top.optionRows) == "table" and type(top.cursor) == "number") then
@@ -2948,13 +2939,13 @@ return function(mod)
     return top
   end
 
-  local function updateModMenuPin(game, input)
+  runtime.updateModMenuPin = function(game, input)
     local top = game and game.stack and game.stack.top and game.stack:top()
     if not (top and top._gen1ModMenus and type(top.items) == "table"
         and type(top.index) == "number") then return end
-    if not pendingPress(input, "select") then return end
+    if not runtime.pendingPress(input, "select") then return end
     local item = top.items[top.index]
-    if togglePinned(item) ~= nil then
+    if runtime.togglePinned(item) ~= nil then
       -- Pins are presentation preferences, but mod.save is backed by the
       -- current game save. Flush immediately so a client restart does not
       -- discard a deliberate SELECT pin/unpin action.
@@ -2963,42 +2954,42 @@ return function(mod)
       end
       -- SELECT is a presentation-only pin action. Leave A/arrow callbacks to
       -- the engine so every source mod keeps its normal menu behavior.
-      consumePending(input, { select = true })
+      runtime.consumePending(input, { select = true })
     end
   end
 
-  local function updateOptionHelp(game, input)
-    if option("managerUi", true) == false then return end
-    local state = optionState(game)
+  runtime.updateOptionHelp = function(game, input)
+    if runtime.option("managerUi", true) == false then return end
+    local state = runtime.optionState(game)
     if not state then return end
     local active = state._gen1OptionDescription
     if active then
       -- A/B/SELECT dismiss the help card without changing the focused option
       -- or leaving the manager. Directional input closes it and remains in the
       -- queue so the manager can move/adjust normally on the same step.
-      if consumePending(input, { a = true, b = true, select = true }) then
+      if runtime.consumePending(input, { a = true, b = true, select = true }) then
         state._gen1OptionDescription = nil
         return
       end
-      if pendingPress(input, "up") or pendingPress(input, "down")
-          or pendingPress(input, "left") or pendingPress(input, "right")
-          or pendingPress(input, "start") then
+      if runtime.pendingPress(input, "up") or runtime.pendingPress(input, "down")
+          or runtime.pendingPress(input, "left") or runtime.pendingPress(input, "right")
+          or runtime.pendingPress(input, "start") then
         state._gen1OptionDescription = nil
       end
       return
     end
-    if not pendingPress(input, "select") then return end
+    if not runtime.pendingPress(input, "select") then return end
     local row = state.optionRows[state.cursor]
-    local description = row and (optionDescription(row.id) or row.description)
+    local description = row and (runtime.optionDescription(row.id) or row.description)
     if not description or description == "" then return end
     state._gen1OptionDescription = {
       title = row.label or row.id,
       text = description,
     }
-    consumePending(input, { select = true })
+    runtime.consumePending(input, { select = true })
   end
 
-  local function remapChoiceDirections(game)
+  runtime.remapChoiceDirections = function(game)
     local top = game and game.stack and game.stack.top and game.stack:top()
     local input = game and game.input
     if not (choiceClass and top and inherits(classOf(top), choiceClass)
@@ -3022,19 +3013,34 @@ return function(mod)
     end
   end
 
+  runtime.moveGridIndex = function(index, count, direction)
+    count = math.max(0, math.floor(tonumber(count) or 0))
+    if count < 1 then return nil end
+    index = clamp(math.floor(tonumber(index) or 1), 1, count)
+    local row = math.floor((index - 1) / 2)
+    local col = (index - 1) % 2
+    if direction == "left" or direction == "right" then
+      local other = row * 2 + (1 - col) + 1
+      return other <= count and other or index
+    end
+    local other = (1 - row) * 2 + col + 1
+    return other <= count and other or index
+  end
+
   mod.hooks:wrap("input.step", function(next, game, dt)
-    remapChoiceDirections(game)
+    runtime.remapBattleMoveGrid(game)
+    runtime.remapChoiceDirections(game)
     local result = next(game, dt)
     if not game then
       return result
     end
     if syncWorldVisibility then syncWorldVisibility(game) end
     local topAfter = game.stack and game.stack.top and game.stack:top()
-    ensureOptionCategories(topAfter)
+    runtime.ensureOptionCategories(topAfter)
     local input = game.input
-    updateModMenuPin(game, input)
-    updateOptionHelp(game, input)
-    if option("startMenuFastJump", true) == false then return result end
+    runtime.updateModMenuPin(game, input)
+    runtime.updateOptionHelp(game, input)
+    if runtime.option("startMenuFastJump", true) == false then return result end
     local top = game.stack and game.stack.top and game.stack:top()
     if not (input and top and top.screenId == "StartMenu"
         and type(top.items) == "table"
@@ -3042,8 +3048,8 @@ return function(mod)
         and #top.items > 0) then
       return result
     end
-    local left = pendingPress(input, "left")
-    local right = pendingPress(input, "right")
+    local left = runtime.pendingPress(input, "left")
+    local right = runtime.pendingPress(input, "right")
     if left == right then return result end
     local count = #top.items
     local delta = right and 5 or -5
@@ -3054,7 +3060,7 @@ return function(mod)
   end, 80)
 
   local isBoxRoot
-  local function boxPokemonList(state)
+  runtime.boxPokemonList = function(state)
     if not (state and inherits(classOf(state), listClass)
         and type(state.items) == "table") then return nil end
     local game = state.game
@@ -3104,13 +3110,13 @@ return function(mod)
     return type(exit) == "table" and exit.keepOpen ~= true
   end
 
-  local function isGen3Box(state)
+  runtime.isGen3Box = function(state)
     return (state.screenId == "Gen3Box" or state.screenId == "Gen3BoxMenu")
       and (state.mode == "box" or state.mode == "party")
       and type(state.row) == "number" and type(state.col) == "number"
   end
 
-  local function isUsefulDexEntry(state)
+  runtime.isUsefulDexEntry = function(state)
     return state.screenId == "DexEntryMenu" and type(state.vanilla) == "table"
       and type(state.def) == "table"
       and (state.view == "data" or state.view == "stats" or state.view == "moves")
@@ -3124,7 +3130,7 @@ return function(mod)
   -- cursor, update method, and draw method. The suffix rule covers future
   -- option screen names while the Quality of Life id is retained for that
   -- mod's established public contract.
-  local function isOptionRowsScreen(state)
+  runtime.isOptionRowsScreen = function(state)
     if type(state) ~= "table" or type(state.screenId) ~= "string"
         or type(state.rows) ~= "table" or type(state.index) ~= "number"
         or type(state.update) ~= "function" or type(state.draw) ~= "function" then
@@ -3137,7 +3143,7 @@ return function(mod)
       or id:match("Settings$") ~= nil
   end
 
-  local function isNamingState(state)
+  runtime.isNamingState = function(state)
     if type(state) ~= "table" then
       return false
     end
@@ -3162,13 +3168,14 @@ return function(mod)
       and type(state.row) == "number" and type(state.col) == "number"
   end
 
-  local function kindFor(state, game)
+  runtime.kindFor = function(state, game)
     if not state then return nil end
     -- An explicitly registered source-mod contract always wins over a
     -- legacy bridge. This lets RBYMMO/Dex Radar ship richer public models
     -- without requiring a new hardcoded presenter in every UI release.
-    if mod._gen1ModernCompatibility:adapterFor(game, state) then
-      return "external"
+    local sourceAdapter = mod._gen1ModernCompatibility:adapterFor(game, state)
+    if sourceAdapter then
+      return sourceAdapter.screen.layer == "battle" and "battle" or "external"
     end
     local id = state.screenId
     local class = classOf(state)
@@ -3181,7 +3188,7 @@ return function(mod)
     -- presentation model on the screen instance.  Treat that public shape as
     -- the compatibility seam so the foreign screen can retain update/input
     -- ownership while this mod replaces only its 160x144 draw pass.
-    if isLinkState(state) then return "link" end
+    if runtime.isLinkState(state) then return "link" end
     if state.phase and state.queue and
         (state.kind == "wild" or state.kind == "trainer" or
          state.kind == "link" or state.enemy or state.player) then
@@ -3192,9 +3199,9 @@ return function(mod)
     -- than by reaching into the engine's class hierarchy.
     if id == "ManagerState" and managerClass
         and inherits(class, managerClass) then return "mod_manager" end
-    if isGen3Box(state) then return "gen3_box" end
+    if runtime.isGen3Box(state) then return "gen3_box" end
     if id == "DexEntryMenu" and ((dexEntryClass and inherits(class, dexEntryClass))
-        or isUsefulDexEntry(state)) then return "dex_entry" end
+        or runtime.isUsefulDexEntry(state)) then return "dex_entry" end
     if id == "MoveLearnMenu" and mod._gen1ModernSpecialClasses.moveLearn
         and inherits(class, mod._gen1ModernSpecialClasses.moveLearn) then
       return "move_learn"
@@ -3207,7 +3214,7 @@ return function(mod)
         and inherits(class, mod._gen1ModernSpecialClasses.naming) then
       return "naming"
     end
-    if isNamingState(state) then return "naming" end
+    if runtime.isNamingState(state) then return "naming" end
     if id == "TownMap" and mod._gen1ModernSpecialClasses.townMap
         and inherits(class, mod._gen1ModernSpecialClasses.townMap) then
       return "town_map"
@@ -3217,11 +3224,11 @@ return function(mod)
         and inherits(class, mod._gen1ModernSpecialClasses.quarantineReport) then
       return "quarantine_report"
     end
-    if isOptionRowsScreen(state) then return "mod_options" end
+    if runtime.isOptionRowsScreen(state) then return "mod_options" end
     if id == "TrainerCard" and trainerCardClass
         and inherits(class, trainerCardClass) then return "trainer_card" end
     if isBoxRoot(state) then return "box_root" end
-    if boxPokemonList(state) then return "box_mon_list" end
+    if runtime.boxPokemonList(state) then return "box_mon_list" end
     if id == "PokedexMenu" and inherits(class, listClass) then return "pokedex" end
     if id == "BagMenu" and inherits(class, listClass) then return "bag" end
     if id == "OptionsMenu" and optionsClass
@@ -3246,28 +3253,114 @@ return function(mod)
   -- classic UI on frames that render.hud will actually replace.  In
   -- particular, the unfinished battle presenter remains opt-in and never
   -- blanks the stable native battle UI by default.
-  local function presenterEnabled(kind)
-    if kind == "external" then return option("menuUi", true) ~= false end
-    if kind == "battle" then return option("battleUiWip", false) == true end
-    if kind == "link" then return option("menuUi", true) ~= false end
+  runtime.presenterEnabled = function(kind)
+    if kind == "external" then return runtime.option("menuUi", true) ~= false end
+    if kind == "battle" then return runtime.option("battleUiWip", false) == true end
+    if kind == "link" then return runtime.option("menuUi", true) ~= false end
     if kind == "text" or kind == "choice" or kind == "quantity" then
-      return option("dialogueUi", true) ~= false
+      return runtime.option("dialogueUi", true) ~= false
     end
     if kind == "mod_manager" or kind == "mod_options" then
-      return option("managerUi", true) ~= false
+      return runtime.option("managerUi", true) ~= false
     end
     if kind == "gen3_box" or kind == "dex_entry" or kind == "summary"
         or kind == "party" or kind == "trainer_card" or kind == "pokedex"
         or kind == "box_mon_list" then
-      return option("pokemonUi", true) ~= false
+      return runtime.option("pokemonUi", true) ~= false
     end
     if kind == "move_learn" or kind == "pic_box" or kind == "naming"
         or kind == "town_map" or kind == "quarantine_report"
         or kind == "rby_mmo_profile" or kind == "rby_mmo_rank"
         or kind == "rby_mmo_char_pick" then
-      return option("menuUi", true) ~= false
+      return runtime.option("menuUi", true) ~= false
     end
-    return option("menuUi", true) ~= false
+    return runtime.option("menuUi", true) ~= false
+  end
+
+  -- Every battle presenter leaves the native battle pass alive. BattleState
+  -- owns much more than static pictures: send-out/capture sequences, move
+  -- animation sprites, palette flashes, shakes, fades, WideBattle's overlay
+  -- hook, and DramaticShape's staged scene all run inside that draw. For the
+  -- classic 2D surface we decorate BattleState's HUD/text methods so that its
+  -- scene pipeline keeps drawing while modern UI owns every information and
+  -- menu surface. WIDE and third-party scene modes retain conservative
+  -- post-compose cleanup until they expose the same scene-only seam.
+  -- Keep battle-only helpers on one runtime table. The installer is a large
+  -- compatibility module, and LuaJIT/LÃ–VE limits one function prototype to
+  -- 200 local slots. Table-backed helpers keep future battle integrations
+  -- from pushing the factory over that limit.
+  local battleRuntime = {}
+
+  function battleRuntime.nativeSceneRequested(state)
+    local configured = safeText(runtime.option("battleUiMode", "auto")):lower()
+    if configured == "hud" or configured == "hud_only"
+        or configured == "menu" then
+      return true
+    end
+    if configured == "full" or configured == "canvas" then return false end
+    local source = state or {}
+    local compatibility = mod._gen1ModernCompatibility
+    local context = compatibility.active[source]
+    if context and context.screen and context.screen.layer == "battle" then
+      local model = compatibility:modelFor(currentGame or source.game,
+        source, context)
+      if model then
+        local presentation = safeText(model.presentation
+          or model.presentationMode or model.battlePresentation):lower()
+        if presentation == "hud" or presentation == "hud_only"
+            or presentation == "menu" or model.isVoxelBattle == true
+            or model.voxel3d == true or model.voxel == true then
+          return true
+        end
+      end
+    end
+    if source.isVoxelBattle == true or source.voxel3d == true
+        or source.voxel == true or type(source.voxel3dBattleData) == "table"
+        or type(source.dramaticShapeShot) == "table"
+        or source.battleMode == "voxel" or source.battleMode == "3d"
+        or source.battleMode == "stadium" then
+      return true
+    end
+    -- Installing a voxel or QOL mod does not prove that this particular
+    -- battle uses its scene. Active source state (or a public adapter model)
+    -- is the only safe AUTO-mode signal; otherwise ordinary 2D battles would
+    -- incorrectly be forced into the voxel layout merely because QOL exists.
+    return false
+  end
+
+  -- Standard BattleState keeps the Game Boy's vertical move-list input even
+  -- though the modern panel uses the same readable 2x2 arrangement as WIDE.
+  -- Consume only that directional edge and update the source cursor field;
+  -- A/B/SELECT, PP checks, disabled moves, callbacks, and turn resolution
+  -- continue through BattleState unchanged. AUTO scene/voxel battles keep
+  -- every direction source-owned along with the compact HUD presentation.
+  runtime.remapBattleMoveGrid = function(game)
+    if runtime.option("battleUiWip", false) ~= true then return end
+    local stack = game and game.stack
+    local state = stack and type(stack.top) == "function" and stack:top() or nil
+    local phase = state and state.phase
+    if phase ~= "moveSelect" and phase ~= "mimicSelect"
+        or battleRuntime.nativeSceneRequested(state) then return end
+    local wide = false
+    if type(state.wideLayout) == "function" then
+      local ok, value = pcall(state.wideLayout, state)
+      wide = ok and value == true
+    end
+    if wide then return end
+    local input = game.input
+    if not (input and type(input.pressQueue) == "table") then return end
+    local moves = phase == "mimicSelect" and state.mimicMoves
+      or state.player and state.player.curMoves
+    if type(moves) ~= "table" or #moves < 1 then return end
+    local field = phase == "mimicSelect" and "mimicIndex" or "moveIndex"
+    for queueIndex = #input.pressQueue, 1, -1 do
+      local direction = input.pressQueue[queueIndex]
+      if direction == "left" or direction == "right"
+          or direction == "up" or direction == "down" then
+        state[field] = runtime.moveGridIndex(state[field], #moves, direction)
+        table.remove(input.pressQueue, queueIndex)
+      end
+    end
   end
 
   -- Some mods keep a standard Menu/ListMenu state but replace `draw` on the
@@ -3276,18 +3369,19 @@ return function(mod)
   -- would silently lose UI. Only audited structural adapters are exceptions:
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
-  local function customDrawModeled(state, kind)
+  runtime.customDrawModeled = function(state, kind)
+    if state._gen1ModernBattleChildNativeDraw then return true end
     if kind == "external"
         and mod._gen1ModernCompatibility.active[state] then return true end
-    if kind == "link" and isLinkState(state) then return true end
-    if kind == "mod_options" and isOptionRowsScreen(state) then return true end
+    if kind == "link" and runtime.isLinkState(state) then return true end
+    if kind == "mod_options" and runtime.isOptionRowsScreen(state) then return true end
     if kind == "bag"
         and mod._gen1ModernCompatibility:isUsefulBagState(state) then
       return true
     end
-    if kind == "gen3_box" and isGen3Box(state) then return true end
-    if kind == "dex_entry" and isUsefulDexEntry(state) then return true end
-    if kind == "naming" and isNamingState(state) then return true end
+    if kind == "gen3_box" and runtime.isGen3Box(state) then return true end
+    if kind == "dex_entry" and runtime.isUsefulDexEntry(state) then return true end
+    if kind == "naming" and runtime.isNamingState(state) then return true end
     if kind == "dex_radar" and state.screenId == "DexRadar" then return true end
     if kind == "rby_mmo_profile" or kind == "rby_mmo_rank"
         or kind == "rby_mmo_char_pick" then return true end
@@ -3301,7 +3395,7 @@ return function(mod)
     return false
   end
 
-  local function expectedClass(kind)
+  runtime.expectedClass = function(kind)
     if kind == "link" then return linkClass end
     if kind == "menu" then return menuClass end
     if kind == "box_root" then return menuClass end
@@ -3329,7 +3423,7 @@ return function(mod)
     return nil
   end
 
-  local function resolvedDraw(class, seen)
+  runtime.resolvedDraw = function(class, seen)
     if type(class) ~= "table" then return nil end
     seen = seen or {}
     if seen[class] then return nil end
@@ -3337,19 +3431,23 @@ return function(mod)
     local draw = rawget(class, "draw")
     if type(draw) == "function" then return draw end
     local mt = getmetatable(class)
-    return mt and resolvedDraw(mt.__index, seen) or nil
+    return mt and runtime.resolvedDraw(mt.__index, seen) or nil
   end
 
-  local function hasUnknownDrawOverride(state, kind)
-    if customDrawModeled(state, kind) then return false end
+  runtime.hasUnknownDrawOverride = function(state, kind)
+    if runtime.customDrawModeled(state, kind) then return false end
+    -- Battle states are plain source-owned records rather than Menu/ListMenu
+    -- subclasses. Their native draw function is expected and must not be
+    -- mistaken for an unsupported replacement.
+    if kind == "battle" then return false end
     local ownDraw = rawget(state, "draw")
     local class = classOf(state)
-    if type(ownDraw) == "function" and ownDraw ~= resolvedDraw(class) then
+    if type(ownDraw) == "function" and ownDraw ~= runtime.resolvedDraw(class) then
       return true
     end
-    local expected = expectedClass(kind)
-    local expectedDraw = resolvedDraw(expected)
-    local actualDraw = resolvedDraw(class)
+    local expected = runtime.expectedClass(kind)
+    local expectedDraw = runtime.resolvedDraw(expected)
+    local actualDraw = runtime.resolvedDraw(class)
     return expectedDraw ~= nil and actualDraw ~= nil and actualDraw ~= expectedDraw
   end
 
@@ -3359,13 +3457,13 @@ return function(mod)
   -- vanilla record underneath the wrapper.  Resolve those shapes in one
   -- place so floating presentation never clears the classic canvas before
   -- the replacement has enough data to draw.
-  local function pokemonDefinition(game, species)
+  runtime.pokemonDefinition = function(game, species)
     local data = game and game.data
     local pokemon = data and data.pokemon
     return pokemon and species and pokemon[species] or nil
   end
 
-  local function summaryPokemon(state)
+  runtime.summaryPokemon = function(state)
     if type(state) ~= "table" then return nil end
     local candidates = { state.mon, state.pokemon, state.target, state.poke }
     if type(state.vanilla) == "table" then
@@ -3380,7 +3478,7 @@ return function(mod)
     return nil
   end
 
-  local function dexDefinition(game, state)
+  runtime.dexDefinition = function(game, state)
     if type(state) ~= "table" then return nil end
     local def = state.def
     if type(def) ~= "table" and type(state.vanilla) == "table" then
@@ -3397,20 +3495,31 @@ return function(mod)
     if not species and type(state.vanilla) == "table" then
       species = state.vanilla.species or state.vanilla.speciesId
     end
-    return pokemonDefinition(game, species)
+    return runtime.pokemonDefinition(game, species)
   end
 
-  local function presenterReady(game, state, kind)
+  runtime.presenterReady = function(game, state, kind)
     if kind == "external" then
       local context = mod._gen1ModernCompatibility.active[state]
         or mod._gen1ModernCompatibility:adapterFor(game, state)
       return context and context.screen.canSuppressNative == true
         and mod._gen1ModernCompatibility:modelFor(game, state, context) ~= nil
+    elseif kind == "battle" then
+      local context = mod._gen1ModernCompatibility.active[state]
+        or mod._gen1ModernCompatibility:adapterFor(game, state)
+      -- Battle adapters enrich the overlay model but never suppress the
+      -- source draw: animation and third-party overlay ownership stays with
+      -- BattleState/source mods regardless of canSuppressNative.
+      if context then
+        return context.screen.layer == "battle"
+          and mod._gen1ModernCompatibility:modelFor(game, state, context) ~= nil
+      end
+      return true
     elseif kind == "summary" then
-      local mon = summaryPokemon(state)
-      return mon ~= nil and pokemonDefinition(game, mon.species) ~= nil
+      local mon = runtime.summaryPokemon(state)
+      return mon ~= nil and runtime.pokemonDefinition(game, mon.species) ~= nil
     elseif kind == "dex_entry" then
-      return dexDefinition(game, state) ~= nil
+      return runtime.dexDefinition(game, state) ~= nil
     end
     return true
   end
@@ -3418,23 +3527,32 @@ return function(mod)
   -- The new host hook asks about one state at a time while StateStack is
   -- choosing its visible base. This predicate deliberately does not call
   -- `visibleBase` or `presentationStack`, so it is safe inside that query.
-  local function canSuppressState(game, state)
+  runtime.canSuppressState = function(game, state)
     if not (game and state and state ~= game.overworld)
-        or isTitleState(state) or state.capture
-        or option("hideOriginalUi", true) == false then
+        or runtime.isTitleState(state) or state.capture
+        or runtime.option("hideOriginalUi", true) == false then
       return false
     end
-    local kind = kindFor(state, game)
-    return kind and presenterEnabled(kind)
-      and not hasUnknownDrawOverride(state, kind)
-      and presenterReady(game, state, kind) or false
+    if type(battleRuntime) == "table"
+        and type(battleRuntime.isLevelUpState) == "function"
+        and battleRuntime.isLevelUpState(game, state) then
+      -- The native StatBox is another battle child.  Its values are read from
+      -- the source state and presented by the modern battle layer below, so
+      -- leave only its semantic update/input ownership with the host.
+      return runtime.option("battleUiWip", false) == true
+    end
+    local kind = runtime.kindFor(state, game)
+    if kind == "battle" then return false end
+    return kind and runtime.presenterEnabled(kind)
+      and not runtime.hasUnknownDrawOverride(state, kind)
+      and runtime.presenterReady(game, state, kind) or false
   end
 
   -- Build a non-recursive proof for hosts that have screen.render_visible.
   -- Managed modern states are treated as transparent for the base scan; an
   -- unknown opaque state remains the native drawing boundary and prevents us
   -- from blanking anything above it.
-  local function visibleSuppressionProof(game)
+  runtime.visibleSuppressionProof = function(game)
     local stack = game and game.stack
     local states = stack and stack.states
     if type(states) ~= "table" then return false, {} end
@@ -3445,37 +3563,47 @@ return function(mod)
       return state and state.isOpaque == true
     end
     local base = 1
+    local preservedBase
     for index = #states, 1, -1 do
       local state = states[index]
-      if state and state ~= game.overworld and isTitleState(state) then
+      if state and state ~= game.overworld and runtime.isTitleState(state) then
         -- Title art is a shared native canvas; its menu decorator handles the
         -- rows separately and the canvas must remain available.
       elseif state and type(state.draw) == "function"
-          and rawOpaque(state) and not canSuppressState(game, state) then
+          and rawOpaque(state) and not runtime.canSuppressState(game, state) then
         base = index
+        preservedBase = state
         break
       end
     end
     local hidden = {}
     for index = base, #states do
       local state = states[index]
-      if state and state ~= game.overworld and not isTitleState(state)
+      if state and state ~= game.overworld and not runtime.isTitleState(state)
           and type(state.draw) == "function" then
-        if not canSuppressState(game, state) then return false, {} end
-        hidden[state] = true
+        if state == preservedBase then
+          -- Keep an authoritative opaque base (notably BattleState) alive,
+          -- while still suppressing individually-presented Bag/Party/modal
+          -- children above it through screen.render_visible.
+        elseif runtime.canSuppressState(game, state) then
+          hidden[state] = true
+        else
+          return false, {}
+        end
       end
     end
     return next(hidden) ~= nil, hidden
   end
 
-  local function syncStateVisibility(game, state)
+  runtime.syncStateVisibility = function(game, state)
     if not (game and state and state ~= game.overworld) then return end
-    local kind = kindFor(state, game)
-    local revealWorld = worldVisibleLayout(nil)
-      and option("hideOriginalUi", true) ~= false
-    local eligible = revealWorld and kind and presenterEnabled(kind)
-      and not state.capture and not hasUnknownDrawOverride(state, kind)
-      and presenterReady(game, state, kind)
+    local kind = runtime.kindFor(state, game)
+    local revealWorld = runtime.worldVisibleLayout(nil)
+      and runtime.option("hideOriginalUi", true) ~= false
+    local eligible = revealWorld and kind and runtime.presenterEnabled(kind)
+      and kind ~= "battle" and not state.capture
+      and not runtime.hasUnknownDrawOverride(state, kind)
+      and runtime.presenterReady(game, state, kind)
     if eligible then
       if state._gen1ModernOpaqueManaged == nil then
         state._gen1ModernOpaqueManaged = true
@@ -3495,7 +3623,7 @@ return function(mod)
     if type(states) ~= "table" then return end
     for _, state in ipairs(states) do
       if state and state ~= game.overworld then
-        syncStateVisibility(game, state)
+        runtime.syncStateVisibility(game, state)
       end
     end
   end
@@ -3589,8 +3717,8 @@ return function(mod)
       banner.expiresAt = (love.timer and love.timer.getTime
         and love.timer.getTime() or 0) + duration
       banner.overworld = ow
-      local modernWorld = option("menuUi", true) ~= false
-        and option("hideOriginalUi", true) ~= false
+      local modernWorld = runtime.option("menuUi", true) ~= false
+        and runtime.option("hideOriginalUi", true) ~= false
       mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
         game, modernWorld)
     end, -10)
@@ -3611,8 +3739,16 @@ return function(mod)
     mod.events:on("screen.pushed", function(payload)
       local state = payload and payload.state
       local game = state and state.game or currentGame
-      syncTitleMenuPalette(game, state)
-      syncStateVisibility(game, state)
+      if type(battleRuntime.decorateClassicScene) == "function" then
+        battleRuntime.decorateClassicScene(game, state)
+      end
+      if type(battleRuntime.decorateWorldSurface) == "function"
+          and runtime.kindFor(state, game) == "battle" then
+        battleRuntime.decorateWideScenePlacement(state)
+        battleRuntime.decorateWorldSurface(state)
+      end
+      runtime.syncTitleMenuPalette(game, state)
+      runtime.syncStateVisibility(game, state)
     end, 90)
     mod.events:on("screen.popped", function(payload)
       local state = payload and payload.state
@@ -3628,7 +3764,7 @@ return function(mod)
   -- draw owner has a modern presenter. This lets a Bag -> action -> quantity
   -- or TextBox -> YES/NO chain become one coherent modern composition while
   -- any unknown/custom layer immediately falls back to the classic canvas.
-  local function presentationStack(game)
+  runtime.presentationStack = function(game)
     if not game then return {}, false end
     local stack = game.stack
     local states = stack and stack.states
@@ -3640,7 +3776,10 @@ return function(mod)
     local layers = {}
     local preserveUiCanvas = false
     local topState = states[#states]
-    local optionRowsTop = isOptionRowsScreen(topState)
+    local levelUpTop = type(battleRuntime) == "table"
+      and type(battleRuntime.isLevelUpState) == "function"
+      and battleRuntime.isLevelUpState(game, topState) or false
+    local optionRowsTop = runtime.isOptionRowsScreen(topState)
     for index = base, #states do
       local visible = states[index]
       -- The overworld is rendered independently on the world canvas. States
@@ -3660,25 +3799,74 @@ return function(mod)
         elseif type(rawget(visible, "drawUI")) == "function" then
           return {}, false
         end
-      elseif isTitleState(visible) then
+      elseif runtime.isTitleState(visible) then
         -- The title art and its Menu share uiCanvas. The title-menu draw is
         -- suppressed independently by ui.state.decorate below, so preserve
         -- the canvas here rather than erasing the logo and title Pokémon.
         preserveUiCanvas = true
       elseif type(visible and visible.draw) == "function" then
-        local kind = kindFor(visible, game)
-        if not kind or not presenterEnabled(kind) or visible.capture
-            or hasUnknownDrawOverride(visible, kind)
-            or not presenterReady(game, visible, kind) then
-          return {}, false
+        if visible == topState and levelUpTop then
+          -- BattleState.StatBox deliberately has no generic presenter kind.
+          -- Its native draw is suppressed independently; the underlying
+          -- BattleState remains the animation authority and supplies the
+          -- source scene for the modern level-up card.
+          preserveUiCanvas = true
+        else
+          local kind = runtime.kindFor(visible, game)
+          if not kind or not runtime.presenterEnabled(kind) or visible.capture
+              or runtime.hasUnknownDrawOverride(visible, kind)
+              or not runtime.presenterReady(game, visible, kind) then
+            return {}, false
+          end
+          if kind == "battle" then
+            -- BattleState is always the animation authority. Keep its canvas
+            -- in AUTO, 2D FRAMED, and SCENE HUD modes; the modern presenter
+            -- covers only the legacy HUD/menu rectangles after composition.
+            preserveUiCanvas = true
+          end
+          -- A registered OptionRows screen is pushed above the manager state
+          -- that opened it. The custom screen is the complete visible surface;
+          -- retaining the manager beneath it would duplicate panels in floating
+          -- layouts. The manager remains in the engine stack for input/back
+          -- navigation, but is omitted from this visual composition.
+          if not (kind == "mod_manager" and optionRowsTop) then
+            layers[#layers + 1] = {
+              state = visible, kind = kind, index = index,
+            }
+          end
         end
-        -- A registered OptionRows screen is pushed above the manager state
-        -- that opened it. The custom screen is the complete visible surface;
-        -- retaining the manager beneath it would duplicate panels in floating
-        -- layouts. The manager remains in the engine stack for input/back
-        -- navigation, but is omitted from this visual composition.
-        if not (kind == "mod_manager" and optionRowsTop) then
-          layers[#layers + 1] = { state = visible, kind = kind, index = index }
+      end
+    end
+
+    -- An opaque child such as Bag/Party can sit on top of BattleState.  The
+    -- host's visibleBase quite correctly hides everything below that child,
+    -- but the modern battle presenter still needs the battle canvas as its
+    -- animated backdrop.  Reinsert the source-owned battle layer only when
+    -- it is actually below the visible base; this keeps the child's native
+    -- draw and input ownership intact while preventing compose from wiping
+    -- the arena to a flat clear color.
+    if base > 1 then
+      for index = base - 1, 1, -1 do
+        local hidden = states[index]
+        if hidden and runtime.kindFor(hidden, game) == "battle"
+            and (battleRuntime.presentationMode(hidden) == "full"
+              or levelUpTop)
+            and runtime.presenterEnabled("battle")
+            and runtime.presenterReady(game, hidden, "battle") then
+          local alreadyVisible = false
+          for _, layer in ipairs(layers) do
+            if layer.state == hidden then
+              alreadyVisible = true
+              break
+            end
+          end
+          if not alreadyVisible then
+            table.insert(layers, 1, {
+              state = hidden, kind = "battle", index = index,
+            })
+            preserveUiCanvas = true
+          end
+          break
         end
       end
     end
@@ -3687,11 +3875,11 @@ return function(mod)
 
   function mod._gen1ModernSpecialPresenters.shouldHideNativeOptions(game,
       state)
-    if not (game and state and option("hideOriginalUi", true) ~= false
-        and option("menuUi", true) ~= false) then
+    if not (game and state and runtime.option("hideOriginalUi", true) ~= false
+        and runtime.option("menuUi", true) ~= false) then
       return false
     end
-    local layers, complete = presentationStack(game)
+    local layers, complete = runtime.presentationStack(game)
     if not complete then return false end
     for _, layer in ipairs(layers) do
       if layer.state == state then return true end
@@ -3710,17 +3898,17 @@ return function(mod)
     menuClass._gen1ModernTitleClassDraw = true
     menuClass.draw = function(self, ...)
       local game = self.game or currentGame
-      syncTitleMenuPalette(game, self)
+      runtime.syncTitleMenuPalette(game, self)
       if type(self.titleUiBox) == "table"
-          and option("hideOriginalUi", true) ~= false
-          and option("menuUi", true) ~= false then
+          and runtime.option("hideOriginalUi", true) ~= false
+          and runtime.option("menuUi", true) ~= false then
         local stack = game and game.stack and game.stack.states
         local titleOnStack = false
         for _, visible in ipairs(type(stack) == "table" and stack or {}) do
-          if isTitleState(visible) then titleOnStack = true break end
+          if runtime.isTitleState(visible) then titleOnStack = true break end
         end
         if titleOnStack then
-          local layers, complete = presentationStack(game)
+          local layers, complete = runtime.presentationStack(game)
           if complete then
             for _, layer in ipairs(layers) do
               if layer.state == self then return end
@@ -3737,7 +3925,7 @@ return function(mod)
   -- logo and title Pokémon too. The title Menu decorator suppresses the
   -- duplicate native rows while the modern presenter owns the complete stack,
   -- so the shared artwork canvas must remain untouched.
-  local function optionValue(game, row)
+  runtime.optionValue = function(game, row)
     if not row or row.value == nil then return "" end
     if type(row.value) ~= "function" then return safeText(row.value) end
     local ok, value = pcall(row.value, game)
@@ -3749,7 +3937,7 @@ return function(mod)
   local spriteFor
   local spriteResolver
 
-  local function rowsFor(game, state, kind)
+  runtime.rowsFor = function(game, state, kind)
     local rows = {}
     local selected = state.index or 1
     local scroll = state.scroll or 0
@@ -3791,7 +3979,7 @@ return function(mod)
     elseif kind == "options" or kind == "mod_options" then
       for _, row in ipairs(state.rows or {}) do
         rows[#rows + 1] = {
-          label = row.label, value = optionValue(game, row),
+          label = row.label, value = runtime.optionValue(game, row),
           enabled = row.enabled, image = imageCandidate(row), source = row,
         }
       end
@@ -3835,7 +4023,7 @@ return function(mod)
         rows[1] = { label = Strings("No POKéMON!"), enabled = false }
       end
     elseif kind == "box_mon_list" then
-      local mons, action = boxPokemonList(state)
+      local mons, action = runtime.boxPokemonList(state)
       for _, mon in ipairs(mons or {}) do
         local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
         local name = mon.nickname or (def and def.name) or mon.species or "POKéMON"
@@ -3867,7 +4055,7 @@ return function(mod)
     else
       for index, item in ipairs(state.items or {}) do
         local value = item.right ~= nil and item.right or item.displayValue
-        local pinned = isPinned(item)
+        local pinned = runtime.isPinned(item)
         if pinned then
           local renderedValue = safeText(value)
           value = renderedValue ~= "" and (renderedValue .. "  PINNED") or "PINNED"
@@ -3913,7 +4101,7 @@ return function(mod)
     local rawRows = {}
     local screen = state.screen or "list"
     if screen == "options" then
-      ensureOptionCategories(state)
+      runtime.ensureOptionCategories(state)
       rawRows = state.optionRows or {}
     elseif type(state.rowsForScreen) == "function" then
       local ok, result = pcall(state.rowsForScreen, state)
@@ -3987,7 +4175,7 @@ return function(mod)
     return rows, selected, scroll, title
   end
 
-  local function contentWidthFor(theme, rows, title, footer, minWidth, maxWidth)
+  runtime.contentWidthFor = function(theme, rows, title, footer, minWidth, maxWidth)
     -- Detect translated labels before constructing the fonts used for the
     -- measurement pass; otherwise the first width calculation could still
     -- use the lightweight host face and only switch during painting.
@@ -4017,39 +4205,39 @@ return function(mod)
       minWidth or 1, maxWidth or widest + theme.spacing.lg * 2)
   end
 
-  local function densityFactor()
-    local density = option("density", "auto")
+  runtime.densityFactor = function()
+    local density = runtime.option("density", "auto")
     return density == "compact" and 0.88
       or density == "comfortable" and 1.12 or 1
   end
 
-  local function minimumRowHeight(theme)
+  runtime.minimumRowHeight = function(theme)
     local body = font(fontCache, theme.typography.body)
     local caption = font(fontCache, theme.typography.caption)
     local textMinimum = math.max(textHeight(body), textHeight(caption))
       + theme.spacing.sm * 1.6
-    return math.max(theme.density.rowHeight * densityFactor(), textMinimum)
+    return math.max(theme.density.rowHeight * runtime.densityFactor(), textMinimum)
   end
 
-  local function themeMetric(theme, name, fallback)
+  runtime.themeMetric = function(theme, name, fallback)
     local metrics = theme.metrics or {}
     return metrics[name] or fallback
   end
 
-  local function readabilityScale(theme)
+  runtime.readabilityScale = function(theme)
     local scale = theme.scale or {}
     return math.max(tonumber(scale.ui) or 1, tonumber(scale.font) or 1)
   end
 
-  local function scaledPanelWidth(theme, baseWidth)
-    return baseWidth * readabilityScale(theme)
+  runtime.scaledPanelWidth = function(theme, baseWidth)
+    return baseWidth * runtime.readabilityScale(theme)
   end
 
-  local function panelMaxWidth(theme, fallback)
+  runtime.panelMaxWidth = function(theme, fallback)
     local density = theme.density or {}
     local uiScale = tonumber(theme.scale and theme.scale.ui) or 1
     local authoredMax = (tonumber(density.panelMax) or fallback) / uiScale
-    return scaledPanelWidth(theme, math.max(authoredMax, fallback))
+    return runtime.scaledPanelWidth(theme, math.max(authoredMax, fallback))
   end
 
   -- Rich presenters historically used fixed height ceilings. That worked at
@@ -4057,19 +4245,19 @@ return function(mod)
   -- rows without giving the screen any additional vertical room. Scale the
   -- ceiling with the largest readability control, then let each presenter
   -- clamp it to the safe viewport below.
-  local function scaledPanelHeight(theme, landscape, landscapeBase, portraitBase)
+  runtime.scaledPanelHeight = function(theme, landscape, landscapeBase, portraitBase)
     local base = landscape and landscapeBase or portraitBase
-    return base * readabilityScale(theme)
+    return base * runtime.readabilityScale(theme)
   end
 
-  local function layoutFor(viewport, theme, kind, rows, title, footerText)
+  runtime.layoutFor = function(viewport, theme, kind, rows, title, footerText)
     rows = rows or {}
     local rowCount = #rows
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing or {}
-    local scale = densityFactor()
+    local scale = runtime.densityFactor()
     local landscape = w > h * 1.2
-    local desktopFloat = worldVisibleLayout(viewport)
+    local desktopFloat = runtime.worldVisibleLayout(viewport)
     -- Touch controls can consume a large fraction of a phone's short
     -- landscape height. Use a denser outer rhythm there, then fit rows to the
     -- available presenter height before falling back to scrolling.
@@ -4081,8 +4269,8 @@ return function(mod)
       or (spacing.md or 13) * scale
     local footer = (landscape and (spacing.sm or 9) or (spacing.lg or 18)) * scale
       + captionHeight
-    local rowHeight = minimumRowHeight(theme)
-    local panelMax = panelMaxWidth(theme, 780)
+    local rowHeight = runtime.minimumRowHeight(theme)
+    local panelMax = runtime.panelMaxWidth(theme, 780)
     if landscape then
       -- Keep content-sized panels compact, but leave enough room for long
       -- localized labels and option values before truncating them.
@@ -4097,7 +4285,7 @@ return function(mod)
       rowHeight = math.min(rowHeight, math.max(minLandscapeRow, fitHeight))
     end
     local minPanelW = landscape and 220 or 250
-    local measuredW = contentWidthFor(theme, rows, title, footerText,
+    local measuredW = runtime.contentWidthFor(theme, rows, title, footerText,
       minPanelW, panelMax)
     local panelW = math.min(w - gutter * 2, measuredW)
     local bodyFont = font(fontCache, theme.typography.body)
@@ -4135,7 +4323,7 @@ return function(mod)
       -- list/options screens keep the wider panel calculated from the theme
       -- max.
       panelW = math.min(panelW, (w > h * 1.2) and w * 0.70
-        or scaledPanelWidth(theme, 560))
+        or runtime.scaledPanelWidth(theme, 560))
     end
     if sidePanel then
       -- The ordinary in-game menu is navigational chrome, not a modal data
@@ -4157,7 +4345,7 @@ return function(mod)
     local contentH = header + footer + visible * rowHeight
     local panelH = math.min(h - gutter * 2, contentH)
     panelH = math.max(1, panelH)
-    local sidePanelInset = clamp(tonumber(option("startMenuInset", 0)) or 0,
+    local sidePanelInset = clamp(tonumber(runtime.option("startMenuInset", 0)) or 0,
       0, 50) / 50
     local sidePanelX = x + w - panelW - gutter
     if sidePanel then
@@ -4180,7 +4368,7 @@ return function(mod)
     }
   end
 
-  local function drawPanelFrame(theme, x, y, w, h, radius, fillColor)
+  runtime.drawPanelFrame = function(theme, x, y, w, h, radius, fillColor)
     -- Register the visible panel before choosing a frame style so plain and
     -- theme-framed panels remain draggable through the same hit region.
     if pointerDrawContext and not pointerDrawContext.primaryPanel then
@@ -4189,7 +4377,7 @@ return function(mod)
     local panelAction = ({
       text = "a", summary = "a", dex_entry = "a", trainer_card = "a",
     })[pointerDrawContext and pointerDrawContext.kind]
-    registerPointerRegion(x, y, w, h, {
+    runtime.registerPointerRegion(x, y, w, h, {
       role = "panel", dragHandle = true, action = panelAction,
     })
     local frame = theme.frame or {}
@@ -4197,7 +4385,7 @@ return function(mod)
     if style == "none" then return end
     local colors = theme.colors
     local width = math.max(1, tonumber(frame.width) or
-      themeMetric(theme, "border", 3))
+      runtime.themeMetric(theme, "border", 3))
     local inset = math.max(0, tonumber(frame.inset) or 0)
     local margin = math.max(0, tonumber(frame.margin) or 0)
     local shadow = math.max(0, tonumber(frame.shadow) or 0)
@@ -4207,12 +4395,16 @@ return function(mod)
     local fh = math.max(1, h + margin * 2 - inset * 2)
     local frameColor = colors.frame or colors.accent
     local shadowColor = colors.frameShadow or colors.divider
+    -- Passing false asks for ornamental frame pixels only. Ordinary panels
+    -- intentionally fill their content area, but the 2D battle arena must
+    -- leave its live source scene visible through that area.
+    local frameOnly = fillColor == false
 
     setColor(frameColor)
     love.graphics.setLineWidth(width)
-    local asset = style == "pixel" and frame.asset and themeAssetFor(frame.asset)
+    local asset = style == "pixel" and frame.asset and runtime.themeAssetFor(frame.asset)
     if asset then
-      local iw, ih = imageMetrics(asset)
+      local iw, ih = runtime.imageMetrics(asset)
       if iw and ih then
       -- Pixel artwork must meet the same integer grid in which it was
       -- authored. The viewport can be fractional (window DPI and responsive
@@ -4264,8 +4456,10 @@ return function(mod)
       -- panel itself is already snapped to the visible content boundary; if
       -- we fill the full image bounds here, the transparent outer ornament
       -- becomes a visibly oversized container on the right and bottom.
-      setColor(fillColor or colors.surface)
-      love.graphics.rectangle("fill", panelX, panelY, panelW, panelH)
+      if not frameOnly then
+        setColor(fillColor or colors.surface)
+        love.graphics.rectangle("fill", panelX, panelY, panelW, panelH)
+      end
       -- Asset-backed pixel frames own their shadow/edge treatment. A second
       -- shifted rectangle would necessarily protrude only on the right and
       -- bottom, making the container look asymmetrical.
@@ -4320,9 +4514,11 @@ return function(mod)
         destinationCornerX, destinationCornerY)
       drawTiledY(0, sourceSlice, sourceSlice, centerSourceH,
         assetFx, assetFy + destinationCornerY, destinationCornerX, centerDestH)
-      drawSlice(sourceSlice, sourceSlice, centerSourceW, centerSourceH,
-        assetFx + destinationCornerX, assetFy + destinationCornerY,
-        centerDestW, centerDestH)
+      if not frameOnly then
+        drawSlice(sourceSlice, sourceSlice, centerSourceW, centerSourceH,
+          assetFx + destinationCornerX, assetFy + destinationCornerY,
+          centerDestW, centerDestH)
+      end
       drawTiledY(iw - sourceSlice, sourceSlice, sourceSlice, centerSourceH,
         assetFx + assetFw - destinationCornerX, assetFy + destinationCornerY,
         destinationCornerX, centerDestH)
@@ -4368,21 +4564,21 @@ return function(mod)
       fy + fh - mark + width * 0.5, -1, -1)
   end
 
-  local function drawPanelAccent(theme, x, y, w, radius, height)
+  runtime.drawPanelAccent = function(theme, x, y, w, radius, height)
     if theme.frame and theme.frame.style == "pixel" then return end
     setColor(theme.colors.accent)
     love.graphics.rectangle("fill", x, y, w, height or
-      themeMetric(theme, "border", 4), radius, radius, 0, 0)
+      runtime.themeMetric(theme, "border", 4), radius, radius, 0, 0)
   end
 
-  local function drawHeader(theme, layout, title, fillColor)
+  runtime.drawHeader = function(theme, layout, title, fillColor)
     if layout.h then
-      drawPanelFrame(theme, layout.x, layout.y, layout.w, layout.h,
+      runtime.drawPanelFrame(theme, layout.x, layout.y, layout.w, layout.h,
         layout.radius, fillColor)
     end
     if safeText(title) == "" then return end
     local colors = theme.colors
-    drawPanelAccent(theme, layout.x, layout.y, layout.w, layout.radius)
+    runtime.drawPanelAccent(theme, layout.x, layout.y, layout.w, layout.radius)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     setColor(colors.text)
     drawText(truncate(title, layout.w - theme.spacing.lg * 2),
@@ -4390,7 +4586,7 @@ return function(mod)
       layout.y + theme.spacing.md)
   end
 
-  local function drawRows(theme, layout, rows, selected, scroll, game)
+  runtime.drawRows = function(theme, layout, rows, selected, scroll, game)
     local colors = theme.colors
     local pointerState = pointerDrawContext and pointerDrawContext.state
     local pointerScrollable = pointerState and type(pointerState.scroll) == "number"
@@ -4413,7 +4609,7 @@ return function(mod)
         local rx = layout.x + theme.spacing.lg + (index - 1) * (width + gap)
         local ry = layout.y + layout.header
         local rowSelected = index == selected and row.enabled ~= false
-        registerPointerRegion(rx, ry, width, layout.rowHeight - 4, {
+        runtime.registerPointerRegion(rx, ry, width, layout.rowHeight - 4, {
           rowIndex = index, interactive = row and row.enabled ~= false,
           dragHandle = false, rowCount = #rows,
           selectionField = layout.pointerSelectionField,
@@ -4440,7 +4636,7 @@ return function(mod)
       if not row then break end
       local ry = layout.y + layout.header + (slot - 1) * layout.rowHeight
       local rowSelected = index == selected and row.enabled ~= false
-        registerPointerRegion(layout.x + theme.spacing.sm, ry,
+        runtime.registerPointerRegion(layout.x + theme.spacing.sm, ry,
         layout.w - theme.spacing.sm * 2, layout.rowHeight - 4, {
           rowIndex = index,
           interactive = not row.header and row.enabled ~= false,
@@ -4465,7 +4661,7 @@ return function(mod)
         setColor(rowSelected and colors.text or colors.accent)
         local categoryFont = font(fontCache, theme.typography.body)
         local valueFont = font(fontCache, theme.typography.caption)
-        local value = safeText(optionValue(game, row))
+        local value = safeText(runtime.optionValue(game, row))
         local valueWidth = value ~= "" and valueFont:getWidth(value) or 0
         local labelWidth = math.max(20, layout.w - theme.spacing.lg * 2
           - (valueWidth > 0 and valueWidth + theme.spacing.md or 0))
@@ -4503,8 +4699,8 @@ return function(mod)
         -- typography, not their position in the live row array.
         setColor(colors.divider)
         love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-          ry + layout.rowHeight - themeMetric(theme, "divider", 1),
-          layout.w - theme.spacing.lg * 2, themeMetric(theme, "divider", 1))
+          ry + layout.rowHeight - runtime.themeMetric(theme, "divider", 1),
+          layout.w - theme.spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
       else
         setColor(row.enabled == false and colors.textMuted or colors.text)
       end
@@ -4513,9 +4709,12 @@ return function(mod)
           and row.assetCatalog[imageValue] ~= nil then
         imageValue = row.assetCatalog[imageValue]
       end
-      local icon = not row.header and not row.category and imageFor(imageValue) or nil
+      local icon = not row.header and not row.category and runtime.imageFor(imageValue) or nil
       if icon then
-        paletteRuntime.setImage(icon, row.source and row.source.species
+        local trueColor = type(imageValue) == "table"
+          and imageValue.trueColor == true
+        paletteRuntime.setImage(icon, not trueColor and row.source
+          and row.source.species
           and paletteRuntime.pokemon(game, row.source.species) or nil)
       end
       if not icon and not row.header and game and row.source and
@@ -4527,11 +4726,11 @@ return function(mod)
       local textX = layout.x + theme.spacing.lg +
         (icon and iconSize + theme.spacing.sm or 0)
       if icon then
-        local iw, ih = imageMetrics(icon)
+        local iw, ih = runtime.imageMetrics(icon)
         if iw and ih then
           local scale = math.min(iconSize / iw, iconSize / ih)
           setColor({ 1, 1, 1, 1 })
-          drawImage(icon,
+          runtime.drawImage(icon,
             layout.x + theme.spacing.lg + (iconSize - iw * scale) / 2,
             ry + (layout.rowHeight - ih * scale) / 2, 0, scale, scale)
           setColor(row.enabled == false and colors.textMuted or colors.text)
@@ -4539,22 +4738,29 @@ return function(mod)
       end
       local label = safeText(row.label)
       local value = safeText(row.value)
+      local status = layout.statusColumn and safeText(row.status) or ""
       local bodyFont = font(fontCache, theme.typography.body)
       local textAvail = math.max(1, layout.x + layout.w - theme.spacing.lg - textX)
       local gap = theme.spacing.md
       local labelWidth = bodyFont:getWidth(label)
       local valueWidth = value ~= "" and bodyFont:getWidth(value) or 0
+      local statusWidth = status ~= "" and bodyFont:getWidth(status) or 0
       -- Preserve the complete value whenever the measured panel can hold it.
       -- Only fall back to a bounded right column when label + value cannot
       -- coexist; this prevents short panels from clipping values such as
       -- "Classic Mono" while still guaranteeing that the two columns never
       -- overlap on narrow phones.
-      if valueWidth > 0 and labelWidth + gap + valueWidth > textAvail then
+      if valueWidth > 0 and labelWidth + gap + valueWidth
+          + (statusWidth > 0 and gap + statusWidth or 0) > textAvail then
         local maxValueColumn = math.max(1,
           textAvail - math.max(48, textAvail * 0.48))
         valueWidth = math.min(valueWidth, maxValueColumn)
       end
-      local leftWidth = textAvail - (valueWidth > 0 and valueWidth + gap or 0)
+      local valueEnd = layout.x + layout.w - theme.spacing.lg
+      local valueStart = valueEnd - valueWidth
+      local statusX = valueStart - (statusWidth > 0 and gap or 0) - statusWidth
+      local leftWidth = (statusWidth > 0 and statusX or valueStart)
+        - gap - textX
       if not row.header and not row.category then
         local labelLines = { truncate(label, math.max(20, leftWidth)) }
         local valueLines = value ~= "" and { truncate(value, valueWidth) } or {}
@@ -4574,8 +4780,13 @@ return function(mod)
         for lineIndex, line in ipairs(valueLines) do
           local lineWidth = bodyFont:getWidth(line)
           drawText(line,
-            layout.x + layout.w - theme.spacing.lg - lineWidth,
+            valueEnd - lineWidth,
             textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
+        end
+        if statusWidth > 0 then
+          setColor(rowSelected and colors.text or colors.textMuted)
+          drawText(status, statusX,
+            textY + (lineCount - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
       end
       if row.marker then
@@ -4586,8 +4797,8 @@ return function(mod)
       if index < #rows then
         setColor(colors.divider)
         love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-          ry + layout.rowHeight - themeMetric(theme, "divider", 1),
-          layout.w - theme.spacing.lg * 2, themeMetric(theme, "divider", 1))
+          ry + layout.rowHeight - runtime.themeMetric(theme, "divider", 1),
+          layout.w - theme.spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
       end
     end
     if scroll > 0 then
@@ -4602,7 +4813,7 @@ return function(mod)
     end
   end
 
-  local function textPrefix(value, glyphs)
+  runtime.textPrefix = function(value, glyphs)
     value = safeText(value)
     glyphs = math.max(0, math.floor(tonumber(glyphs) or 0))
     if glyphs == 0 then return "" end
@@ -4631,7 +4842,7 @@ return function(mod)
     return value:sub(1, glyphs)
   end
 
-  local function dialogueLines(state)
+  runtime.dialogueLines = function(state)
     local pages = state and state.pages
     local page = type(pages) == "table" and pages[state.pageIndex or 1]
     if type(page) ~= "table" then return { "" } end
@@ -4661,14 +4872,14 @@ return function(mod)
     local lines = {}
     for index = first, current do
       local line = safeText(page[index])
-      if index == current then line = textPrefix(line, state.charIndex or #line) end
+      if index == current then line = runtime.textPrefix(line, state.charIndex or #line) end
       lines[#lines + 1] = line
     end
     if #lines == 0 then lines[1] = "" end
     return lines
   end
 
-  local function completeDialogueLines(state)
+  runtime.completeDialogueLines = function(state)
     local pages = state and state.pages
     local page = type(pages) == "table" and pages[state.pageIndex or 1]
     if type(page) ~= "table" then return { "" } end
@@ -4697,9 +4908,9 @@ return function(mod)
     return lines
   end
 
-  local function wrappedDialogueLines(state, body, maxWidth)
+  runtime.wrappedDialogueLines = function(state, body, maxWidth)
     local lines = {}
-    for _, source in ipairs(dialogueLines(state)) do
+    for _, source in ipairs(runtime.dialogueLines(state)) do
       for _, line in ipairs(wrappedLines(source, maxWidth, body)) do
         lines[#lines + 1] = line
       end
@@ -4707,7 +4918,7 @@ return function(mod)
     return lines
   end
 
-  local function modalHint(kind, footerText)
+  runtime.modalHint = function(kind, footerText)
     if safeText(footerText) ~= "" then return footerText end
     if kind == "choice" then return nil end
     if kind == "quantity" then
@@ -4716,8 +4927,8 @@ return function(mod)
     return "A  select   B  back"
   end
 
-  local function modalReserveHeight(game, theme, kind, state, viewport)
-    local rows, _, _, title, footerText = rowsFor(game, state, kind)
+  runtime.modalReserveHeight = function(game, theme, kind, state, viewport)
+    local rows, _, _, title, footerText = runtime.rowsFor(game, state, kind)
     local rowCount = math.max(1, math.min(#(rows or {}), 6))
     local x, y, w, h = presenterRect(viewport)
     if kind == "choice" and w > h * 1.2 then rowCount = 1 end
@@ -4725,12 +4936,12 @@ return function(mod)
     local captionHeight = textHeight(font(fontCache, theme.typography.caption))
     local header = safeText(title) ~= "" and (titleHeight + theme.spacing.md)
       or theme.spacing.md
-    local footer = shouldDrawHint(modalHint(kind, footerText))
+    local footer = runtime.shouldDrawHint(runtime.modalHint(kind, footerText))
       and captionHeight + theme.spacing.md or 0
-    return header + footer + rowCount * minimumRowHeight(theme)
+    return header + footer + rowCount * runtime.minimumRowHeight(theme)
   end
 
-  local function dialogueRect(viewport, theme, state, game, reserveKind, reserveState)
+  runtime.dialogueRect = function(viewport, theme, state, game, reserveKind, reserveState)
     local x, y, w, h = presenterRect(viewport)
     local landscape = w > h * 1.2
     local gutter = theme.spacing.lg
@@ -4742,7 +4953,7 @@ return function(mod)
     local paddingY = theme.spacing.lg
     local body = font(fontCache, theme.typography.body)
     local widest = 0
-    for _, line in ipairs(completeDialogueLines(state) or {}) do
+    for _, line in ipairs(runtime.completeDialogueLines(state) or {}) do
       widest = math.max(widest, body:getWidth(line))
     end
     local uiScale = theme.scale and theme.scale.ui or 1
@@ -4757,7 +4968,7 @@ return function(mod)
     local lineGap = textHeight(body) + theme.spacing.xs
     local available = math.max(1, width - paddingX * 2)
     local desiredLines = 0
-    for _, line in ipairs(completeDialogueLines(state)) do
+    for _, line in ipairs(runtime.completeDialogueLines(state)) do
       desiredLines = desiredLines + #wrappedLines(line, available, body)
     end
     -- Grow to the full current page whenever the viewport can hold it. The
@@ -4766,7 +4977,7 @@ return function(mod)
     -- visually scrolling card at FAST text speed.
     local maxHeight = h - gutter * 2
     if reserveKind then
-      local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
+      local reserve = runtime.modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
       maxHeight = math.min(maxHeight,
         math.max(1, h - gutter * 2 - reserve - theme.spacing.sm))
     end
@@ -4780,7 +4991,7 @@ return function(mod)
     local minimumHeight = lineGap * 2 + paddingY * 2
     local height = math.max(minimumHeight, contentHeight)
     if reserveKind then
-      local reserve = modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
+      local reserve = runtime.modalReserveHeight(game, theme, reserveKind, reserveState, viewport)
       local availableHeight = h - gutter * 2 - reserve - theme.spacing.sm
       height = math.min(height, math.max(1, availableHeight))
     end
@@ -4788,21 +4999,21 @@ return function(mod)
     return x + (w - width) / 2, y + h - height - gutter, width, height
   end
 
-  local function drawDialogue(state, viewport, theme, game, reserveKind, reserveState)
-    local px, py, panelW, panelH = dialogueRect(viewport, theme, state, game,
+  runtime.drawDialogue = function(state, viewport, theme, game, reserveKind, reserveState)
+    local px, py, panelW, panelH = runtime.dialogueRect(viewport, theme, state, game,
       reserveKind, reserveState)
     local spacing, colors = theme.spacing, theme.colors
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.md)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.md)
 
     local body = font(fontCache, theme.typography.body)
     love.graphics.setFont(body)
     local paddingX = spacing.xl
     local paddingY = spacing.lg
     local available = panelW - paddingX * 2
-    local lines = wrappedDialogueLines(state, body, available)
+    local lines = runtime.wrappedDialogueLines(state, body, available)
     local lineGap = textHeight(body) + spacing.xs
     local maxLines = math.max(1, math.floor((panelH - paddingY * 2) / lineGap))
     while #lines > maxLines do table.remove(lines, 1) end
@@ -4824,23 +5035,23 @@ return function(mod)
     return { x = px, y = py, w = panelW, h = panelH }
   end
 
-  local function drawModalRows(game, state, kind, viewport, theme, underKind,
+  runtime.drawModalRows = function(game, state, kind, viewport, theme, underKind,
       underState)
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
     local landscape = w > h * 1.2
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local titleHeight = textHeight(font(fontCache, theme.typography.title))
     local captionHeight = textHeight(font(fontCache, theme.typography.caption))
     local header = safeText(title) ~= "" and (titleHeight + spacing.md)
       or spacing.md
-    local hint = modalHint(kind, footerText)
-    local footer = shouldDrawHint(hint) and captionHeight + spacing.md or 0
+    local hint = runtime.modalHint(kind, footerText)
+    local footer = runtime.shouldDrawHint(hint) and captionHeight + spacing.md or 0
     local maxPanelW = landscape and math.min(w * 0.70, 520) or math.min(w - spacing.lg * 2, 520)
     local panelW = math.min(w - spacing.lg * 2,
-      contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
+      runtime.contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
     local horizontalChoice = kind == "choice" and landscape
     if horizontalChoice then
       local choiceFont = font(fontCache, theme.typography.body)
@@ -4862,7 +5073,7 @@ return function(mod)
     local px = x + (w - panelW) / 2
     local py = y + (h - panelH) / 2
     if underKind == "text" then
-      local dx, dy, dw = dialogueRect(viewport, theme, underState, game)
+      local dx, dy, dw = runtime.dialogueRect(viewport, theme, underState, game)
       px = dx + dw - panelW
       py = math.max(y + spacing.lg, dy - panelH - spacing.sm)
     end
@@ -4879,20 +5090,20 @@ return function(mod)
 
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, layout, title)
-    drawRows(theme, layout, rows, selected, scroll, game)
+    runtime.drawHeader(theme, layout, title)
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
     if footer > 0 then
       setColor(theme.colors.divider)
       love.graphics.rectangle("fill", px + spacing.lg,
         py + panelH - footer, panelW - spacing.lg * 2,
-        themeMetric(theme, "divider", 1))
+        runtime.themeMetric(theme, "divider", 1))
       setColor(theme.colors.textMuted)
-      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+      runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - footer + spacing.xs, panelW - spacing.lg * 2)
     end
   end
 
-  local function drawManagerTabs(theme, layout, state)
+  runtime.drawManagerTabs = function(theme, layout, state)
     if state.screen ~= "list" then return end
     local labels = { "MODS", "PROFILES", "ERRORS" }
     local active = state.tab or 1
@@ -4907,7 +5118,7 @@ return function(mod)
       if i ~= active then
         action = ((active % #labels) + 1 == i) and "right" or "left"
       end
-      registerPointerRegion(x - theme.spacing.xs, y - theme.spacing.xs,
+      runtime.registerPointerRegion(x - theme.spacing.xs, y - theme.spacing.xs,
         textWidth + theme.spacing.sm, textHeight(love.graphics.getFont())
           + theme.spacing.sm, {
           role = "control", action = action, interactive = true,
@@ -4920,7 +5131,7 @@ return function(mod)
     love.graphics.setFont(font(fontCache, theme.typography.body))
   end
 
-  local function drawManagerSubtitle(theme, layout, state)
+  runtime.drawManagerSubtitle = function(theme, layout, state)
     local subtitle
     if state.screen == "detail" and state.currentMod then
       local m = state.currentMod
@@ -4949,13 +5160,13 @@ return function(mod)
     end
   end
 
-  local function drawManagerOverlay(theme, layout, state, viewport)
+  runtime.drawManagerOverlay = function(theme, layout, state, viewport)
     local overlay = state.overlay
     if not overlay then return end
-    drawPresenterBackdrop(theme, viewport)
-    drawModalScrim(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
+    runtime.drawModalScrim(theme, viewport)
     local vx, vy, vw, vh = presenterRect(viewport)
-    registerPointerRegion(vx, vy, vw, vh, {
+    runtime.registerPointerRegion(vx, vy, vw, vh, {
       role = "scrim", modalBlocker = true, interactive = true,
       dragHandle = false,
     })
@@ -4967,7 +5178,7 @@ return function(mod)
         (overlay.kind == "confirm" and 3 or 1)))
     local mx = layout.x + (layout.w - modalW) / 2
     local my = layout.y + (layout.h - modalH) / 2
-    registerPointerRegion(mx, my, modalW, modalH, {
+    runtime.registerPointerRegion(mx, my, modalW, modalH, {
       role = "modal", modalOwner = overlay,
       activate = overlay.kind == "ok", interactive = true,
       dragHandle = false,
@@ -4975,7 +5186,7 @@ return function(mod)
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
-    drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
+    runtime.drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
     love.graphics.setFont(font(fontCache, theme.typography.body))
     for i, line in ipairs(lines) do
       setColor(theme.colors.text)
@@ -4990,12 +5201,12 @@ return function(mod)
       local yesW = math.max(love.graphics.getFont():getWidth("YES") +
         theme.spacing.md * 2, noX - yesX - theme.spacing.sm)
       local noW = love.graphics.getFont():getWidth("NO") + theme.spacing.md * 2
-      registerPointerRegion(yesX - theme.spacing.sm, footerY - theme.spacing.sm,
+      runtime.registerPointerRegion(yesX - theme.spacing.sm, footerY - theme.spacing.sm,
         yesW, lineHeight + theme.spacing.sm * 2, {
           selectionState = overlay, selectionField = "index",
           selectionIndex = 1, activate = true, dragHandle = false,
         })
-      registerPointerRegion(noX - theme.spacing.sm, footerY - theme.spacing.sm,
+      runtime.registerPointerRegion(noX - theme.spacing.sm, footerY - theme.spacing.sm,
         noW, lineHeight + theme.spacing.sm * 2, {
           selectionState = overlay, selectionField = "index",
           selectionIndex = 2, activate = true, dragHandle = false,
@@ -5006,18 +5217,18 @@ return function(mod)
       drawText("NO", noX, footerY)
     else
       setColor(theme.colors.textMuted)
-      drawHintIfUseful(theme, "A / B  CLOSE", mx + theme.spacing.lg, footerY,
+      runtime.drawHintIfUseful(theme, "A / B  CLOSE", mx + theme.spacing.lg, footerY,
         modalW - theme.spacing.lg * 2)
     end
   end
 
-  local function drawManagerOptionHelp(theme, layout, state, viewport)
+  runtime.drawManagerOptionHelp = function(theme, layout, state, viewport)
     local help = state._gen1OptionDescription
     if not help then return end
-    drawPresenterBackdrop(theme, viewport)
-    drawModalScrim(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
+    runtime.drawModalScrim(theme, viewport)
     local vx, vy, vw, vh = presenterRect(viewport)
-    registerPointerRegion(vx, vy, vw, vh, {
+    runtime.registerPointerRegion(vx, vy, vw, vh, {
       role = "scrim", modalBlocker = true, interactive = true,
       dragHandle = false,
     })
@@ -5045,14 +5256,14 @@ return function(mod)
     modalH = math.min(layout.h - spacing.md * 2, modalH)
     local mx = layout.x + (layout.w - modalW) / 2
     local my = layout.y + (layout.h - modalH) / 2
-    registerPointerRegion(mx, my, modalW, modalH, {
+    runtime.registerPointerRegion(mx, my, modalW, modalH, {
       role = "modal", pointerCommand = "dismiss_help",
       interactive = true, dragHandle = false,
     })
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", mx, my, modalW, modalH,
       theme.radii.lg or 20)
-    drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
+    runtime.drawPanelAccent(theme, mx, my, modalW, theme.radii.lg or 20)
     love.graphics.setFont(titleFont)
     setColor(theme.colors.text)
     drawText(truncate(title, modalW - spacing.lg * 2),
@@ -5066,15 +5277,15 @@ return function(mod)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", mx + spacing.lg,
       my + modalH - footerH, modalW - spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
-    drawHintIfUseful(theme, "SELECT / A / B  CLOSE", mx + spacing.lg,
+    runtime.drawHintIfUseful(theme, "SELECT / A / B  CLOSE", mx + spacing.lg,
       my + modalH - footerH + spacing.xs, modalW - spacing.lg * 2)
   end
 
-  local function drawManager(game, state, viewport, theme)
+  runtime.drawManager = function(game, state, viewport, theme)
     local rows, selected, scroll, title = managerRowsFor(game, state)
-    local layout = layoutFor(viewport, theme, "mod_manager", rows, title,
+    local layout = runtime.layoutFor(viewport, theme, "mod_manager", rows, title,
       state.notice)
     -- The manager has a tab strip and (for detail/apply views) a status
     -- subtitle in addition to the normal title. Reserve that line before
@@ -5095,18 +5306,18 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h,
       layout.radius)
-    drawHeader(theme, layout, title)
-    drawManagerTabs(theme, layout, state)
-    drawManagerSubtitle(theme, layout, state)
-    drawRows(theme, layout, rows, selected, scroll, game)
+    runtime.drawHeader(theme, layout, title)
+    runtime.drawManagerTabs(theme, layout, state)
+    runtime.drawManagerSubtitle(theme, layout, state)
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
     local footer = state.notice
     if not footer and state.screen == "list" then
@@ -5128,27 +5339,27 @@ return function(mod)
     elseif not footer then
       footer = "A  choose   B  back"
     end
-    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
-    drawManagerOverlay(theme, layout, state, viewport)
-    drawManagerOptionHelp(theme, layout, state, viewport)
+    runtime.drawManagerOverlay(theme, layout, state, viewport)
+    runtime.drawManagerOptionHelp(theme, layout, state, viewport)
     love.graphics.pop()
   end
 
-  local function drawSummary(game, state, viewport, theme)
+  runtime.drawSummary = function(game, state, viewport, theme)
     love.graphics.push("all")
     love.graphics.origin()
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 780))
+      runtime.panelMaxWidth(theme, 780))
     -- Summary pages are data cards, not canvases. Keep their width near the
     -- amount of information they display so a large UI scale does not turn a
     -- six-row stat page into a huge empty rectangle.
-    local mon = summaryPokemon(state) or {}
-    local def = pokemonDefinition(game, mon.species)
+    local mon = runtime.summaryPokemon(state) or {}
+    local def = runtime.pokemonDefinition(game, mon.species)
     local name = safeText(mon.nickname or (def and def.name)
       or mon.species or "POKéMON")
     local isMovePage = state.page == 2
@@ -5162,7 +5373,7 @@ return function(mod)
       and spriteFor(game, mon, nil, "summary") or nil
     local page = isDvPage and "DVs / STAT EXP"
       or isMovePage and "MOVES / EXPERIENCE" or "STATUS / TRAINER DATA"
-    panelW = math.min(panelW, scaledPanelWidth(theme,
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme,
       isMovePage and 680 or 640))
     local compact = panelW < 620
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
@@ -5202,12 +5413,12 @@ return function(mod)
     local levelY = pageY + textHeight(bodyFont) + spacing.xs
     local hpY = levelY + lineGap
     local statusY = hpY + lineGap
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     love.graphics.setFont(bodyFont)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText(name, px + spacing.lg, py + spacing.md,
@@ -5230,14 +5441,14 @@ return function(mod)
     if not isMovePage and not isDvPage then
       local sprite = summarySprite
       if sprite then
-        local iw, ih = imageMetrics(sprite)
+        local iw, ih = runtime.imageMetrics(sprite)
         if iw and ih then
           local spriteSize = compact and math.min(112, panelW * 0.24) or 150
           local spriteX = px + spacing.lg
           local spriteY = statusY + lineGap * 2 + spacing.sm
           local scale = math.min(spriteSize / iw, spriteSize / ih)
           setColor({ 1, 1, 1, 1 })
-          drawImage(sprite, spriteX + (spriteSize - iw * scale) / 2,
+          runtime.drawImage(sprite, spriteX + (spriteSize - iw * scale) / 2,
             spriteY + (spriteSize - ih * scale) / 2, 0, scale, scale)
         end
       end
@@ -5354,7 +5565,7 @@ return function(mod)
     end
     setColor(theme.colors.textMuted)
     love.graphics.setFont(captionFont)
-    drawHintIfUseful(theme, "A / B  continue", px + spacing.lg,
+    runtime.drawHintIfUseful(theme, "A / B  continue", px + spacing.lg,
       py + panelH - spacing.lg - 14, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -5368,6 +5579,7 @@ return function(mod)
     local iconName
     local hasDescriptor = type(entry) == "table" and
       (entry.image or entry.texture or entry.path or entry.asset)
+    local trueColor = type(entry) == "table" and entry.trueColor == true
     if type(entry) == "table" and not hasDescriptor then
       entry = entry.image or entry.path
     end
@@ -5401,34 +5613,37 @@ return function(mod)
     -- 16x32 or 16x96; the vanilla renderer selects one 16px rest frame from
     -- those sheets, while replacement descriptors explicitly opt into their
     -- own animation contract.
-    local image = imageFor(entry)
+    local image = runtime.imageFor(entry)
     if not image then return nil end
-    -- Vanilla icon sheets are monochrome source art; apply the species' live
-    -- palette just as the native summary/party renderer does. Explicit icon
-    -- descriptors remain authored artwork and are left untouched.
-    paletteRuntime.setImage(image, not hasDescriptor
+    -- Icon descriptors are not automatically true-color art.  Mods such as
+    -- Unique Menu Icons commonly provide grayscale PNGs as `{ image = ... }`
+    -- descriptors, and those still need the active species palette.  Match
+    -- the host renderer's contract: only an explicit `trueColor = true`
+    -- descriptor opts out of palette remapping.
+    trueColor = trueColor or (type(entry) == "table" and entry.trueColor == true)
+    paletteRuntime.setImage(image, not trueColor
       and paletteRuntime.pokemon(game, mon and mon.species) or nil)
-    local followerSheet = knownSheetOptions(originalEntry or entry, image, 0)
-    if followerSheet then image = markAnimated(image, followerSheet) end
+    local followerSheet = runtime.knownSheetOptions(originalEntry or entry, image, 0)
+    if followerSheet then image = runtime.markAnimated(image, followerSheet) end
     if hasDescriptor then
       return image
     end
     if replaced then
-      return markAnimated(image, { animated = true, frames = 2,
+      return runtime.markAnimated(image, { animated = true, frames = 2,
         detectSheet = true })
     end
     if iconName then
       local okW, width = pcall(function() return image:getWidth() end)
       local okH, height = pcall(function() return image:getHeight() end)
       if okW and okH and width == 16 and height >= 32 and height % 16 == 0 then
-        return markAnimated(image, { animated = true,
+        return runtime.markAnimated(image, { animated = true,
           frames = height / 16, staticFrame = 0 })
       end
     end
     return image
   end
 
-  local function resolvedSpritePath(game, mon, side, kind, fallback)
+  runtime.resolvedSpritePath = function(game, mon, side, kind, fallback)
     local species = mon and mon.species
     local def = species and game.data and game.data.pokemon and
       game.data.pokemon[species]
@@ -5462,80 +5677,84 @@ return function(mod)
 
   spriteFor = function(game, mon, fallback, kind)
     local candidate = mon and imageCandidate(mon)
-    local image = imageFor(candidate)
+    local image = runtime.imageFor(candidate)
     if image then
-      local sheet = knownSheetOptions(candidate, image, nil)
-      if sheet then image = markAnimated(image, sheet) end
-      paletteRuntime.setImage(image, type(candidate) ~= "table"
+      local sheet = runtime.knownSheetOptions(candidate, image, nil)
+      if sheet then image = runtime.markAnimated(image, sheet) end
+      local trueColor = type(candidate) == "table"
+        and candidate.trueColor == true
+      paletteRuntime.setImage(image, not trueColor
         and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
     local fallbackPath = type(fallback) == "string" and fallback or nil
-    local path, _, trueColor = resolvedSpritePath(game, mon, "front", kind,
+    local path, _, trueColor = runtime.resolvedSpritePath(game, mon, "front", kind,
       fallbackPath)
     -- Battle sprite replacement assets are complete single-frame pictures by
     -- default (including Gold/Silver packs). Only an explicit image
     -- descriptor with `frames` opts into sheet animation.
-    image = imageFor(path)
-    local sheet = image and knownSheetOptions(path, image, nil)
-    if sheet then image = markAnimated(image, sheet) end
+    image = runtime.imageFor(path)
+    local sheet = image and runtime.knownSheetOptions(path, image, nil)
+    if sheet then image = runtime.markAnimated(image, sheet) end
     if image then
       paletteRuntime.setImage(image, not trueColor
         and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
-    image = imageFor(fallback)
+    image = runtime.imageFor(fallback)
     paletteRuntime.setImage(image, paletteRuntime.pokemon(game, mon and mon.species))
     return image
   end
 
-  local function spriteForSide(game, mon, side, fallback, kind)
+  runtime.spriteForSide = function(game, mon, side, fallback, kind)
     local candidate = mon and imageCandidate(mon)
-    local image = imageFor(candidate)
+    local image = runtime.imageFor(candidate)
     if image then
-      local sheet = knownSheetOptions(candidate, image, nil)
-      if sheet then image = markAnimated(image, sheet) end
-      paletteRuntime.setImage(image, type(candidate) ~= "table"
+      local sheet = runtime.knownSheetOptions(candidate, image, nil)
+      if sheet then image = runtime.markAnimated(image, sheet) end
+      local trueColor = type(candidate) == "table"
+        and candidate.trueColor == true
+      paletteRuntime.setImage(image, not trueColor
         and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
     local fallbackPath = type(fallback) == "string" and fallback or nil
-    local path, _, trueColor = resolvedSpritePath(game, mon, side, kind,
+    local path, _, trueColor = runtime.resolvedSpritePath(game, mon, side, kind,
       fallbackPath)
     -- `pokemon.sprite` paths are authored battle pictures, not animation
     -- sheets. Explicit descriptors can still request frame cropping.
-    image = imageFor(path)
-    local sheet = image and knownSheetOptions(path, image, nil)
-    if sheet then image = markAnimated(image, sheet) end
+    image = runtime.imageFor(path)
+    local sheet = image and runtime.knownSheetOptions(path, image, nil)
+    if sheet then image = runtime.markAnimated(image, sheet) end
     if image then
       paletteRuntime.setImage(image, not trueColor
         and paletteRuntime.pokemon(game, mon and mon.species) or nil)
       return image
     end
-    image = imageFor(fallback)
+    image = runtime.imageFor(fallback)
     paletteRuntime.setImage(image, paletteRuntime.pokemon(game, mon and mon.species))
     return image
   end
 
-  local function drawTrainerCard(game, state, viewport, theme)
+  runtime.drawTrainerCard = function(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 860))
+      runtime.panelMaxWidth(theme, 860))
     local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.15, 500, 640))
+      runtime.scaledPanelHeight(theme, w > h * 1.15, 500, 640))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local landscape = panelW > panelH * 1.15
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     local headerLayout = { x = px, y = py, w = panelW, h = panelH,
       radius = theme.radii.md }
-    drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
+    runtime.drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
 
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
@@ -5550,9 +5769,9 @@ return function(mod)
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", portraitX, portraitY, portraitSize, portraitSize,
       theme.radii.sm)
-    local portrait = prepareImage(state.pic)
+    local portrait = runtime.prepareImage(state.pic)
     if portrait then
-      drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
+      runtime.drawImageFit(portrait, portraitX + spacing.sm, portraitY + spacing.sm,
         portraitSize - spacing.sm * 2, portraitSize - spacing.sm * 2)
     end
 
@@ -5628,23 +5847,32 @@ return function(mod)
       love.graphics.rectangle("line", cx + 0.5, cy + 0.5,
         cellW - 1, cellH - 1, theme.radii.sm)
 
-      local icon = imageFor(badge.icon or badge.image)
+      local icon = runtime.imageFor(badge.icon or badge.image)
       local artSize = math.max(20, math.min(cellH - spacing.sm * 2, cellW * 0.34))
       if icon then
-        drawImageFit(icon, cx + spacing.sm, cy + (cellH - artSize) / 2,
+        runtime.drawImageFit(icon, cx + spacing.sm, cy + (cellH - artSize) / 2,
           artSize, artSize)
       else
         local sheet = owned and state.badges or state.faces
         local quad = sheet and sheet.quads and sheet.quads[index - 1]
         if sheet and sheet.img and quad then
-          local image = prepareImage(sheet.img)
+          local image = runtime.prepareImage(sheet.img)
           local ok, qx, qy, qw, qh = pcall(quad.getViewport, quad)
           if ok and qw and qh then
             local scale = math.min(artSize / qw, artSize / qh)
+            local drawW, drawH = qw * scale, qh * scale
+            local drawX = cx + spacing.sm + (artSize - drawW) / 2
+            local drawY = cy + (cellH - drawH) / 2
+            -- The vanilla sheet deliberately uses transparent pixels for
+            -- its white paper. That is harmless on the original white card,
+            -- but a dark theme otherwise shows through faces and badge
+            -- highlights. Restore the source paper behind this quad only;
+            -- unrelated portraits keep their authored transparency.
             setColor({ 1, 1, 1, 1 })
-            love.graphics.draw(image, quad,
-              cx + spacing.sm + (artSize - qw * scale) / 2,
-              cy + (cellH - qh * scale) / 2, 0, scale, scale)
+            love.graphics.rectangle("fill", math.floor(drawX),
+              math.floor(drawY), math.ceil(drawW), math.ceil(drawH))
+            setColor({ 1, 1, 1, 1 })
+            love.graphics.draw(image, quad, drawX, drawY, 0, scale, scale)
           end
         else
           setColor(owned and colors.accent or colors.divider)
@@ -5666,16 +5894,16 @@ return function(mod)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
     setColor(colors.textMuted)
-    drawHintIfUseful(theme, Strings("A / B  back"), px + spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings("A / B  back"), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function selectedListRow(rows, selected)
+  runtime.selectedListRow = function(rows, selected)
     return rows and rows[clamp(selected or 1, 1, math.max(1, #rows))]
   end
 
-  local function maxMovePP(move, moveDef)
+  runtime.maxMovePP = function(move, moveDef)
     if not (move and moveDef) then return 0 end
     local base = tonumber(moveDef.pp) or 0
     return base + (tonumber(move.ppUps) or 0) * math.floor(base / 5)
@@ -5684,7 +5912,7 @@ return function(mod)
   -- Imported box_struct records intentionally omit their calculated stat
   -- block. Derive a temporary display copy for Bill's PC without calling
   -- Stats.ensure (which would mutate the save merely because UI was drawn).
-  local function displayStats(game, mon, derive)
+  runtime.displayStats = function(game, mon, derive)
     if type(mon) ~= "table" then return {} end
     if type(mon.stats) == "table" then return mon.stats end
     local def = derive and game.data and game.data.pokemon
@@ -5699,16 +5927,17 @@ return function(mod)
     return {}
   end
 
-  local function monDisplayRows(game, mons, state, deriveStats)
+  runtime.monDisplayRows = function(game, mons, state, deriveStats)
     local rows = {}
     for index, mon in ipairs(mons or {}) do
       local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
-      local stats = displayStats(game, mon, deriveStats)
+      local stats = runtime.displayStats(game, mon, deriveStats)
       local maxHP = stats.hp
       local shownHP = state and state.heal and state.heal.mon == mon
         and math.floor(state.heal.shown or state.heal.from or mon.hp or 0)
         or math.min(tonumber(mon.hp) or maxHP or 0, maxHP or math.huge)
       local status = shownHP <= 0 and "FNT" or mon.status
+      local statusText = status and status ~= "" and safeText(status) or ""
       local value
       if state and state.tmhm and state.tmhm.move then
         local able = false
@@ -5719,11 +5948,10 @@ return function(mod)
       else
         value = (mon.level and ("Lv %d"):format(mon.level) or "")
           .. (maxHP and ("  %d/%d"):format(shownHP, maxHP) or "")
-          .. (status and status ~= "" and ("  " .. safeText(status)) or "")
       end
       rows[#rows + 1] = {
         label = mon.nickname or (def and def.name) or mon.species or "POKéMON",
-        value = value, source = mon,
+        value = value, status = statusText, source = mon,
         marker = state and (state.swapFrom == index
           or state.softboiledFrom == index) or false,
       }
@@ -5740,8 +5968,8 @@ return function(mod)
   -- and the native StartMenu continues to own every transition.
   function mod._gen1ModernSpecialPresenters.drawStartMenuQuickView(
       game, state, viewport, theme, menuLayout)
-    if option("startMenuQuickView", false) ~= true
-        or layoutStyle(viewport) == "full"
+    if runtime.option("startMenuQuickView", false) ~= true
+        or runtime.layoutStyle(viewport) == "full"
         or not (state and state.screenId == "StartMenu" and menuLayout) then
       return
     end
@@ -5760,7 +5988,7 @@ return function(mod)
     local bodyFont = font(fontCache, theme.typography.body)
     local titleFont = font(fontCache, theme.typography.title)
     local captionFont = font(fontCache, theme.typography.caption)
-    local rowH = math.max(minimumRowHeight(theme) * 0.78,
+    local rowH = math.max(runtime.minimumRowHeight(theme) * 0.78,
       textHeight(bodyFont) + spacing.sm)
     local headerH = textHeight(titleFont) + spacing.md + spacing.sm
     local maxH = math.max(1, h - spacing.lg * 2)
@@ -5774,13 +6002,13 @@ return function(mod)
     local layout = { x = panelX, y = panelY, w = panelW, h = panelH,
       radius = theme.radii.md }
 
-    drawHeader(theme, layout, Strings("PARTY"))
+    runtime.drawHeader(theme, layout, Strings("PARTY"))
     local valueFont = bodyFont
     love.graphics.setFont(bodyFont)
     for index = 1, visible do
       local mon = party[index]
       local def = game.data and game.data.pokemon and game.data.pokemon[mon.species]
-      local stats = displayStats(game, mon, true)
+      local stats = runtime.displayStats(game, mon, true)
       local maxHP = tonumber(stats.hp) or tonumber(mon.maxHp) or 0
       local currentHP = tonumber(mon.hp)
       if currentHP == nil then currentHP = maxHP end
@@ -5815,7 +6043,7 @@ return function(mod)
     end
   end
 
-  local function healthPalette(theme)
+  runtime.healthPalette = function(theme)
     local colors = theme.colors or {}
     local health = colors.health or {}
     return {
@@ -5827,27 +6055,27 @@ return function(mod)
     }
   end
 
-  local function healthFillColor(theme, ratio)
-    local palette = healthPalette(theme)
+  runtime.healthFillColor = function(theme, ratio)
+    local palette = runtime.healthPalette(theme)
     if ratio <= 0.05 then return palette.critical end
     if ratio <= 0.20 then return palette.low end
     if ratio <= 0.50 then return palette.medium end
     return palette.high
   end
 
-  local function drawHPBar(theme, x, y, w, hp, maxHP)
+  runtime.drawHPBar = function(theme, x, y, w, hp, maxHP)
     maxHP = math.max(1, tonumber(maxHP) or 1)
     local ratio = clamp((tonumber(hp) or 0) / maxHP, 0, 1)
-    setColor(healthPalette(theme).track)
+    setColor(runtime.healthPalette(theme).track)
     love.graphics.rectangle("fill", x, y, w, 8, 4)
-    setColor(healthFillColor(theme, ratio))
+    setColor(runtime.healthFillColor(theme, ratio))
     love.graphics.rectangle("fill", x, y, math.max(0, w * ratio), 8, 4)
   end
 
   -- Shared selected-Pokémon detail card for Party and Bill's PC. All data is
   -- read from the current Pokémon/species/move records so total conversions,
   -- sprite packs, added moves, and live party copies remain authoritative.
-  local function drawMonDetail(game, mon, x, y, w, h, theme, context)
+  runtime.drawMonDetail = function(game, mon, x, y, w, h, theme, context)
     local spacing, colors = theme.spacing, theme.colors
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm)
@@ -5870,7 +6098,7 @@ return function(mod)
       h * (compact and 0.42 or 0.48), w * 0.30))
     local artX, artY = x + spacing.md, y + spacing.md
     local sprite = spriteFor(game, mon, def.spriteFront, context or "party")
-    if sprite then drawImageFit(sprite, artX, artY, artSize, artSize) end
+    if sprite then runtime.drawImageFit(sprite, artX, artY, artSize, artSize) end
     local infoX = artX + artSize + spacing.md
     local infoW = math.max(32, x + w - spacing.md - infoX)
     love.graphics.setFont(titleFont)
@@ -5881,18 +6109,18 @@ return function(mod)
     local speciesName = def.name and def.name ~= name and def.name or nil
     local level = mon.level and ("Lv %d"):format(mon.level) or ""
     local types = {}
-    for _, value in ipairs(def.types or {}) do types[#types + 1] = displayType(value) end
+    for _, value in ipairs(def.types or {}) do types[#types + 1] = runtime.displayType(value) end
     drawFittedText(table.concat({ level, speciesName or "",
       table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoX,
       y + spacing.md + textHeight(titleFont) + spacing.xs, infoW, captionFont)
-    local stats = displayStats(game, mon, context == "box")
+    local stats = runtime.displayStats(game, mon, context == "box")
     local maxHP = stats.hp
     local shownHP = math.min(tonumber(mon.hp) or maxHP or 0,
       maxHP or math.huge)
     if maxHP then
       local barY = y + spacing.md + textHeight(titleFont)
         + textHeight(captionFont) + spacing.md
-      drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
+      runtime.drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
       drawFittedText(("HP %d/%d%s"):format(shownHP, maxHP,
         mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12,
         infoW, captionFont)
@@ -5925,7 +6153,7 @@ return function(mod)
       local moveDef = move and game.data and game.data.moves and game.data.moves[move.id]
       local moveName = moveDef and moveDef.name or move and move.id or "—"
       local pp = move and moveDef and ("PP %d/%d"):format(move.pp or 0,
-        maxMovePP(move, moveDef)) or ""
+        runtime.maxMovePP(move, moveDef)) or ""
       setColor(colors.text)
       setColor(colors.textMuted)
       local ppWidth = bodyFont:getWidth(pp)
@@ -5946,29 +6174,29 @@ return function(mod)
     end
   end
 
-  local function drawParty(game, state, viewport, theme)
+  runtime.drawParty = function(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local party = state.party or (game.save and game.save.party) or {}
-    local rows = monDisplayRows(game, party, state)
+    local rows = runtime.monDisplayRows(game, party, state)
     local selected = clamp(state.index or 1, 1, math.max(1, #party))
-    local minimal = option("minimalUi", false) == true
+    local minimal = runtime.option("minimalUi", false) == true
     local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
       or Strings("POKéMON  %d", #party)
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 980))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
+      runtime.panelMaxWidth(theme, 980))
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
     if minimal then
       local footer = Strings("A  choose   B  back")
-      panelW = math.min(panelW, contentWidthFor(theme, rows, partyTitle,
+      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, partyTitle,
         footer, math.min(250, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 680), w - gutter * 2)))
+        math.min(runtime.scaledPanelWidth(theme, 680), w - gutter * 2)))
     end
     local landscape = w > h * 1.20
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 6))
     local desiredListH = desiredRows * rowHeight
     local detailBody = font(fontCache, theme.typography.body)
@@ -5990,7 +6218,7 @@ return function(mod)
     local listY = contentY + (detailH > 0 and detailH + spacing.sm or 0)
     local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
     local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
-    rowHeight = math.max(minimumRowHeight(theme),
+    rowHeight = math.max(runtime.minimumRowHeight(theme),
       math.min(theme.density.rowHeight,
         math.max(38, listH / math.max(1, #rows))))
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
@@ -6000,21 +6228,21 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
       partyTitle)
     local listLayout = { x = listX, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false,
-      pointerSelectionField = "index" }
-    drawRows(theme, listLayout, rows, selected, scroll, game)
+      pointerSelectionField = "index", statusColumn = true }
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     if detailW > 0 then
-      drawMonDetail(game, party[selected], px + panelW - detailW,
+      runtime.drawMonDetail(game, party[selected], px + panelW - detailW,
         contentY, detailW, contentH, theme, "party")
     elseif detailH > 0 then
-      drawMonDetail(game, party[selected], px + spacing.sm, contentY,
+      runtime.drawMonDetail(game, party[selected], px + spacing.sm, contentY,
         panelW - spacing.sm * 2, detailH, theme, "party")
     end
     setColor(colors.divider)
@@ -6025,16 +6253,16 @@ return function(mod)
       local ok, result = pcall(state.bottomMessage, state)
       if ok then footer = result end
     end
-    drawHintIfUseful(theme, footer or Strings("A  choose   B  back"), px + spacing.lg,
+    runtime.drawHintIfUseful(theme, footer or Strings("A  choose   B  back"), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
 
     -- PartyMenu owns its injected action list internally rather than pushing
     -- another state. Draw those exact live rows as a visual modal; callbacks,
     -- selection, and cancellation remain with PartyMenu.
     if state.submenu and type(state.subItems) == "table" then
-      drawModalScrim(theme, viewport)
+      runtime.drawModalScrim(theme, viewport)
       local vx, vy, vw, vh = presenterRect(viewport)
-      registerPointerRegion(vx, vy, vw, vh, {
+      runtime.registerPointerRegion(vx, vy, vw, vh, {
         role = "scrim", modalBlocker = true, interactive = true,
         dragHandle = false,
       })
@@ -6051,7 +6279,7 @@ return function(mod)
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", ax, ay, actionW, actionH, theme.radii.md)
       if pointerDrawContext then pointerDrawContext.modalOwner = state.submenu end
-      drawHeader(theme, { x = ax, y = ay, w = actionW, h = actionH, radius = theme.radii.md },
+      runtime.drawHeader(theme, { x = ax, y = ay, w = actionW, h = actionH, radius = theme.radii.md },
         Strings("POKéMON ACTIONS"), colors.surfaceRaised)
       local actionVisible = math.max(1, math.min(#actionRows,
         math.floor((actionH - actionHeader) / actionRowH)))
@@ -6059,7 +6287,7 @@ return function(mod)
         math.max(1, #actionRows))
       local actionScroll = clamp(actionSelected - actionVisible, 0,
         math.max(0, #actionRows - actionVisible))
-      drawRows(theme, { x = ax, y = ay, w = actionW, h = actionH,
+      runtime.drawRows(theme, { x = ax, y = ay, w = actionW, h = actionH,
         rowHeight = actionRowH, header = actionHeader,
         footer = 0, visible = actionVisible, radius = theme.radii.sm,
         pointerSelectionField = "subIndex" },
@@ -6069,28 +6297,28 @@ return function(mod)
     love.graphics.pop()
   end
 
-  local function drawBoxPokemonList(game, state, viewport, theme)
-    local mons, action = boxPokemonList(state)
+  runtime.drawBoxPokemonList = function(game, state, viewport, theme)
+    local mons, action = runtime.boxPokemonList(state)
     if not mons then return end
-    local rows = monDisplayRows(game, mons, nil, true)
+    local rows = runtime.monDisplayRows(game, mons, nil, true)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
-    local minimal = option("minimalUi", false) == true
+    local minimal = runtime.option("minimalUi", false) == true
     local boxTitle = state.title or Strings("PC BOX")
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 980))
+      runtime.panelMaxWidth(theme, 980))
     if minimal then
       local footer = action == "RELEASE" and "A  release    B  back"
         or Strings("A  %s / stats    B  back", (action or "choose"):lower())
-      panelW = math.min(panelW, contentWidthFor(theme, rows, boxTitle,
+      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, boxTitle,
         footer, math.min(250, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
+        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
     end
     local compactH = theme.typography.title + theme.typography.caption
-      + math.min(#rows, 6) * minimumRowHeight(theme)
+      + math.min(#rows, 6) * runtime.minimumRowHeight(theme)
       + spacing.lg * 3
-    local richH = scaledPanelHeight(theme, w > h * 1.20, 520, 640)
+    local richH = runtime.scaledPanelHeight(theme, w > h * 1.20, 520, 640)
     local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     if minimal then
@@ -6106,17 +6334,17 @@ return function(mod)
     local listW = panelW - (detailW > 0 and detailW + spacing.sm or 0)
     local listH = math.max(1, contentH - (detailH > 0 and detailH + spacing.sm or 0))
     local selected = clamp(state.index or 1, 1, math.max(1, #mons))
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local visible = math.max(1, math.min(#rows, math.floor(listH / rowHeight)))
     local scroll = clamp(state.scroll or 0, 0, math.max(0, #rows - visible))
     if selected <= scroll then scroll = selected - 1 end
     if selected > scroll + visible then scroll = selected - visible end
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md },
       boxTitle)
     local save = game.save or {}
     local box = save.boxes and save.boxes[save.currentBox or 1] or {}
@@ -6132,14 +6360,14 @@ return function(mod)
       drawText(context, px + panelW - spacing.lg - contextW,
         py + spacing.md + 5)
     end
-    drawRows(theme, { x = px, y = listY, w = listW, h = listH,
+    runtime.drawRows(theme, { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm }, rows, selected, scroll, game)
     if detailW > 0 then
-      drawMonDetail(game, mons[selected], px + panelW - detailW,
+      runtime.drawMonDetail(game, mons[selected], px + panelW - detailW,
         contentY, detailW, contentH, theme, "box")
     elseif detailH > 0 then
-      drawMonDetail(game, mons[selected], px + spacing.sm, contentY,
+      runtime.drawMonDetail(game, mons[selected], px + spacing.sm, contentY,
         panelW - spacing.sm * 2, detailH, theme, "box")
     end
     setColor(colors.divider)
@@ -6147,26 +6375,26 @@ return function(mod)
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
     local hint = action == "RELEASE" and "A  release    B  back"
       or Strings("A  %s / stats    B  back", (action or "choose"):lower())
-    drawHintIfUseful(theme, hint,
+    runtime.drawHintIfUseful(theme, hint,
       px + spacing.lg, py + panelH - footerH + spacing.xs,
       panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function drawPokedex(game, state, viewport, theme)
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, "pokedex")
+  runtime.drawPokedex = function(game, state, viewport, theme)
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, "pokedex")
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 920))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
+      runtime.panelMaxWidth(theme, 920))
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
     local landscape = w > h * 1.05
     local headerH = theme.typography.title + spacing.lg
     local footerH = landscape and (theme.typography.caption + spacing.lg)
       or (theme.typography.caption * 2 + spacing.lg + spacing.xs)
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 6))
     local desiredListH = desiredRows * rowHeight
     local previewBody = font(fontCache, theme.typography.body)
@@ -6192,17 +6420,17 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     local previewX = landscape and (px + panelW - previewW) or px
     local previewY = py + headerH
     setColor(colors.surfaceRaised)
     love.graphics.rectangle("fill", previewX + spacing.sm, previewY,
       previewW - spacing.sm * 2, previewH, theme.radii.sm)
-    local row = selectedListRow(rows, selected)
+    local row = runtime.selectedListRow(rows, selected)
     local source = row and row.source
     local species = source and source.value
     local def = species and game.data and game.data.pokemon and game.data.pokemon[species]
@@ -6212,7 +6440,7 @@ return function(mod)
         previewH * 0.50) or math.min(previewH - spacing.md * 2, previewW * 0.24)
       local artX = previewX + spacing.lg
       local artY = previewY + spacing.md
-      if sprite then drawImageFit(sprite, artX, artY, artSize, artSize) end
+      if sprite then runtime.drawImageFit(sprite, artX, artY, artSize, artSize) end
       local infoX = landscape and (previewX + spacing.lg)
         or (artX + artSize + spacing.lg)
       local infoY = landscape and (artY + artSize + spacing.sm) or (previewY + spacing.md)
@@ -6230,7 +6458,7 @@ return function(mod)
         previewX + previewW - spacing.lg - infoX, previewCaption)
       local types = def.types or {}
       local typeNames = {}
-      for _, value in ipairs(types) do typeNames[#typeNames + 1] = displayType(value) end
+      for _, value in ipairs(types) do typeNames[#typeNames + 1] = runtime.displayType(value) end
       drawFittedText(table.concat(typeNames, " / "), infoX,
         infoY + theme.typography.body + theme.typography.caption + spacing.sm,
         previewX + previewW - spacing.lg - infoX, previewCaption)
@@ -6250,7 +6478,7 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
-    drawRows(theme, listLayout, rows, selected, scroll, game)
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
@@ -6261,21 +6489,21 @@ return function(mod)
       .. "A  options   B  back"
     if landscape then
       if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
-      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+      runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     else
       if footerText and footerText ~= "" then
-        drawHintIfUseful(theme, footerText, px + spacing.lg,
+        runtime.drawHintIfUseful(theme, footerText, px + spacing.lg,
           py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
       end
-      drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+      runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
         py + panelH - footerH + spacing.xs + theme.typography.caption + spacing.xs,
         panelW - spacing.lg * 2)
     end
     love.graphics.pop()
   end
 
-  local function itemValueText(itemId, def)
+  runtime.itemValueText = function(itemId, def)
     if not def or def.price == nil then return nil end
     local base = math.max(0, math.floor(tonumber(def.price) or 0))
     local unsellable = def.keyItem == true
@@ -6285,46 +6513,46 @@ return function(mod)
     return Strings("BASE ¥%d   SELL %s", base, sell)
   end
 
-  local function drawBag(game, state, viewport, theme)
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, "bag")
+  runtime.drawBag = function(game, state, viewport, theme)
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, "bag")
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 900))
-    local minimalBag = option("minimalUi", false) == true
+      runtime.panelMaxWidth(theme, 900))
+    local minimalBag = runtime.option("minimalUi", false) == true
     local landscape = w > h * 1.05
     if minimalBag then
-      panelW = math.min(panelW, contentWidthFor(theme, rows, title,
+      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, title,
         footerText or "A  use   B  back", math.min(250, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
+        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
     else
-      local listBudget = contentWidthFor(theme, rows, title,
+      local listBudget = runtime.contentWidthFor(theme, rows, title,
         footerText or "A  use   B  back", math.min(300, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 560), w - gutter * 2))
+        math.min(runtime.scaledPanelWidth(theme, 560), w - gutter * 2))
       local detailBudget = landscape
-        and math.min(scaledPanelWidth(theme, 360), w - gutter * 2) or 0
+        and math.min(runtime.scaledPanelWidth(theme, 360), w - gutter * 2) or 0
       panelW = math.min(panelW, listBudget + detailBudget
         + (detailBudget > 0 and spacing.sm or 0))
     end
     local headerH = theme.typography.title + spacing.lg
     local footerH = theme.typography.caption + spacing.lg
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 7))
     local desiredListH = desiredRows * rowHeight
     local detailMinH = math.max(160,
       theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
     local detailW = minimalBag and 0
-      or landscape and math.min(panelW * 0.44, scaledPanelWidth(theme, 360))
+      or landscape and math.min(panelW * 0.44, runtime.scaledPanelWidth(theme, 360))
       or panelW
     local previewSelected = clamp(selected or 1, 1, math.max(1, #rows))
-    local previewRow = selectedListRow(rows, previewSelected)
+    local previewRow = runtime.selectedListRow(rows, previewSelected)
     local previewSource = previewRow and previewRow.source
     local previewItemId = previewSource and previewSource.value
     local previewDef = previewItemId and game.data and game.data.items
       and game.data.items[previewItemId]
-    local previewIcon = imageFor(imageCandidate(previewSource)
+    local previewIcon = runtime.imageFor(imageCandidate(previewSource)
       or imageCandidate(previewDef))
     local previewIconSize = previewIcon and 64 or 0
     local previewCardW = detailW > 0 and detailW or panelW
@@ -6349,7 +6577,7 @@ return function(mod)
           countDetail(Strings("TYPE %s   PP %s", move.type or "â€”", move.pp or "â€”"))
         end
       end
-      countDetail(itemValueText(previewItemId, previewDef))
+      countDetail(runtime.itemValueText(previewItemId, previewDef))
     elseif previewDef and previewDef.machine then
       local move = game.data.moves and game.data.moves[previewDef.machine.move]
       countDetail(Strings("%s  %s", previewDef.machine.kind or "TM",
@@ -6357,13 +6585,13 @@ return function(mod)
       if move then
         countDetail(Strings("TYPE %s   PP %s", move.type or "â€”", move.pp or "â€”"))
       end
-      countDetail(itemValueText(previewItemId, previewDef))
+      countDetail(runtime.itemValueText(previewItemId, previewDef))
     elseif previewDef then
       if previewDef.keyItem then
         countDetail(Strings("KEY ITEM"))
-        countDetail(itemValueText(previewItemId, previewDef))
+        countDetail(runtime.itemValueText(previewItemId, previewDef))
       else
-        countDetail(itemValueText(previewItemId, previewDef) or Strings("ITEM"))
+        countDetail(runtime.itemValueText(previewItemId, previewDef) or Strings("ITEM"))
       end
       countDetail(previewDef.description or previewDef.desc or previewDef.effectText)
     else
@@ -6398,10 +6626,10 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     if detailW > 0 and detailH > 0 then
       wrapFittedText = true
@@ -6410,16 +6638,16 @@ return function(mod)
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", detailX + spacing.sm, detailY,
         detailW - spacing.sm * 2, detailH, theme.radii.sm)
-      local row = selectedListRow(rows, selected)
+      local row = runtime.selectedListRow(rows, selected)
       local source = row and row.source
       local itemId = source and source.value
       local def = itemId and game.data and game.data.items and game.data.items[itemId]
       local itemName = row and row.label or Strings("ITEM")
-      local icon = imageFor(imageCandidate(source) or imageCandidate(def))
+      local icon = runtime.imageFor(imageCandidate(source) or imageCandidate(def))
       local iconSize = icon and math.min(64, detailH - spacing.md * 2) or 0
       local infoX = detailX + spacing.lg
       if icon then
-        drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
+        runtime.drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
         infoX = infoX + iconSize + spacing.md
       end
       love.graphics.setFont(font(fontCache, theme.typography.body))
@@ -6443,7 +6671,7 @@ return function(mod)
             detailMax, detailFont)
         end
       end
-      local value = itemValueText(itemId, def)
+      local value = runtime.itemValueText(itemId, def)
       if value then
         drawFittedText(value, infoX,
           infoY + (theme.typography.caption + spacing.xs) * 2,
@@ -6459,7 +6687,7 @@ return function(mod)
           infoX, infoY + theme.typography.caption + spacing.xs,
           detailMax, detailFont)
       end
-      local value = itemValueText(itemId, def)
+      local value = runtime.itemValueText(itemId, def)
       if value then
         drawFittedText(value, infoX,
           infoY + (theme.typography.caption + spacing.xs) * 2,
@@ -6469,13 +6697,13 @@ return function(mod)
       local descriptionY = infoY + theme.typography.caption + spacing.xs
       if def.keyItem then
         drawFittedText(Strings("KEY ITEM"), infoX, infoY, detailMax, detailFont)
-        local value = itemValueText(itemId, def)
+        local value = runtime.itemValueText(itemId, def)
         if value then
           drawFittedText(value, infoX, descriptionY, detailMax, detailFont)
           descriptionY = descriptionY + theme.typography.caption + spacing.xs
         end
       else
-        drawFittedText(itemValueText(itemId, def) or Strings("ITEM"),
+        drawFittedText(runtime.itemValueText(itemId, def) or Strings("ITEM"),
           infoX, infoY, detailMax, detailFont)
       end
       local description = def.description or def.desc or def.effectText
@@ -6491,7 +6719,7 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
-    drawRows(theme, listLayout, rows, selected, scroll, game)
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2, 1)
@@ -6501,51 +6729,51 @@ return function(mod)
       and "LEFT/RIGHT  pocket   A  use   B  back"
       or "A  use   SELECT  move   B  back"
     if footerText and footerText ~= "" then hint = footerText .. "    " .. hint end
-    drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
       py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function drawContextList(game, state, kind, viewport, theme)
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
+  runtime.drawContextList = function(game, state, kind, viewport, theme)
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 900))
-    local minimalContext = option("minimalUi", false) == true
+      runtime.panelMaxWidth(theme, 900))
+    local minimalContext = runtime.option("minimalUi", false) == true
     local landscape = w > h * 1.10
     if minimalContext then
-      panelW = math.min(panelW, contentWidthFor(theme, rows, title,
+      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, title,
         footerText or "A  choose   B  back", math.min(250, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 760), w - gutter * 2)))
+        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
     else
-      local listBudget = contentWidthFor(theme, rows, title,
+      local listBudget = runtime.contentWidthFor(theme, rows, title,
         footerText or "A  choose   B  back", math.min(300, w - gutter * 2),
-        math.min(scaledPanelWidth(theme, 560), w - gutter * 2))
+        math.min(runtime.scaledPanelWidth(theme, 560), w - gutter * 2))
       local detailBudget = landscape
-        and math.min(scaledPanelWidth(theme, 360), w - gutter * 2) or 0
+        and math.min(runtime.scaledPanelWidth(theme, 360), w - gutter * 2) or 0
       panelW = math.min(panelW, listBudget + detailBudget
         + (detailBudget > 0 and spacing.sm or 0))
     end
     local headerH = theme.typography.title + spacing.lg
     local messageH = math.max(72, theme.typography.caption * 2 + spacing.lg * 2)
-    local rowHeight = minimumRowHeight(theme)
+    local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 8))
     local desiredListH = desiredRows * rowHeight
     local detailMinH = math.max(150,
       theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
     local detailW = not minimalContext and landscape
-      and math.min(panelW * 0.44, scaledPanelWidth(theme, 360)) or 0
+      and math.min(panelW * 0.44, runtime.scaledPanelWidth(theme, 360)) or 0
     local previewSelected = clamp(selected or 1, 1, math.max(1, #rows))
-    local previewRow = selectedListRow(rows, previewSelected)
+    local previewRow = runtime.selectedListRow(rows, previewSelected)
     local previewSource = previewRow and previewRow.source
     local previewItemId = previewSource
       and type(previewSource.value) == "string" and previewSource.value or nil
     local previewDef = previewItemId and game.data and game.data.items
       and game.data.items[previewItemId]
-    local previewIcon = imageFor(imageCandidate(previewSource)
+    local previewIcon = runtime.imageFor(imageCandidate(previewSource)
       or imageCandidate(previewDef))
     local previewIconSize = previewIcon and 56 or 0
     local previewCardW = detailW > 0 and detailW or panelW
@@ -6582,7 +6810,7 @@ return function(mod)
     elseif previewDef and previewDef.keyItem then
       countDetail(Strings("KEY ITEM"))
     end
-    countDetail(itemValueText(previewItemId, previewDef))
+    countDetail(runtime.itemValueText(previewItemId, previewDef))
     if detailLines > 0 then
       detailMinH = math.max(detailMinH,
         spacing.md + detailTitleLines * textHeight(detailTitleFont) + spacing.sm
@@ -6611,10 +6839,10 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH, radius = theme.radii.md }, title)
 
     if kind == "shop_list" and type(state.money) == "function" then
       local ok, money = pcall(state.money)
@@ -6635,7 +6863,7 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
-    drawRows(theme, listLayout, rows, selected, scroll, game)
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
 
     if detailW > 0 or detailH > 0 then
       local detailX = detailW > 0 and (px + panelW - detailW) or px
@@ -6645,15 +6873,15 @@ return function(mod)
       setColor(colors.surfaceRaised)
       love.graphics.rectangle("fill", detailX + spacing.sm, detailY,
         cardW - spacing.sm * 2, cardH, theme.radii.sm)
-      local row = selectedListRow(rows, selected)
+      local row = runtime.selectedListRow(rows, selected)
       local source = row and row.source
       local itemId = source and type(source.value) == "string" and source.value or nil
       local def = itemId and game.data and game.data.items and game.data.items[itemId]
-      local icon = imageFor(imageCandidate(source) or imageCandidate(def))
+      local icon = runtime.imageFor(imageCandidate(source) or imageCandidate(def))
       local iconSize = icon and math.min(56, cardH - spacing.md * 2) or 0
       local infoX = detailX + spacing.lg
       if icon then
-        drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
+        runtime.drawImageFit(icon, infoX, detailY + spacing.md, iconSize, iconSize)
         infoX = infoX + iconSize + spacing.md
       end
       local infoW = math.max(24, detailX + cardW - spacing.lg - infoX)
@@ -6697,7 +6925,7 @@ return function(mod)
         infoY = drawWrappedText(Strings("KEY ITEM"), infoX, infoY, detailMax,
           detailFont, theme.typography.caption + spacing.xs)
       end
-      local value = itemValueText(itemId, def)
+      local value = runtime.itemValueText(itemId, def)
       if value then
         drawWrappedText(value, infoX, infoY, detailMax, detailFont,
           theme.typography.caption + spacing.xs)
@@ -6718,22 +6946,22 @@ return function(mod)
     setColor(colors.textMuted)
     local hint = kind == "shop_list" and "A  choose   B  back"
       or "A  choose   B  back"
-    drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
       py + panelH - spacing.md - theme.typography.caption,
       panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function drawGen3Box(game, state, viewport, theme)
+  runtime.drawGen3Box = function(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 780))
+      runtime.panelMaxWidth(theme, 780))
     -- The grid itself is the content. Keep a compact square-cell frame
     -- instead of reserving the entire viewport around a 5x4 or 3x2 grid.
     local panelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, w > h * 1.20, 470, 620))
+      runtime.scaledPanelHeight(theme, w > h * 1.20, 470, 620))
     local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
     local mode = state.mode == "party" and "party" or "box"
     local cols, gridRows = mode == "box" and 5 or 3, mode == "box" and 4 or 2
@@ -6769,11 +6997,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.title))
     drawText(title, px + spacing.lg, py + spacing.md)
@@ -6782,14 +7010,14 @@ return function(mod)
     local footerText = state.notice or (mode == "box"
       and "A  pick/place   START  stats   SELECT  party   B  back"
       or "A  pick/place   START  stats   SELECT  box   B  back")
-    drawHintIfUseful(theme, Strings(footerText), px + spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(footerText), px + spacing.lg,
       py + panelH - footer + 2, panelW - spacing.lg * 2)
 
     for i = 1, cols * gridRows do
       local c, r = (i - 1) % cols, math.floor((i - 1) / cols)
       local cx, cy = gx + c * cellW, gy + r * cellH
       local mon = list[i]
-      registerPointerRegion(cx + 2, cy + 2, cellW - 4, cellH - 4, {
+      runtime.registerPointerRegion(cx + 2, cy + 2, cellW - 4, cellH - 4, {
         gridRow = r, gridCol = c, activate = true,
         gridRows = gridRows, gridCols = cols,
         interactive = true, dragHandle = false,
@@ -6813,12 +7041,12 @@ return function(mod)
         local spriteAreaY = cy + cellPad
         local spriteAreaH = math.max(1, cellH - captionH - cellPad * 1.4)
         if img then
-          local iw, ih = imageMetrics(img)
+          local iw, ih = runtime.imageMetrics(img)
           if iw and ih then
             local maxW, maxH = cellW * 0.68, spriteAreaH * 0.92
             local scale = math.min(maxW / iw, maxH / ih)
             setColor({ 1, 1, 1, 1 })
-            drawImage(img, cx + (cellW - iw * scale) / 2,
+            runtime.drawImage(img, cx + (cellW - iw * scale) / 2,
               spriteAreaY + (spriteAreaH - ih * scale) / 2, 0, scale, scale)
           end
         end
@@ -6851,11 +7079,11 @@ return function(mod)
         theme.radii.sm)
       local carriedImage = spriteFor(game, carried)
       if carriedImage then
-        local iw, ih = imageMetrics(carriedImage)
+        local iw, ih = runtime.imageMetrics(carriedImage)
         if iw and ih then
           local scale = math.min(48 / iw, 48 / ih)
           setColor({ 1, 1, 1, 1 })
-          drawImage(carriedImage, cardX + spacing.sm,
+          runtime.drawImage(carriedImage, cardX + spacing.sm,
             cardY + (cardH - ih * scale) / 2, 0, scale, scale)
         end
       end
@@ -6873,13 +7101,13 @@ return function(mod)
     love.graphics.pop()
   end
 
-  local function drawDexEntry(game, state, viewport, theme)
+  runtime.drawDexEntry = function(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 780))
-    local def = dexDefinition(game, state) or {}
+      runtime.panelMaxWidth(theme, 780))
+    local def = runtime.dexDefinition(game, state) or {}
     local species = def.id or state.species or state.speciesId
     if type(species) == "table" then species = species.species or species.id end
     local page = state.view or "data"
@@ -6892,7 +7120,7 @@ return function(mod)
     -- Dex data and base-stat cards are content panels. A responsive scale may
     -- enlarge the type, but it should not make these two-column pages span
     -- most of an ultrawide window.
-    panelW = math.min(panelW, scaledPanelWidth(theme,
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme,
       page == "moves" and 720 or 620))
     local lineGap = textHeight(bodyFont) + spacing.sm
     local desiredHeroH = math.max(190,
@@ -6944,11 +7172,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText(title, px + spacing.lg, py + spacing.md,
@@ -6960,12 +7188,12 @@ return function(mod)
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", heroX, heroY, heroW, heroH, theme.radii.md)
     if sprite then
-      local iw, ih = imageMetrics(sprite)
+      local iw, ih = runtime.imageMetrics(sprite)
       if iw and ih then
         local scale = math.min((heroW - spacing.md * 2) / iw,
           (heroH - spacing.md * 2) / ih)
         setColor({ 1, 1, 1, 1 })
-        drawImage(sprite, heroX + (heroW - iw * scale) / 2,
+        runtime.drawImage(sprite, heroX + (heroW - iw * scale) / 2,
           heroY + (heroH - ih * scale) / 2, 0, scale, scale)
       end
     end
@@ -7060,7 +7288,7 @@ return function(mod)
         footer = "UP/DOWN  page   A  next page   B  back"
       end
     end
-    drawHintIfUseful(theme, Strings(footer), px + spacing.lg, footerY,
+    runtime.drawHintIfUseful(theme, Strings(footer), px + spacing.lg, footerY,
       panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -7086,7 +7314,7 @@ return function(mod)
     end
     rows[#rows + 1] = { label = Strings("CANCEL"), value = "" }
     local panelW = math.min(w - spacing.lg * 2,
-      math.max(320, contentWidthFor(theme, rows, "FORGET A MOVE", nil,
+      math.max(320, runtime.contentWidthFor(theme, rows, "FORGET A MOVE", nil,
         320, math.min(700, w - spacing.lg * 2))))
     local rowH = math.max(textHeight(body) + spacing.md,
       math.min(62, theme.density.rowHeight * 0.78))
@@ -7101,11 +7329,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
     drawText("FORGET A MOVE", px + spacing.lg, py + spacing.md)
@@ -7119,7 +7347,7 @@ return function(mod)
     local rowY = py + spacing.lg + headerH
     for index, row in ipairs(rows) do
       local ry = rowY + (index - 1) * rowH
-      registerPointerRegion(px + spacing.sm, ry, panelW - spacing.sm * 2,
+      runtime.registerPointerRegion(px + spacing.sm, ry, panelW - spacing.sm * 2,
         rowH - 2, { rowIndex = index, selectionField = "index",
           selectionState = state, rowCount = #rows, activate = true,
           interactive = true, dragHandle = false })
@@ -7138,7 +7366,7 @@ return function(mod)
     end
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
-    drawHintIfUseful(theme, "A  replace   B  cancel", px + spacing.lg,
+    runtime.drawHintIfUseful(theme, "A  replace   B  cancel", px + spacing.lg,
       py + panelH - footerH + spacing.sm, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -7148,7 +7376,7 @@ return function(mod)
     local spacing, colors = theme.spacing, theme.colors
     local titleFont = font(fontCache, theme.typography.title)
     local body = font(fontCache, theme.typography.body)
-    local image = imageFor(state.image)
+    local image = runtime.imageFor(state.image)
     local caption = safeText(state.text)
     local maxW = math.min(w - spacing.lg * 2, 720)
     local panelW = math.min(maxW, math.max(300,
@@ -7169,9 +7397,9 @@ return function(mod)
     love.graphics.origin()
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
-    registerPointerRegion(px, py, panelW, panelH, {
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.registerPointerRegion(px, py, panelW, panelH, {
       role = "picbox", action = "a", interactive = true, dragHandle = false,
     })
     setColor(colors.text)
@@ -7182,7 +7410,7 @@ return function(mod)
     love.graphics.rectangle("fill", px + spacing.lg, artY,
       panelW - spacing.lg * 2, cardH, theme.radii.md)
     if image then
-      drawImageFit(image, px + spacing.lg, artY,
+      runtime.drawImageFit(image, px + spacing.lg, artY,
         panelW - spacing.lg * 2, cardH, 1)
     else
       setColor(colors.textMuted)
@@ -7216,8 +7444,8 @@ return function(mod)
     local own = player.money ~= nil
     local rows = card and (own and 4 or 3) or 1
     local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
-      panelMaxWidth(theme, 760))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 720))
+      runtime.panelMaxWidth(theme, 760))
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 720))
     local compact = w > h * 1.15
     local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
     local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
@@ -7233,11 +7461,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText("TRAINER PROFILE", contentX, py + spacing.md,
@@ -7314,9 +7542,9 @@ return function(mod)
 
     setColor(colors.divider)
     love.graphics.rectangle("fill", contentX,
-      py + panelH - footerH, contentW, themeMetric(theme, "divider", 1))
+      py + panelH - footerH, contentW, runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
-    drawHintIfUseful(theme, "A / B  back", contentX,
+    runtime.drawHintIfUseful(theme, "A / B  back", contentX,
       py + panelH - footerH + spacing.xs, contentW)
     love.graphics.pop()
   end
@@ -7351,7 +7579,7 @@ return function(mod)
       math.max(0, #rows - visible))
     local compact = w > h * 1.15
     local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
-      panelMaxWidth(theme, 720))
+      runtime.panelMaxWidth(theme, 720))
     local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
     local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
     local rowH = math.max(textHeight(bodyFont) + spacing.xs,
@@ -7366,11 +7594,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
     drawText("RANK", contentX, py + spacing.md)
@@ -7431,18 +7659,18 @@ return function(mod)
 
     setColor(colors.divider)
     love.graphics.rectangle("fill", contentX,
-      py + panelH - footerH, contentW, themeMetric(theme, "divider", 1))
+      py + panelH - footerH, contentW, runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
     local footer = (#rows > visible or offset > 0)
       and "UP/DOWN  scroll   A / B  back" or "A / B  back"
-    drawHintIfUseful(theme, footer, contentX,
+    runtime.drawHintIfUseful(theme, footer, contentX,
       py + panelH - footerH + spacing.xs, contentW)
     love.graphics.pop()
   end
 
   function mod._gen1ModernSpecialPresenters.drawRbyMmoCharacterPick(
       game, state, viewport, theme)
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, "list")
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, "list")
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
@@ -7452,15 +7680,15 @@ return function(mod)
     local landscape = w > h * 1.05
     local gutter = spacing.lg
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 820))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 820))
+      runtime.panelMaxWidth(theme, 820))
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 820))
     local headerH = textHeight(titleFont) + spacing.lg
     local footerH = textHeight(captionFont) + spacing.md
-    local rowH = minimumRowHeight(theme)
+    local rowH = runtime.minimumRowHeight(theme)
     local detailMinH = math.max(170,
       textHeight(bodyFont) * 2 + 96 + spacing.lg * 3)
     local detailW = landscape
-      and math.min(scaledPanelWidth(theme, 330), panelW * 0.42) or 0
+      and math.min(runtime.scaledPanelWidth(theme, 330), panelW * 0.42) or 0
     local desiredRows = math.max(1, math.min(#rows, landscape and 8 or 5))
     local desiredListH = desiredRows * rowH
     local desiredContentH = landscape
@@ -7482,13 +7710,13 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawHeader(theme, { x = px, y = py, w = panelW, h = panelH,
+    runtime.drawHeader(theme, { x = px, y = py, w = panelW, h = panelH,
       radius = theme.radii.lg }, title or "CHARACTER")
 
-    local row = selectedListRow(rows, selected)
+    local row = runtime.selectedListRow(rows, selected)
     local source = row and row.source
     local spriteId = source and (source.value or source.sprite)
     -- Character artwork is authored avatar art, not a map tile/sprite. Do not
@@ -7498,7 +7726,7 @@ return function(mod)
     local portrait = mod._gen1ModernSpecialPresenters.rbyMmoPortrait(
       game, spriteId)
     if not portrait then
-      portrait = paletteRuntime.setImage(imageFor(source and
+      portrait = paletteRuntime.setImage(runtime.imageFor(source and
         (source.image or source.icon)), nil)
     else
       paletteRuntime.setImage(portrait.image, nil)
@@ -7547,13 +7775,13 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowH, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
-    drawRows(theme, listLayout, rows, selected, scroll, game)
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
-    drawHintIfUseful(theme, footerText or "A  choose   B  back",
+    runtime.drawHintIfUseful(theme, footerText or "A  choose   B  back",
       px + spacing.lg, py + panelH - footerH + spacing.xs,
       panelW - spacing.lg * 2)
     love.graphics.pop()
@@ -7573,14 +7801,14 @@ return function(mod)
     local gutter = spacing.lg
     local landscape = w > h * 1.08
     local panelW = panelWidthFor(viewport, w - gutter * 2,
-      panelMaxWidth(theme, 760))
-    panelW = math.min(panelW, scaledPanelWidth(theme, 760))
+      runtime.panelMaxWidth(theme, 760))
+    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
     local headerH = textHeight(titleFont) + textHeight(captionFont)
       + spacing.lg + spacing.sm
     local footerH = textHeight(captionFont) + spacing.lg
     local sectionH = math.max(textHeight(captionFont) + spacing.sm,
-      spacing.lg + themeMetric(theme, "divider", 1))
-    local rowH = math.max(minimumRowHeight(theme),
+      spacing.lg + runtime.themeMetric(theme, "divider", 1))
+    local rowH = math.max(runtime.minimumRowHeight(theme),
       textHeight(bodyFont) + textHeight(captionFont) + spacing.md)
 
     local function radarRowHeight(row)
@@ -7595,7 +7823,7 @@ return function(mod)
       totalListH = textHeight(bodyFont) * 2 + spacing.xl
     end
     local maxPanelH = math.min(h - gutter * 2,
-      scaledPanelHeight(theme, landscape, 620, 760))
+      runtime.scaledPanelHeight(theme, landscape, 620, 760))
     local maxListH = math.max(rowH,
       maxPanelH - headerH - footerH)
     local desiredListH = math.min(totalListH, maxListH)
@@ -7642,11 +7870,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
 
     setColor(colors.text)
     love.graphics.setFont(titleFont)
@@ -7667,7 +7895,7 @@ return function(mod)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
       listY - spacing.xs, panelW - spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
 
     if #(state.monIndex or {}) == 0 then
       setColor(colors.surfaceRaised)
@@ -7693,14 +7921,14 @@ return function(mod)
             panelW - spacing.lg * 2, captionFont)
           setColor(colors.divider)
           love.graphics.rectangle("fill", px + spacing.lg,
-            rowY + height - themeMetric(theme, "divider", 1),
-            panelW - spacing.lg * 2, themeMetric(theme, "divider", 1))
+            rowY + height - runtime.themeMetric(theme, "divider", 1),
+            panelW - spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
         elseif row then
           local cursorIndex = cursorByRaw[rawIndex]
           local selected = cursorIndex == selectedCursor
           local rowX = px + spacing.sm
           local rowW = panelW - spacing.sm * 2
-          registerPointerRegion(rowX, rowY + 2, rowW, height - 4, {
+          runtime.registerPointerRegion(rowX, rowY + 2, rowW, height - 4, {
             selectionField = "cursor", selectionIndex = cursorIndex,
             rowCount = #(state.monIndex or {}), interactive = cursorIndex ~= nil,
             activate = false, dragHandle = false,
@@ -7714,11 +7942,11 @@ return function(mod)
           local iconY = rowY + (height - iconSize) / 2
           local encounterIcon = row.id and iconFor(game, { species = row.id })
           if encounterIcon then
-            local iw, ih = imageMetrics(encounterIcon)
+            local iw, ih = runtime.imageMetrics(encounterIcon)
             if iw and ih then
               local scale = math.min(iconSize / iw, iconSize / ih)
               setColor(row.seen and { 1, 1, 1, 1 } or { 0, 0, 0, 1 })
-              drawImage(encounterIcon,
+              runtime.drawImage(encounterIcon,
                 iconX + (iconSize - iw * scale) / 2,
                 iconY + (iconSize - ih * scale) / 2, 0, scale, scale)
             end
@@ -7773,9 +8001,9 @@ return function(mod)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
       py + panelH - footerH, panelW - spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
-    drawHintIfUseful(theme,
+    runtime.drawHintIfUseful(theme,
       "UP/DOWN  choose   LEFT/RIGHT  jump   B  back",
       px + spacing.lg, py + panelH - footerH + spacing.xs,
       panelW - spacing.lg * 2)
@@ -7949,11 +8177,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
     drawFittedText(title, px + spacing.lg, py + spacing.md,
@@ -7999,7 +8227,7 @@ return function(mod)
           local cx = px + spacing.lg
             + (isCaseRow and 0 or (colIndex - 1) * cellW)
           local cy = gridY + (rowIndex - 1) * cellH
-          registerPointerRegion(cx + 1, cy + 1, rowW - 2, cellH - 2, {
+          runtime.registerPointerRegion(cx + 1, cy + 1, rowW - 2, cellH - 2, {
             namingRow = rowIndex, namingCol = colIndex,
             activate = true, interactive = true, dragHandle = false,
           })
@@ -8029,7 +8257,7 @@ return function(mod)
     end
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
-    drawHintIfUseful(theme, "A  choose   B  delete   SELECT  case   START  done",
+    runtime.drawHintIfUseful(theme, "A  choose   B  delete   SELECT  case   START  done",
       px + spacing.lg, py + panelH - footerH + spacing.sm,
       panelW - spacing.lg * 2)
     love.graphics.pop()
@@ -8141,7 +8369,7 @@ return function(mod)
     local scale = math.min(w / 160, h / 144)
     local mapW, mapH = 160 * scale, 144 * scale
     local ox, oy = x + (w - mapW) / 2, y + (h - mapH) / 2
-    prepareImage(bg.img)
+    runtime.prepareImage(bg.img)
     setColor({ 1, 1, 1, 1 })
     -- Drawing every tile directly at a fractional destination lets the
     -- rasterizer round adjacent tile edges differently.  At some scales that
@@ -8172,7 +8400,7 @@ return function(mod)
         end
         love.graphics.setCanvas()
         love.graphics.pop()
-        canvas = prepareImage(target)
+        canvas = runtime.prepareImage(target)
         cache[bg] = canvas
       end
     end
@@ -8225,11 +8453,11 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
     setColor(colors.text)
     love.graphics.setFont(titleFont)
     drawText(title, px + spacing.lg, py + spacing.md)
@@ -8303,7 +8531,7 @@ return function(mod)
           local cellSize = 8 * mapScale
           local centerX = cellX + cellSize / 2
           local centerY = cellY + cellSize / 2
-          registerPointerRegion(cellX, cellY, cellSize, cellSize, {
+          runtime.registerPointerRegion(cellX, cellY, cellSize, cellSize, {
             selectionState = state, selectionField = "sel",
             selectionIndex = index, rowCount = #locs, activate = true,
             interactive = true, dragHandle = false,
@@ -8343,7 +8571,7 @@ return function(mod)
       for index, loc in ipairs(locs) do
         local ry = listY + (index - 1) * rowH
         if ry + rowH > mapY + mapH then break end
-        registerPointerRegion(mapX + spacing.sm, ry, mapW - spacing.sm * 2,
+        runtime.registerPointerRegion(mapX + spacing.sm, ry, mapW - spacing.sm * 2,
           rowH - 2, { selectionState = state, selectionField = "sel",
             selectionIndex = index, rowCount = #locs, activate = true,
             interactive = true, dragHandle = false })
@@ -8401,7 +8629,7 @@ return function(mod)
     local footer = state.fly and "UP/DOWN  choose   A  fly   B  back"
       or state.nestSpecies and "A  close   B  back"
       or "ARROWS  move   A  view   B  back"
-    drawHintIfUseful(theme, footer, px + spacing.lg,
+    runtime.drawHintIfUseful(theme, footer, px + spacing.lg,
       py + panelH - footerH + spacing.sm, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -8430,7 +8658,7 @@ return function(mod)
     local name = safeText(banner.name)
     local maxW = math.max(1, w - spacing.lg * 2)
     local nameW = bodyFont:getWidth(name)
-    local minW = math.min(maxW, scaledPanelWidth(theme, 220))
+    local minW = math.min(maxW, runtime.scaledPanelWidth(theme, 220))
     local panelW = math.min(maxW, math.max(minW,
       nameW + spacing.xl * 2))
     local panelH = textHeight(titleFont) + textHeight(bodyFont)
@@ -8446,8 +8674,8 @@ return function(mod)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH,
       theme.radii.md)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.md)
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.md)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.md)
     setColor(colors.textMuted)
     love.graphics.setFont(titleFont)
     local title = "LOCATION"
@@ -8496,12 +8724,12 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
+    runtime.drawPresenterBackdrop(theme, viewport)
     setColor(colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
-    registerPointerRegion(px, py, panelW, panelH, {
+    runtime.drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
+    runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg)
+    runtime.registerPointerRegion(px, py, panelW, panelH, {
       role = "quarantine_report", action = "a", interactive = true,
       dragHandle = false,
     })
@@ -8529,61 +8757,77 @@ return function(mod)
     end
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg, footerY,
-      panelW - spacing.lg * 2, themeMetric(theme, "divider", 1))
+      panelW - spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
     local footer = maxOffset > 0 and "UP/DOWN  scroll   A/B  continue"
       or "A/B  continue"
-    drawHintIfUseful(theme, footer, px + spacing.lg,
+    runtime.drawHintIfUseful(theme, footer, px + spacing.lg,
       footerY + spacing.sm, panelW - spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function battleName(game, battler)
+  runtime.battleName = function(game, battler)
     local mon = battler and battler.mon or battler
     local def = mon and game.data and game.data.pokemon and game.data.pokemon[mon.species]
     return safeText((battler and battler.name) or (mon and mon.nickname) or
       (def and def.name) or (mon and mon.species) or "POKEMON")
   end
 
-  local function battleHP(battler)
-    local mon = battler and battler.mon
+  runtime.battleHP = function(battler)
+    local mon = battler and battler.mon or battler
     if not mon then return 0, 1 end
-    local maxHP = math.max(1, (mon.stats and mon.stats.hp) or mon.hp or 1)
-    local hp = battler.shownHP or mon.hp or 0
+    local maxHP = math.max(1, (mon.stats and mon.stats.hp) or mon.maxHp
+      or mon.maxHP or mon.hp or 1)
+    local hp = (battler and battler.shownHP) or mon.hp
+      or (battler and battler.hp) or 0
     return clamp(hp, 0, maxHP), maxHP
   end
 
-  local function drawBattleBar(theme, x, y, w, h, hp, maxHP)
-    setColor(healthPalette(theme).track)
+  function battleRuntime.opaque(color)
+    color = color or { 0, 0, 0, 1 }
+    return { color[1] or 0, color[2] or 0, color[3] or 0, 1 }
+  end
+
+  runtime.drawBattleBar = function(theme, x, y, w, h, hp, maxHP)
+    setColor(runtime.healthPalette(theme).track)
     love.graphics.rectangle("fill", x, y, w, h, h / 2)
     local ratio = clamp(hp / math.max(1, maxHP), 0, 1)
     if ratio > 0 then
-      setColor(healthFillColor(theme, ratio))
+      setColor(runtime.healthFillColor(theme, ratio))
       love.graphics.rectangle("fill", x, y, w * ratio, h, h / 2)
     end
   end
 
-  local function drawBattleFit(image, x, y, w, h)
-    local iw, ih = imageMetrics(image)
+  runtime.drawBattleFit = function(image, x, y, w, h)
+    local iw, ih = runtime.imageMetrics(image)
     if not iw or not ih then return end
     local scale = math.min(w / iw, h / ih)
     setColor({ 1, 1, 1, 1 })
-    drawImage(image, x + (w - iw * scale) / 2,
+    runtime.drawImage(image, x + (w - iw * scale) / 2,
       y + (h - ih * scale) / 2, 0, scale, scale)
   end
 
-  local function drawBattleCard(game, theme, battler, x, y, w, h, alignRight)
+  runtime.drawBattleCard = function(game, theme, battler, x, y, w, h, alignRight,
+      opacity, info)
     if not battler then return end
     local spacing = theme.spacing
-    setColor(theme.colors.surfaceRaised or theme.colors.surface)
+    local surface = theme.colors.surfaceRaised or theme.colors.surface
+    -- Battle cards are cleanup plates as well as information panels. They
+    -- must be opaque even when the global panel-opacity preference is lower,
+    -- otherwise the native HUD remains legible underneath as a duplicate.
+    surface = battleRuntime.opaque(surface)
+    setColor(surface)
     love.graphics.rectangle("fill", x, y, w, h, theme.radii.md)
+    setColor(theme.colors.accent)
+    love.graphics.rectangle("fill", x, y, w, math.max(2,
+      runtime.themeMetric(theme, "accent", 3)), theme.radii.md)
     setColor(theme.colors.text)
     love.graphics.setFont(font(fontCache, theme.typography.body))
-    local name = battleName(game, battler)
+    local name = runtime.battleName(game, battler)
     local mon = battler.mon or battler
     local level = mon.level and ("Lv " .. tostring(mon.level)) or ""
-    local hp, maxHP = battleHP(battler)
+    local hp, maxHP = runtime.battleHP(battler)
     local levelW = love.graphics.getFont():getWidth(level)
     -- Keep the level in its own right-hand column.  The old right-aligned
     -- calculation used the longer of the two strings as the text origin,
@@ -8598,7 +8842,7 @@ return function(mod)
     end
     local barY = y + spacing.sm
       + textHeight(font(fontCache, theme.typography.body)) + 5
-    drawBattleBar(theme, x + spacing.md, barY, w - spacing.md * 2, 8, hp, maxHP)
+    runtime.drawBattleBar(theme, x + spacing.md, barY, w - spacing.md * 2, 8, hp, maxHP)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(font(fontCache, theme.typography.caption))
     drawText(("HP %d/%d"):format(math.floor(hp), math.floor(maxHP)),
@@ -8606,37 +8850,265 @@ return function(mod)
     local status = battler.shownStatus or mon.status
     if status then
       setColor(theme.colors.accent)
-      drawText(safeText(status):upper(),
-        x + w - spacing.md - love.graphics.getFont():getWidth(safeText(status)), barY + 12)
+      local statusText = safeText(status):upper()
+      drawText(statusText,
+        x + w - spacing.md - love.graphics.getFont():getWidth(statusText),
+        barY + 12)
+    elseif info and info.caught then
+      local caughtText = "OWNED"
+      setColor(theme.colors.accent)
+      drawText(caughtText,
+        x + w - spacing.md - love.graphics.getFont():getWidth(caughtText),
+        barY + 12)
+    end
+    local experience = info and info.experience
+    if type(experience) == "table" then
+      local current = tonumber(experience.current or experience.value)
+      local maximum = tonumber(experience.maximum or experience.max)
+      if current and maximum and maximum > 0 and h >= 112 then
+        local expY = y + h - spacing.md - 6
+        setColor(theme.colors.textMuted)
+        love.graphics.setFont(font(fontCache, theme.typography.caption))
+        drawText("EXP", x + spacing.md, expY - 5)
+        local expX = x + spacing.md + love.graphics.getFont():getWidth("EXP")
+          + spacing.sm
+        local expW = math.max(16, x + w - spacing.md - expX)
+        setColor(runtime.healthPalette(theme).track)
+        love.graphics.rectangle("fill", expX, expY, expW, 4, 2)
+        setColor(theme.colors.accent)
+        love.graphics.rectangle("fill", expX, expY,
+          expW * clamp(current / maximum, 0, 1), 4, 2)
+      end
     end
   end
 
-  local function battleImage(game, state, battler, side)
+  function battleRuntime.typeText(game, battler)
+    local mon = battler and (battler.mon or battler)
+    if not mon then return "" end
+    local definition = mon.species and runtime.pokemonDefinition(game, mon.species)
+      or nil
+    local values = mon.types or definition and definition.types
+    local result = {}
+    if type(values) == "table" then
+      for _, value in ipairs(values) do
+        local label = runtime.displayType(value)
+        if label ~= "" and label ~= "-" then result[#result + 1] = label end
+      end
+    else
+      for _, value in ipairs({ mon.type1, mon.type2,
+          definition and definition.type1, definition and definition.type2 }) do
+        local label = value and runtime.displayType(value) or ""
+        if label ~= "" and label ~= "-" then
+          local duplicate = false
+          for _, existing in ipairs(result) do
+            if existing == label then duplicate = true break end
+          end
+          if not duplicate then result[#result + 1] = label end
+        end
+      end
+    end
+    return table.concat(result, " / ")
+  end
+
+  function battleRuntime.catchRateText(source, overlays)
+    local rates = battleRuntime.overlayValue(source, overlays,
+      { "catchRates", "catchRateBalls", "ballRates", "catchRate" })
+    if type(rates) == "string" then return rates end
+    if type(rates) ~= "table" then return "" end
+    local function rate(keys)
+      for _, key in ipairs(keys) do
+        if rates[key] ~= nil then return safeText(rates[key]) end
+      end
+      return "-"
+    end
+    return ("P# %s   G# %s   U# %s"):format(
+      rate({ "pokeball", "poke", "p" }),
+      rate({ "greatBall", "great", "g" }),
+      rate({ "ultraBall", "ultra", "u" }))
+  end
+
+  -- Content-sized status ribbons for the framed 2D presentation. These are
+  -- deliberately separate from SCENE HUD cards so the voxel/native-scene
+  -- layout can keep its established geometry while 2D is polished in
+  -- isolation.
+  runtime.drawBattle2dCard = function(game, theme, battler, x, y, w, info)
+    if not battler then return 0 end
+    info = info or {}
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local bodyH, captionH = textHeight(bodyFont), textHeight(captionFont)
+    local accentH = math.max(3, runtime.themeMetric(theme, "accent", 3))
+    local barH = math.max(6, math.floor(captionH * 0.38))
+    local compact = info.compact == true
+    local metadata = {}
+    if not compact and safeText(info.typeText) ~= "" then
+      metadata[#metadata + 1] = info.typeText
+    end
+    if not compact and safeText(info.rateText) ~= "" then
+      metadata[#metadata + 1] = info.rateText
+    end
+    local experience = info.experience
+    local expCurrent = type(experience) == "table"
+      and tonumber(experience.current or experience.value) or nil
+    local expMaximum = type(experience) == "table"
+      and tonumber(experience.maximum or experience.max) or nil
+    local h = accentH + spacing.sm + bodyH + spacing.xs + barH
+      + spacing.xs + captionH + spacing.sm
+    if #metadata > 0 then h = h + spacing.xs + captionH end
+    if compact and (safeText(info.rateText) ~= ""
+        or (expCurrent and expMaximum and expMaximum > 0)) then
+      h = h + spacing.xs + captionH
+    end
+    if not compact and expCurrent and expMaximum and expMaximum > 0 then
+      h = h + spacing.xs + captionH
+    end
+
+    local surface = battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface)
+    setColor(surface)
+    love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm)
+    setColor(theme.colors.accent)
+    love.graphics.rectangle("fill", x, y, w, accentH,
+      theme.radii.sm, theme.radii.sm, 0, 0)
+    love.graphics.rectangle("fill", x, y, math.max(3, accentH), h,
+      theme.radii.sm, 0, theme.radii.sm, 0)
+    setColor(theme.colors.divider)
+    love.graphics.setLineWidth(1)
+    love.graphics.rectangle("line", x + 0.5, y + 0.5,
+      math.max(1, w - 1), math.max(1, h - 1), theme.radii.sm)
+    -- Battle status cards are real UI containers too. Reuse the selected
+    -- theme frame so they remain legible and visually belong to the framed
+    -- arena instead of looking like unstyled HUD leftovers.
+    runtime.drawPanelFrame(theme, x, y, w, h, theme.radii.sm, false)
+
+    local mon = battler.mon or battler
+    local name = runtime.battleName(game, battler)
+    local level = mon.level and ("Lv " .. tostring(mon.level)) or ""
+    local hp, maxHP = runtime.battleHP(battler)
+    local textX = x + spacing.md
+    local textRight = x + w - spacing.md
+    local titleY = y + accentH + spacing.sm
+    love.graphics.setFont(bodyFont)
+    local levelW = bodyFont:getWidth(level)
+    local status = battler.shownStatus or mon.status
+    local badge = status and safeText(status):upper()
+      or info.caught and "OWNED" or ""
+    if status and info.caught then badge = badge .. "  OWNED" end
+    setColor(theme.colors.text)
+    drawText(truncate(name, math.max(24,
+      textRight - textX - levelW - spacing.sm)), textX, titleY)
+    if level ~= "" then
+      setColor(theme.colors.textMuted)
+      drawText(level, textRight - levelW, titleY)
+    end
+
+    local barY = titleY + bodyH + spacing.xs
+    runtime.drawBattleBar(theme, textX, barY,
+      math.max(1, textRight - textX), barH, hp, maxHP)
+    local footerY = barY + barH + spacing.xs
+    love.graphics.setFont(captionFont)
+    setColor(theme.colors.textMuted)
+    drawText(("HP %d/%d"):format(math.floor(hp), math.floor(maxHP)),
+      textX, footerY)
+    if badge ~= "" then
+      setColor(theme.colors.accent)
+      drawText(badge, textRight - captionFont:getWidth(badge), footerY)
+    end
+
+    if compact and safeText(info.rateText) ~= "" then
+      local compactRates = safeText(info.rateText):gsub("#%s*", "")
+      compactRates = truncate(compactRates, textRight - textX)
+      setColor(theme.colors.textMuted)
+      drawText(compactRates, textX, footerY + captionH + spacing.xs)
+    elseif compact and expCurrent and expMaximum and expMaximum > 0 then
+      local expY = footerY + captionH + spacing.xs
+      setColor(theme.colors.textMuted)
+      drawText("EXP", textX, expY)
+      local expX = textX + captionFont:getWidth("EXP") + spacing.sm
+      local expW = math.max(24, textRight - expX)
+      expY = expY + math.floor(captionH / 2) - 2
+      setColor(runtime.healthPalette(theme).track)
+      love.graphics.rectangle("fill", expX, expY, expW, 4, 2)
+      setColor(theme.colors.accent)
+      love.graphics.rectangle("fill", expX, expY,
+        expW * clamp(expCurrent / expMaximum, 0, 1), 4, 2)
+    end
+
+    local nextY = footerY + captionH
+    if #metadata > 0 then
+      nextY = nextY + spacing.xs
+      setColor(theme.colors.textMuted)
+      drawText(truncate(table.concat(metadata, "   "), textRight - textX),
+        textX, nextY)
+      nextY = nextY + captionH
+    end
+    if not compact and expCurrent and expMaximum and expMaximum > 0 then
+      nextY = nextY + spacing.xs
+      setColor(theme.colors.textMuted)
+      drawText("EXP", textX, nextY)
+      local expX = textX + captionFont:getWidth("EXP") + spacing.sm
+      local expY = nextY + math.floor(captionH / 2) - 2
+      local expW = math.max(12, textRight - expX)
+      setColor(runtime.healthPalette(theme).track)
+      love.graphics.rectangle("fill", expX, expY, expW, 4, 2)
+      setColor(theme.colors.accent)
+      love.graphics.rectangle("fill", expX, expY,
+        expW * clamp(expCurrent / expMaximum, 0, 1), 4, 2)
+    end
+    return h
+  end
+
+  runtime.battleImage = function(game, state, battler, side)
     if not battler then return nil end
-    local fallback = battler.sprite
+    local mon = battler.mon or battler
+    local fallback = battler.sprite or mon.sprite
     local image
     if side == "back" and state.showPlayerBack and state.playerBackPic then
-      image = imageFor(state.playerBackPic)
+      image = runtime.imageFor(state.playerBackPic)
     elseif side == "front" and state.showEnemyTrainer and state.trainerPic then
-      image = imageFor(state.trainerPic)
+      image = runtime.imageFor(state.trainerPic)
     end
     if image then return image end
-    image = spriteForSide(game, battler.mon, side, nil, "battle")
-    return image or imageFor(fallback)
+    image = runtime.spriteForSide(game, mon, side, nil, "battle")
+    return image or runtime.imageFor(fallback)
   end
 
-  local function battleMessage(state)
-    local item = state.current
-    local text = item and item.text or state.introText
-    if not text and state.phase == "menu" then return "Choose an action." end
-    if not text then return "" end
-    return safeText(text):gsub("<PK>", "PKMN"):gsub("[\r\n\v]+", " ")
+  battleRuntime.messageCache = setmetatable({}, { __mode = "k" })
+
+  runtime.battleMessage = function(state)
+    local native = battleRuntime.inputState(state) or state or {}
+    local item = state and state.current or native.current
+    local text = state and state.message or (item and item.text)
+      or state and state.introText or native.message or native.introText
+    if type(text) == "table" then
+      text = text.text or text.value or text.label
+    end
+    if text then
+      text = safeText(text):gsub("<PK>", "PKMN"):gsub("[\r\n\v]+", " ")
+      if text ~= "" and type(native) == "table" then
+        battleRuntime.messageCache[native] = text
+      end
+      return text
+    end
+    if native.phase == "menu" then
+      battleRuntime.messageCache[native] = nil
+      return "Choose an action."
+    end
+    -- BattleState clears `current` before an attack animation and HP drain,
+    -- but deliberately keeps its last encoded two-line window in `shown`.
+    -- Retain the last public message for the same state so modern text stays
+    -- visible for exactly that source-owned hold instead of flashing blank.
+    if native.msgHold or native.animPlaying then
+      return battleRuntime.messageCache[native] or ""
+    end
+    return ""
   end
 
-  -- Mirror the battle state's actual cursor geometry. WIDE battles navigate
-  -- a 2x2 grid; OG battles use the original vertical list. Synthetic/public
-  -- battle states without either method default to the modern grid.
-  local function battleUsesWideLayout(state)
+  -- Detect the host surface geometry for native-HUD cleanup. Both standard
+  -- and WIDE move selectors are presented as the same source-indexed 2x2
+  -- modern grid, so no directional input translation is necessary.
+  runtime.battleUsesWideLayout = function(state)
     if not state then return true end
     local method = state.wideLayout
     if type(method) == "function" then
@@ -8651,37 +9123,330 @@ return function(mod)
     return true
   end
 
-  local function drawBattleActionPanel(game, state, theme, x, y, w, h)
+  -- A source mod can publish a battle screen through the same data-only
+  -- compatibility contract used by the other presenters. The adapter may
+  -- refine the public battler/menu model, but it never owns rendering or
+  -- input. Missing or invalid models simply leave the host battle state in
+  -- charge.
+  function battleRuntime.sourceModel(game, state)
+    local compatibility = mod._gen1ModernCompatibility
+    local context = compatibility.active[state]
+      or compatibility:adapterFor(game, state)
+    if not (context and context.screen and context.screen.layer == "battle") then
+      return nil
+    end
+    return compatibility:modelFor(game, state, context)
+  end
+
+  function battleRuntime.presentationMode(state, model)
+    local configured = safeText(runtime.option("battleUiMode", "auto")):lower()
+    if configured == "hud" or configured == "hud_only"
+        or configured == "menu" then
+      return "hud"
+    end
+    if configured == "full" or configured == "canvas" then
+      return "full"
+    end
+
+    local source = model or state or {}
+    local explicit = safeText(source.presentation or source.presentationMode
+      or source.battlePresentation):lower()
+    if explicit == "hud" or explicit == "hud_only"
+        or explicit == "menu" then
+      return "hud"
+    end
+    if explicit == "full" or explicit == "canvas" then return "full" end
+
+    if battleRuntime.nativeSceneRequested(source) then return "hud" end
+    return "full"
+  end
+
+  battleRuntime.qolExpState = setmetatable({}, { __mode = "k" })
+
+  function battleRuntime.publicExports(owners)
+    if type(mod.find) ~= "function" then return nil end
+    for _, owner in ipairs(owners or {}) do
+      local ok, handle = pcall(mod.find, owner)
+      if ok and type(handle) == "table" and type(handle.exports) == "table" then
+        return handle.exports, owner
+      end
+    end
+    return nil
+  end
+
+  function battleRuntime.modOption(game, owners, key)
+    local options = game and game.save and game.save.options
+    local buckets = options and options.modOptions
+    if type(buckets) ~= "table" then return nil end
+    for _, owner in ipairs(owners or {}) do
+      local bucket = buckets[owner]
+      if type(bucket) == "table" and bucket[key] ~= nil then
+        return bucket[key]
+      end
+    end
+    return nil
+  end
+
+  -- Normalize the source-owned Gen 1 experience total into the progress
+  -- segment used by the modern battle card.  `Pokemon.exp` is the cumulative
+  -- value at the current level, so the bar must subtract the current level's
+  -- floor rather than treating the total as a 0..next-level value.  The
+  -- public growth-rate registry is preferred; the vanilla curves below keep
+  -- this feature working on older hosts and for plain base battles.
+  function battleRuntime.baseExperience(game, battler)
+    local mon = battler and (battler.mon or battler)
+    local data = game and game.data
+    local defs = data and data.pokemon
+    local def = mon and mon.species and defs and defs[mon.species]
+    local total = mon and tonumber(mon.exp or mon.experience
+      or mon.expPoints or mon.experiencePoints)
+    local level = mon and tonumber(mon.level)
+    local growth = def and (def.growthRate or def.growth_rate)
+    if not (def and total and level and growth) then return nil end
+
+    local function expFor(value)
+      local rates = data and data.growth_rates
+      local record = rates and rates[growth]
+      if type(record) == "table" and type(record.expForLevel) == "function" then
+        local ok, result = pcall(record.expForLevel, value)
+        if ok and tonumber(result) then return math.max(0, tonumber(result)) end
+      end
+      local n = math.max(0, tonumber(value) or 0)
+      local key = safeText(growth):upper()
+      if key == "FAST" then return math.floor(4 * n * n * n / 5) end
+      if key == "SLOW" then return math.floor(5 * n * n * n / 4) end
+      if key == "SLIGHTLY_FAST" then
+        return math.floor(3 * n * n * n / 4) + 10 * n * n - 30
+      end
+      if key == "SLIGHTLY_SLOW" then
+        return math.floor(3 * n * n * n / 4) + 20 * n * n - 70
+      end
+      if key == "MEDIUM_SLOW" then
+        return math.floor(6 * n * n * n / 5) - 15 * n * n
+          + 100 * n - 140
+      end
+      return n * n * n
+    end
+
+    local floor = expFor(level)
+    local nextFloor = expFor(level + 1)
+    local maximum = nextFloor - floor
+    if maximum <= 0 then return nil end
+    return {
+      current = clamp(total - floor, 0, maximum),
+      maximum = maximum,
+      source = "gen1-modern-ui",
+    }
+  end
+
+  function battleRuntime.enrichOverlays(game, state, source, overlays)
+    local enriched = copy(type(overlays) == "table" and overlays or {})
+    local native = battleRuntime.inputState(source) or state
+    local owners = { "quality_of_life", "qol",
+      "pokemon-gen1-recomp-mod-qol" }
+    local exports = battleRuntime.publicExports(owners)
+
+    if battleRuntime.overlayValue(source, enriched,
+        { "experience", "expBar", "experienceBar" }) == nil then
+      local baseExperience = battleRuntime.baseExperience(game,
+        native and native.player)
+      if baseExperience then enriched.experience = baseExperience end
+    end
+
+    if battleRuntime.overlayValue(source, enriched,
+        { "experience", "expBar", "experienceBar" }) == nil
+        and exports then
+      local mode = battleRuntime.modOption(game, owners, "qol_exp_bar")
+      local expFunction = exports.animatedExpPixels or exports.expPixels
+      if mode == "on" and type(expFunction) == "function"
+          and native and native.player then
+        local expState = battleRuntime.qolExpState[native]
+        if not expState then
+          expState = {}
+          battleRuntime.qolExpState[native] = expState
+        end
+        local ok, pixels
+        if expFunction == exports.animatedExpPixels then
+          ok, pixels = pcall(expFunction, native, expState)
+        else
+          ok, pixels = pcall(expFunction, native)
+        end
+        if ok and tonumber(pixels) then
+          enriched.experience = { current = tonumber(pixels), maximum = 67,
+            source = "quality_of_life" }
+        end
+      end
+    end
+
+    if battleRuntime.overlayValue(source, enriched,
+        { "caughtIndicator", "caught" }) == nil then
+      local enemy = native and native.enemy
+      local mon = enemy and (enemy.mon or enemy)
+      local dex = game and game.save and game.save.pokedex
+      if native and native.kind == "wild"
+          and not native.demo and not native.ghost and mon and mon.species
+          and dex and type(dex.owned) == "table" then
+        enriched.caughtIndicator = dex.owned[mon.species] == true
+      end
+    end
+    return enriched
+  end
+
+  function battleRuntime.dataSource(game, state, model)
+    local source = model or state or {}
+    local overlays = source.overlays or source.battleOverlays
+      or source.battleUiOverlays or state and state.overlays
+    overlays = battleRuntime.enrichOverlays(game, state, source, overlays)
+    return source, overlays
+  end
+
+  function battleRuntime.overlayValue(source, overlays, keys)
+    for _, key in ipairs(keys) do
+      if source[key] ~= nil then return source[key] end
+      if overlays[key] ~= nil then return overlays[key] end
+    end
+    return nil
+  end
+
+  function battleRuntime.drawExtras(theme, source, overlays, x, y, w, h,
+      skipExperience, skipCaught)
     local spacing = theme.spacing
-    local contentH = math.max(1, h - spacing.md * 2 - 26)
+    local exp = battleRuntime.overlayValue(source, overlays,
+      { "experience", "expBar", "experienceBar" })
+    local caught = battleRuntime.overlayValue(source, overlays,
+      { "caughtIndicator", "caught" })
+    local rates = battleRuntime.overlayValue(source, overlays,
+      { "catchRates", "catchRateBalls", "ballRates", "catchRate" })
+    local entries = {}
+
+    if not skipExperience and type(exp) == "table" then
+      local current = tonumber(exp.current or exp.value or exp.exp)
+      local maximum = tonumber(exp.maximum or exp.max or exp.needed)
+      if current and maximum and maximum > 0 then
+        entries[#entries + 1] = {
+          kind = "bar", label = "EXP", current = current,
+          maximum = maximum,
+        }
+      elseif exp.label or exp.text then
+        entries[#entries + 1] = { label = exp.label or exp.text }
+      end
+    elseif not skipExperience and type(exp) == "string" then
+      entries[#entries + 1] = { label = exp }
+    end
+
+    if not skipCaught and caught ~= nil then
+      local caughtValue = caught
+      if type(caught) == "table" then
+        caughtValue = caught.caught
+        if caughtValue == nil then caughtValue = caught.owned end
+      end
+      entries[#entries + 1] = {
+        label = caughtValue == true and "CAUGHT" or "NOT CAUGHT",
+      }
+    end
+
+    if type(rates) == "table" then
+      local function rate(keys)
+        for _, key in ipairs(keys) do
+          if rates[key] ~= nil then return safeText(rates[key]) end
+        end
+        return "-"
+      end
+      entries[#entries + 1] = {
+        label = ("P# %s   G# %s   U# %s"):format(
+          rate({ "pokeball", "poke", "p" }),
+          rate({ "greatBall", "great", "g" }),
+          rate({ "ultraBall", "ultra", "u" })),
+      }
+    elseif type(rates) == "string" then
+      entries[#entries + 1] = { label = rates }
+    end
+
+    if #entries == 0 then return 0 end
+    local fontValue = font(fontCache, theme.typography.caption)
+    love.graphics.setFont(fontValue)
+    local rowH = textHeight(fontValue) + spacing.xs * 2
+    local shown = math.min(#entries, math.max(1, math.floor(h / rowH)))
+    local panelH = shown * rowH + spacing.sm * 2
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
+    love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.sm)
+    for index = 1, shown do
+      local entry = entries[index]
+      local ey = y + spacing.sm + (index - 1) * rowH
+      if entry.kind == "bar" then
+        setColor(theme.colors.textMuted)
+        drawText(("EXP %d/%d"):format(math.floor(entry.current),
+          math.floor(entry.maximum)), x + spacing.sm, ey)
+        local ratio = clamp(entry.current / entry.maximum, 0, 1)
+        local barX = x + w * 0.48
+        local barW = w - barX - spacing.sm
+        setColor(runtime.healthPalette(theme).track)
+        love.graphics.rectangle("fill", barX, ey + 3, barW,
+          math.max(3, rowH - 8), 2)
+        setColor(runtime.healthFillColor(theme, ratio))
+        love.graphics.rectangle("fill", barX, ey + 3, barW * ratio,
+          math.max(3, rowH - 8), 2)
+      else
+        setColor(theme.colors.textMuted)
+        drawText(safeText(entry.label), x + spacing.sm, ey)
+      end
+    end
+    return panelH
+  end
+
+  function battleRuntime.inputState(state)
+    return state and state._gen1ModernBattleState or state
+  end
+
+  runtime.drawBattleActionPanel = function(game, state, theme, x, y, w, h)
+    local spacing = theme.spacing
+    local inputState = battleRuntime.inputState(state)
+    local contentH = math.max(1, h - spacing.md * 2 - 26)
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
     love.graphics.rectangle("fill", x, y, w, h, theme.radii.md)
+    runtime.drawPanelFrame(theme, x, y, w, h, theme.radii.md)
+    runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
     local phase = state.phase
     if phase == "menu" then
-      local labels = { "FIGHT", "POKEMON", "ITEM", "RUN" }
+      local labels
+      if state.safari then
+        labels = { "BALL x" .. safeText(state.safari.balls or 0),
+          "BAIT", "THROW ROCK", "RUN" }
+      else
+        labels = { "FIGHT", "POKEMON", "ITEM", "RUN" }
+      end
       local cols = 2
       local cellW, cellH = (w - spacing.md * 3) / cols,
         (contentH - spacing.md) / 2
+      local selectedIndex = tonumber(inputState and inputState.menuIndex)
+        or tonumber(state.menuIndex) or 1
       for i, label in ipairs(labels) do
         local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
         local cx = x + spacing.md + col * (cellW + spacing.md)
         local cy = y + spacing.md + row * (cellH + spacing.md)
-        if i == (state.menuIndex or 1) then
+        runtime.registerPointerRegion(cx, cy, cellW, cellH, {
+          selectionState = inputState, selectionField = "menuIndex",
+          selectionIndex = i, rowCount = #labels, activate = true,
+          interactive = true, dragHandle = false,
+        })
+        if i == selectedIndex then
           setColor(theme.colors.selected)
           love.graphics.rectangle("fill", cx, cy, cellW, cellH, theme.radii.sm)
         end
-        setColor(i == (state.menuIndex or 1) and theme.colors.text or theme.colors.textMuted)
+        setColor(i == selectedIndex and theme.colors.text or theme.colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.body))
         drawText(Strings(label), cx + spacing.sm,
           cy + (cellH - textHeight(love.graphics.getFont())) / 2)
       end
     elseif phase == "moveSelect" or phase == "mimicSelect" then
       local moves = phase == "mimicSelect" and state.mimicMoves
-        or state.player and state.player.curMoves or {}
+        or state.moves or state.player and state.player.curMoves or {}
       moves = type(moves) == "table" and moves or {}
-      local selected = phase == "mimicSelect" and (state.mimicIndex or 1)
-        or (state.moveIndex or 1)
-      local wide = battleUsesWideLayout(state)
+      local selected = phase == "mimicSelect"
+        and (inputState.mimicIndex or state.mimicIndex or 1)
+        or (inputState.moveIndex or state.moveIndex or 1)
+      local wide = runtime.battleUsesWideLayout(state)
       local cols = wide and 2 or 1
       -- BattleState keeps a stable 2x2 cursor even when a Pokémon knows only
       -- one, two, or three moves. Draw all four slots so the visual grid has
@@ -8695,13 +9460,26 @@ return function(mod)
         local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
         local cx = x + spacing.md + col * (cellW + spacing.md)
         local cy = y + spacing.md + row * (cellH + spacing.md)
+        if move then
+          runtime.registerPointerRegion(cx, cy, cellW, cellH - 4, {
+            selectionState = inputState,
+            selectionField = phase == "mimicSelect" and "mimicIndex"
+              or "moveIndex",
+            selectionIndex = i, rowCount = slotCount, activate = true,
+            interactive = true, dragHandle = false,
+          })
+        end
         if i == selected then
           setColor(theme.colors.selected)
           love.graphics.rectangle("fill", cx, cy, cellW, cellH - 4, theme.radii.sm)
         end
         local def = move and game.data and game.data.moves and game.data.moves[move.id]
         local label = move and (def and def.name or move.id or "-") or ""
-        local pp = move and move.pp ~= nil and ("PP %d"):format(move.pp) or ""
+        local maximum = def and def.pp
+          and def.pp + (move.ppUps or 0) * math.floor(def.pp / 5) or nil
+        local pp = move and move.pp ~= nil and maximum
+          and ("PP %d/%d"):format(move.pp, maximum)
+          or (move and move.pp ~= nil and ("PP %d"):format(move.pp) or "")
         local compact = cellW < 190
         local moveFont = font(fontCache,
           compact and theme.typography.caption or theme.typography.body)
@@ -8723,7 +9501,7 @@ return function(mod)
           cy + (cellH - textHeight(ppFont)) / 2)
       end
     else
-      local text = battleMessage(state)
+      local text = runtime.battleMessage(state)
       setColor(theme.colors.text)
       love.graphics.setFont(font(fontCache, theme.typography.body))
       local lines = wrappedLines(text, w - spacing.lg * 2)
@@ -8739,68 +9517,1256 @@ return function(mod)
     end
   end
 
-  local function drawBattle(game, state, viewport, theme)
-    local x, y, w, h = presenterRect(viewport)
+  runtime.drawBattleMoveDetails = function(game, state, theme, x, y, w, h)
     local spacing = theme.spacing
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      math.max(1, panelMaxWidth(theme, 900)))
-    local panelH = math.max(1, h - gutter * 2)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local cardW = math.min(390, panelW * 0.43)
-    local cardH = math.min(104, math.max(76, panelH * 0.12))
-    local wide = battleUsesWideLayout(state)
-    local footerH = wide and math.min(190, math.max(128, panelH * 0.27))
-      or math.min(280, math.max(240, panelH * 0.34))
-    local arenaY = py + spacing.lg + cardH + spacing.md
-    local arenaH = math.max(40, panelH - footerH - cardH - spacing.lg * 3)
+    local inputState = battleRuntime.inputState(state)
+    local phase = state.phase
+    local moves = phase == "mimicSelect" and state.mimicMoves
+      or state.moves or state.player and state.player.curMoves or {}
+    local selected = phase == "mimicSelect"
+      and (inputState and inputState.mimicIndex or state.mimicIndex or 1)
+      or (inputState and inputState.moveIndex or state.moveIndex or 1)
+    local move = type(moves) == "table" and moves[selected] or nil
+    local def = move and game.data and game.data.moves
+      and game.data.moves[move.id] or nil
+    local maximum = def and def.pp
+      and def.pp + (move.ppUps or 0) * math.floor(def.pp / 5) or nil
+
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, w, h, theme.radii.md)
+    runtime.drawPanelFrame(theme, x, y, w, h, theme.radii.md)
+    setColor(theme.colors.textMuted)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    drawText("MOVE", x + spacing.md, y + spacing.md)
+    setColor(theme.colors.text)
+    love.graphics.setFont(font(fontCache, theme.typography.body))
+    local name = def and def.name or move and move.id or "-"
+    drawText(truncate(safeText(name), w - spacing.md * 2),
+      x + spacing.md, y + spacing.md + 22)
+    setColor(theme.colors.textMuted)
+    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    local moveType = def and runtime.displayType(def.type) or "-"
+    drawText("TYPE  " .. safeText(moveType), x + spacing.md,
+      y + h - spacing.md - 30)
+    local pp = move and move.pp ~= nil and maximum
+      and ("PP  %d/%d"):format(move.pp, maximum) or "PP  -"
+    drawText(pp, x + spacing.md, y + h - spacing.md - 12)
+  end
+
+  function battleRuntime.moveSelection(game, state)
+    local inputState = battleRuntime.inputState(state) or state or {}
+    local phase = state and state.phase
+    local moves = phase == "mimicSelect" and state.mimicMoves
+      or state and state.moves
+      or state and state.player and state.player.curMoves or {}
+    moves = type(moves) == "table" and moves or {}
+    local selected = phase == "mimicSelect"
+      and (inputState.mimicIndex or state.mimicIndex or 1)
+      or (inputState.moveIndex or state and state.moveIndex or 1)
+    selected = clamp(math.floor(tonumber(selected) or 1), 1, math.max(1, #moves))
+    local move = moves[selected]
+    local definition = move and game.data and game.data.moves
+      and game.data.moves[move.id] or nil
+    local maximum = definition and definition.pp
+      and definition.pp + (move.ppUps or 0) * math.floor(definition.pp / 5)
+      or nil
+    return moves, selected, move, definition, maximum, inputState
+  end
+
+  function battleRuntime.moveStat(value, accuracy)
+    value = tonumber(value)
+    if not value or value <= 0 then return "-" end
+    if accuracy and value > 100 and value <= 255 then
+      value = math.floor(value * 100 / 255 + 0.5)
+    end
+    return accuracy and (tostring(math.floor(value)) .. "%")
+      or tostring(math.floor(value))
+  end
+
+  runtime.drawBattle2dMessage = function(theme, message, x, y, w, h, waiting)
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    love.graphics.setFont(bodyFont)
+    local paddingX, paddingY = spacing.lg, spacing.md
+    local maxW = math.max(1, math.min(w, math.max(360, w * 0.76)))
+    local minW = math.min(maxW, math.max(280, w * 0.38))
+    local naturalW = bodyFont:getWidth(message) + paddingX * 2
+    local panelW = clamp(naturalW, minW, maxW)
+    local lines = wrappedLines(message, math.max(1, panelW - paddingX * 2))
+    local lineH = textHeight(bodyFont) + spacing.xs
+    local panelH = paddingY * 2 + math.max(1, #lines) * lineH
+    panelH = math.min(h, panelH)
+    local panelX = x + (w - panelW) / 2
+    local panelY = y + h - panelH
+
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", panelX, panelY, panelW, panelH,
+      theme.radii.md)
+    runtime.drawPanelFrame(theme, panelX, panelY, panelW, panelH,
+      theme.radii.md)
+    runtime.drawPanelAccent(theme, panelX, panelY, panelW, theme.radii.md, 3)
+    setColor(theme.colors.text)
+    love.graphics.setFont(bodyFont)
+    local maxLines = math.max(1,
+      math.floor((panelH - paddingY * 2) / math.max(1, lineH)))
+    for index = 1, math.min(#lines, maxLines) do
+      drawText(lines[index], panelX + paddingX,
+        panelY + paddingY + (index - 1) * lineH)
+    end
+    if waiting then
+      setColor(theme.colors.accent)
+      love.graphics.setFont(captionFont)
+      drawText("...", panelX + panelW - paddingX - captionFont:getWidth("..."),
+        panelY + panelH - paddingY - textHeight(captionFont))
+    end
+    return panelX, panelY, panelW, panelH
+  end
+
+  function battleRuntime.commandPanelHeight(theme)
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local rowH = math.max(38, textHeight(bodyFont) + spacing.xs * 2)
+    return spacing.sm * 2 + textHeight(captionFont) + spacing.xs
+      + rowH * 2
+  end
+
+  runtime.drawBattle2dCommands = function(game, state, theme, x, y, w)
+    local spacing = theme.spacing
+    local inputState = battleRuntime.inputState(state) or state
+    local labels = state.safari and {
+      "BALL x" .. safeText(state.safari.balls or 0), "BAIT", "THROW ROCK", "RUN",
+    } or { "FIGHT", "POKEMON", "ITEM", "RUN" }
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local headerH = textHeight(captionFont)
+    local rowH = math.max(38, textHeight(bodyFont) + spacing.xs * 2)
+    local panelH = battleRuntime.commandPanelHeight(theme)
+    local selected = tonumber(inputState and inputState.menuIndex)
+      or tonumber(state.menuIndex) or 1
+
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.md)
+    runtime.drawPanelFrame(theme, x, y, w, panelH, theme.radii.md)
+    runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
+    setColor(theme.colors.textMuted)
+    love.graphics.setFont(captionFont)
+    drawText(state.safari and "SAFARI ACTION" or "CHOOSE ACTION",
+      x + spacing.sm, y + spacing.sm)
+
+    local gridY = y + spacing.sm + headerH + spacing.xs
+    local cellW = (w - spacing.sm * 2 - spacing.xs) / 2
+    for index, label in ipairs(labels) do
+      local col, row = (index - 1) % 2, math.floor((index - 1) / 2)
+      local cellX = x + spacing.sm + col * (cellW + spacing.xs)
+      local cellY = gridY + row * rowH
+      runtime.registerPointerRegion(cellX, cellY, cellW, rowH, {
+        selectionState = inputState, selectionField = "menuIndex",
+        selectionIndex = index, rowCount = #labels, activate = true,
+        interactive = true, dragHandle = false,
+      })
+      if index == selected then
+        setColor(theme.colors.selected)
+        love.graphics.rectangle("fill", cellX, cellY, cellW, rowH,
+          theme.radii.sm)
+        setColor(theme.colors.accent)
+        love.graphics.rectangle("fill", cellX, cellY, 3, rowH,
+          theme.radii.sm, 0, theme.radii.sm, 0)
+      end
+      love.graphics.setFont(bodyFont)
+      setColor(index == selected and theme.colors.text or theme.colors.textMuted)
+      drawText(Strings(label), cellX + spacing.sm,
+        cellY + (rowH - textHeight(bodyFont)) / 2)
+    end
+    return panelH
+  end
+
+  function battleRuntime.movePanelHeight(theme, slotCount)
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local rowH = math.max(42,
+      math.max(textHeight(bodyFont), textHeight(captionFont))
+        + spacing.xs * 2)
+    return spacing.sm * 2 + textHeight(captionFont) + spacing.xs
+      + rowH * 2
+  end
+
+  runtime.drawBattle2dMoves = function(game, state, theme, x, y, w)
+    local spacing = theme.spacing
+    local moves, selected, move, definition, maximum, inputState =
+      battleRuntime.moveSelection(game, state)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local titleFont = font(fontCache, theme.typography.title)
+    local headerH = textHeight(captionFont)
+    local rowH = math.max(42,
+      math.max(textHeight(bodyFont), textHeight(captionFont))
+        + spacing.xs * 2)
+    local slotCount = 4
+    local panelH = battleRuntime.movePanelHeight(theme, slotCount)
+    local detailW = clamp(w * 0.30, 190, math.max(190, w * 0.38))
+    local listX = x + detailW
+    local listW = w - detailW
+
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.md)
+    runtime.drawPanelFrame(theme, x, y, w, panelH, theme.radii.md)
+    runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
+    setColor(battleRuntime.opaque(theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, detailW, panelH,
+      theme.radii.md, 0, theme.radii.md, 0)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", listX, y + spacing.sm, 1,
+      panelH - spacing.sm * 2)
+
+    local detailX = x + spacing.sm
+    local detailRight = listX - spacing.sm
+    local detailY = y + spacing.sm
+    setColor(theme.colors.textMuted)
+    love.graphics.setFont(captionFont)
+    drawText("MOVE INFO", detailX, detailY)
+    detailY = detailY + headerH + spacing.xs
+    local moveNameFont = detailW < 250 and bodyFont or titleFont
+    love.graphics.setFont(moveNameFont)
+    setColor(theme.colors.text)
+    local moveName = definition and definition.name or move and move.id or "-"
+    drawText(truncate(safeText(moveName), detailRight - detailX),
+      detailX, detailY)
+    detailY = detailY + textHeight(moveNameFont) + spacing.xs
+    love.graphics.setFont(captionFont)
+    local moveType = definition and runtime.displayType(definition.type) or "-"
+    local pp = move and move.pp ~= nil and maximum
+      and ("%d/%d"):format(move.pp, maximum) or "-"
+    local power = battleRuntime.moveStat(definition
+      and (definition.power or definition.basePower), false)
+    local accuracy = battleRuntime.moveStat(definition
+      and (definition.accuracy or definition.acc), true)
+    local statGap = spacing.sm
+    local statW = (detailRight - detailX - statGap) / 2
+    for index, row in ipairs({
+        { nil, moveType }, { "PP", pp },
+        { "POW", power }, { "ACC", accuracy },
+      }) do
+      local col = (index - 1) % 2
+      local statRow = math.floor((index - 1) / 2)
+      local statX = detailX + col * (statW + statGap)
+      local statY = detailY + statRow * (textHeight(captionFont) + spacing.xs)
+      setColor(theme.colors.textMuted)
+      local label = row[1] and (row[1] .. " ") or ""
+      if label ~= "" then drawText(label, statX, statY) end
+      setColor(theme.colors.text)
+      drawText(truncate(safeText(row[2]),
+        math.max(1, statW - captionFont:getWidth(label))),
+        statX + captionFont:getWidth(label), statY)
+    end
+    local native = battleRuntime.inputState(state) or state
+    if native.player and native.player.disabledSlot == selected then
+      setColor(theme.colors.accent)
+      drawText("DISABLED", detailX,
+        y + panelH - spacing.sm - textHeight(captionFont))
+    end
+
+    local gridY = y + spacing.sm + headerH + spacing.xs
+    local cellW = listW / 2
+    setColor(theme.colors.textMuted)
+    love.graphics.setFont(captionFont)
+    drawText(state.phase == "mimicSelect" and "COPY A MOVE" or "CHOOSE MOVE",
+      listX + spacing.sm, y + spacing.sm)
+    for index = 1, slotCount do
+      local entry = moves[index]
+      local col = (index - 1) % 2
+      local row = math.floor((index - 1) / 2)
+      local cellX = listX + col * cellW
+      local cellY = gridY + row * rowH
+      runtime.registerPointerRegion(cellX, cellY, cellW, rowH, {
+        selectionState = inputState,
+        selectionField = state.phase == "mimicSelect" and "mimicIndex"
+          or "moveIndex",
+        selectionIndex = index, rowCount = slotCount,
+        activate = entry ~= nil, interactive = entry ~= nil,
+        dragHandle = false,
+      })
+      if index == selected then
+        setColor(theme.colors.selected)
+        love.graphics.rectangle("fill", cellX + 1, cellY,
+          cellW - 1, rowH, theme.radii.sm)
+        setColor(theme.colors.accent)
+        love.graphics.rectangle("fill", cellX + 1, cellY, 3, rowH)
+      end
+      if col == 1 then
+        setColor(theme.colors.divider)
+        love.graphics.rectangle("fill", cellX, cellY + spacing.xs,
+          1, rowH - spacing.xs * 2)
+      end
+      if row == 1 then
+        setColor(theme.colors.divider)
+        love.graphics.rectangle("fill", cellX + spacing.sm, cellY,
+          cellW - spacing.sm * 2, 1)
+      end
+      local entryDefinition = entry and game.data and game.data.moves
+        and game.data.moves[entry.id] or nil
+      local entryName = entry and (entryDefinition and entryDefinition.name
+        or entry.id) or "-"
+      local entryMaximum = entryDefinition and entryDefinition.pp
+        and entryDefinition.pp + (entry.ppUps or 0)
+          * math.floor(entryDefinition.pp / 5) or nil
+      local entryPP = entry and entry.pp ~= nil and entryMaximum
+        and ("PP %d/%d"):format(entry.pp, entryMaximum) or ""
+      if native.moveSwapIndex == index then
+        entryPP = "MOVING"
+      elseif native.player and native.player.disabledSlot == index then
+        entryPP = "DISABLED"
+      end
+      love.graphics.setFont(bodyFont)
+      setColor(index == selected and theme.colors.text or theme.colors.textMuted)
+      local ppW = captionFont:getWidth(entryPP)
+      drawText(truncate(safeText(entryName),
+        math.max(20, cellW - spacing.sm * 2 - ppW - spacing.xs)),
+        cellX + spacing.sm,
+        cellY + (rowH - textHeight(bodyFont)) / 2)
+      love.graphics.setFont(captionFont)
+      setColor(theme.colors.textMuted)
+      drawText(entryPP, cellX + cellW - spacing.sm - ppW,
+        cellY + (rowH - textHeight(captionFont)) / 2)
+    end
+    return panelH
+  end
+
+  function battleRuntime.topState(game)
+    local stack = game and game.stack
+    if not stack then return nil end
+    if type(stack.top) == "function" then
+      local ok, top = pcall(stack.top, stack)
+      if ok then return top end
+    end
+    local states = stack.states
+    return type(states) == "table" and states[#states] or nil
+  end
+
+  -- Level-up is a native BattleState child rather than a normal presenter.
+  -- The host still owns the stat transition and semantic input, while the
+  -- modern battle layer owns the visible presentation. The explicit stat
+  -- shape is intentional: older hosts do not publish a stable child ID, but
+  -- StatBox has always exposed these four values through `mon.stats`.
+  function battleRuntime.isLevelUpState(game, state)
+    if type(state) ~= "table" then return false end
+    local states = game and game.stack and game.stack.states
+    local battle
+    local exactStatBox = false
+    local stateIndex
+    local stateClass = classOf(state)
+    if type(states) == "table" then
+      -- Search below the child first. BattleState.StatBox is pushed on top of
+      -- its owning battle, and limiting the primary search to that ancestry
+      -- avoids mistaking an unrelated state elsewhere in the stack for its
+      -- owner. Some hosts decorate the child before this hook runs, so keep a
+      -- structural fallback after the exported class check.
+      for index = #states, 1, -1 do
+        if states[index] == state and not stateIndex then
+          stateIndex = index
+          break
+        end
+      end
+      local first = (stateIndex or (#states + 1)) - 1
+      for index = first, 1, -1 do
+        local candidate = states[index]
+        if candidate ~= state and candidate then
+          -- Newer hosts publicly export BattleState.StatBox. Prefer that
+          -- stable identity over field guessing so an untagged native
+          -- level-up state cannot be rejected as an unknown opaque screen.
+          local candidateClass = classOf(candidate)
+          local statClass = type(candidateClass) == "table"
+            and rawget(candidateClass, "StatBox") or nil
+          if type(statClass) == "table"
+              and (stateClass == statClass
+                or getmetatable(state) == statClass
+                or inherits(stateClass, statClass)) then
+            exactStatBox = true
+          end
+          if not battle and runtime.kindFor(candidate, game) == "battle" then
+            battle = candidate
+          end
+        end
+      end
+      -- A few older stack implementations hand hooks a proxy rather than the
+      -- literal table stored in `states`. Fall back to the complete stack for
+      -- its owning BattleState in that case.
+      if not battle then
+        for index = #states, 1, -1 do
+          local candidate = states[index]
+          if candidate ~= state and candidate
+              and runtime.kindFor(candidate, game) == "battle" then
+            battle = candidate
+            break
+          end
+        end
+      end
+    end
+    if exactStatBox and battle and state ~= battle then return true end
+    if not battle or state == battle then return false end
+    if state.kind == "levelup" or state.kind == "level_up"
+        or state.screenId == "levelup" or state.screenId == "level_up" then
+      return true
+    end
+    local mon = state.mon
+    local stats = mon and mon.stats
+    return type(mon) == "table" and type(stats) == "table"
+      and stats.attack ~= nil and stats.defense ~= nil
+      and stats.speed ~= nil and stats.special ~= nil
+      and state.screenId == nil and state.kind == nil
+  end
+
+  function battleRuntime.fullBattleInStack(game)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" then return nil end
+    for index = #states, 1, -1 do
+      local candidate = states[index]
+      if candidate and runtime.kindFor(candidate, game) == "battle"
+          and (battleRuntime.presentationMode(candidate,
+            battleRuntime.sourceModel(game, candidate)) == "full"
+            or battleRuntime.isLevelUpState(game,
+              battleRuntime.topState(game))) then
+        return candidate
+      end
+    end
+    return nil
+  end
+
+  function battleRuntime.childOpen(game, state)
+    local native = battleRuntime.inputState(state) or state
+    local top = battleRuntime.topState(game)
+    return top ~= nil and top ~= native
+  end
+
+  function battleRuntime.ownsClassicSurface(state)
+    state = battleRuntime.inputState(state) or state
+    local levelUp = state and state.game
+      and battleRuntime.isLevelUpState(state.game,
+        battleRuntime.topState(state.game))
+    return type(state) == "table"
+      and runtime.option("battleUiWip", false) == true
+      and runtime.option("hideOriginalUi", true) ~= false
+      and (battleRuntime.presentationMode(state, nil) == "full" or levelUp)
+      and not runtime.battleUsesWideLayout(state)
+  end
+
+  function battleRuntime.usesWorldBackground(state)
+    state = battleRuntime.inputState(state) or state
+    if type(state) ~= "table" then return false end
+    if type(state.bgMode) == "function" then
+      local ok, value = pcall(state.bgMode, state)
+      if ok then return safeText(value):lower() == "world" end
+    end
+    local options = state.game and state.game.save and state.game.save.options
+    return type(options) == "table"
+      and safeText(options.battleBg):lower() == "world"
+  end
+
+  function battleRuntime.usesBlackBackground(state)
+    state = battleRuntime.inputState(state) or state
+    if type(state) ~= "table" then return false end
+    if type(state.bgMode) == "function" then
+      local ok, value = pcall(state.bgMode, state)
+      if ok then return safeText(value):lower() == "black" end
+    end
+    local options = state.game and state.game.save and state.game.save.options
+    return type(options) == "table"
+      and safeText(options.battleBg):lower() == "black"
+  end
+
+  function battleRuntime.ownsWorldSurface(state)
+    state = battleRuntime.inputState(state) or state
+    local levelUp = state and state.game
+      and battleRuntime.isLevelUpState(state.game,
+        battleRuntime.topState(state.game))
+    return type(state) == "table"
+      and runtime.option("battleUiWip", false) == true
+      and runtime.option("hideOriginalUi", true) ~= false
+      and (battleRuntime.presentationMode(state, nil) == "full" or levelUp)
+      and battleRuntime.usesWorldBackground(state)
+  end
+
+  -- Native-coordinate bounds of the modern battle arena. WIDE still renders
+  -- its live 304x144 source scene, but the modern frame intentionally uses a
+  -- narrower 1.78:1 composition. Keeping this rectangle in native pixels lets
+  -- the source draw, compose scrub, and screen-space frame share one edge.
+  function battleRuntime.worldSceneRect(state)
+    if runtime.battleUsesWideLayout(state) then
+      -- The source WORLD surface is scaled independently of the ornamental
+      -- frame. Four native pixels of horizontal safety on each side keep the
+      -- paper fill and animated scene inside the frame after scaling/rounding,
+      -- while leaving the usable battle height and sprite staging intact.
+      -- WIDE's native paper begins at y=0, while the modern arena begins seven
+      -- source pixels lower after the nine-slice inset is applied.  Clip to
+      -- that same edge (and preserve the old y=105 lower bound) so the source
+      -- paper cannot reappear as a white strip above the ornamental frame at
+      -- larger or fractional window scales.
+      return 28, 7, 248, 98
+    end
+    return 3, 3, 154, 102
+  end
+
+  -- WIDE positions the opponent for all 304 native pixels. The modern arena
+  -- trims roughly 27 pixels from each side, so pull only the source-owned
+  -- opponent picture inward. This preserves send-out/faint picture timing and
+  -- palette animation instead of drawing a second static sprite in the HUD.
+  function battleRuntime.decorateWideScenePlacement(state)
+    if type(state) ~= "table" or type(state.drawPicsLayer) ~= "function"
+        or state._gen1ModernBattleWidePictures then
+      return state
+    end
+    state._gen1ModernBattleWidePictures = true
+    state._gen1ModernBattleNativePictures = state.drawPicsLayer
+    state.drawPicsLayer = function(self, slide, sx, sy, onlySide, ...)
+      if runtime.option("battleUiWip", false) == true
+          and runtime.option("hideOriginalUi", true) ~= false
+          and battleRuntime.presentationMode(self, nil) == "full"
+          and runtime.battleUsesWideLayout(self)
+          and onlySide == "enemy" then
+        sx = (tonumber(sx) or 0) - 12
+      end
+      return self._gen1ModernBattleNativePictures(self,
+        slide, sx, sy, onlySide, ...)
+    end
+    return state
+  end
+
+  -- WORLD normally paints all 304x144 source pixels with battle paper. Replace
+  -- that fill with paper only inside the modern arena and clip the rest of the
+  -- source battle draw to the same rectangle. White sprite pixels, palettes,
+  -- flashes, attacks, send-outs, captures, and shakes remain source-owned,
+  -- while the overworld is visible everywhere outside our ornamental frame.
+  function battleRuntime.decorateWorldSurface(state)
+    if type(state) ~= "table" or type(state.draw) ~= "function"
+        or state._gen1ModernBattleWorldSurface then
+      return state
+    end
+    state._gen1ModernBattleWorldSurface = true
+    state._gen1ModernBattleWorldDraw = state.draw
+    state.draw = function(self, ...)
+      if not battleRuntime.ownsWorldSurface(self)
+          or not (love and love.graphics
+            and type(love.graphics.rectangle) == "function") then
+        return self._gen1ModernBattleWorldDraw(self, ...)
+      end
+
+      local graphics = love.graphics
+      local wide = runtime.battleUsesWideLayout(self)
+      local fieldW = wide and 304 or 160
+      local sceneX, sceneY, sceneW, sceneH =
+        battleRuntime.worldSceneRect(self)
+      local originalRectangle = graphics.rectangle
+      local skippedPaper = false
+      local arguments = { n = select("#", ...), ... }
+      local unpackValues = table.unpack or unpack
+      local results
+      local previousScissor
+      if type(graphics.getScissor) == "function" then
+        previousScissor = { graphics.getScissor() }
+      end
+
+      -- Classic color battles retain a private BG canvas between frames.
+      -- Clear it before skipping the paper fill so stale pixels cannot leak
+      -- into the newly transparent world-backed field.
+      if not wide and (self.bgCanvas or self.waveCanvas)
+          and type(graphics.getCanvas) == "function"
+          and type(graphics.setCanvas) == "function"
+          and type(graphics.clear) == "function" then
+        local previousCanvas = graphics.getCanvas()
+        for _, battleCanvas in ipairs({ self.bgCanvas, self.waveCanvas }) do
+          if battleCanvas then
+            graphics.setCanvas(battleCanvas)
+            graphics.clear(0, 0, 0, 0)
+          end
+        end
+        graphics.setCanvas(previousCanvas)
+      end
+
+      graphics.rectangle = function(mode, x, y, width, height, ...)
+        if mode == "fill" and x == 0 and y == 0
+            and width == fieldW and height == 144 then
+          local target = type(graphics.getCanvas) == "function"
+            and graphics.getCanvas() or nil
+          local privatePaper = not wide
+            and (target == self.bgCanvas or target == self.waveCanvas)
+          if privatePaper or not skippedPaper then
+            skippedPaper = true
+            return originalRectangle(mode, sceneX, sceneY,
+              sceneW, sceneH, ...)
+          end
+        end
+        return originalRectangle(mode, x, y, width, height, ...)
+      end
+
+      local function pack(...)
+        return { n = select("#", ...), ... }
+      end
+      local function onError(problem)
+        if debug and type(debug.traceback) == "function" then
+          return debug.traceback(problem, 2)
+        end
+        return tostring(problem)
+      end
+      if type(graphics.setScissor) == "function" then
+        graphics.setScissor(sceneX, sceneY, sceneW, sceneH)
+      end
+      local ok, problem = xpcall(function()
+        results = pack(self._gen1ModernBattleWorldDraw(self,
+          unpackValues(arguments, 1, arguments.n)))
+      end, onError)
+      graphics.rectangle = originalRectangle
+      if type(graphics.setScissor) == "function" then
+        if previousScissor and #previousScissor == 4 then
+          graphics.setScissor(previousScissor[1], previousScissor[2],
+            previousScissor[3], previousScissor[4])
+        else
+          graphics.setScissor()
+        end
+      end
+      if not ok then error(problem, 0) end
+      return unpackValues(results, 1, results.n)
+    end
+    return state
+  end
+
+  function battleRuntime.nativeIntroHudNeeded(state)
+    state = battleRuntime.inputState(state) or state or {}
+    return state.introBalls == true
+  end
+
+  -- Convert the Game Boy battle-effect offsets into the current fixed battle
+  -- surface. The scene remains host-rendered; applying the same displacement
+  -- to modern cards keeps impact shakes coherent without reproducing battle
+  -- animation timing in this mod.
+  function battleRuntime.animationOffsets(state, w, h)
+    state = battleRuntime.inputState(state) or state or {}
+    local fx = type(state.fx) == "table" and state.fx or {}
+    local sx = tonumber(fx.shakeX) or 0
+    local sy = tonumber(fx.shakeY) or 0
+    if sx == 0 and sy == 0 and (tonumber(fx.shake) or 0) > 0 then
+      sx = (tonumber(state.frame) or 0) % 4 < 2 and 2 or -2
+    end
+    local scale = math.max(1, math.min(w / 160, h / 144))
+    return math.floor(sx * scale + 0.5), math.floor(sy * scale + 0.5),
+      math.floor((tonumber(fx.hudShakeX) or 0) * scale + 0.5)
+  end
+
+  function battleRuntime.presentationTheme(theme, w, h)
+    local scale = clamp(math.min(w / 760, h / 600), 1, 1.55)
+    if scale <= 1.001 then return theme end
+    return scaledTheme(theme, scale, scale, themeScaleCache)
+  end
+
+  function battleRuntime.decorateClassicScene(game, state)
+    if type(state) ~= "table" or runtime.kindFor(state, game) ~= "battle"
+        or type(state.drawHUDs) ~= "function"
+        or type(state.drawTextArea) ~= "function"
+        or state._gen1ModernBattleSceneIsolation then
+      return state
+    end
+    state._gen1ModernBattleNativeHud = state.drawHUDs
+    state._gen1ModernBattleNativeText = state.drawTextArea
+    state._gen1ModernBattleSceneIsolation = true
+    state.drawHUDs = function(self, ...)
+      if battleRuntime.ownsClassicSurface(self)
+          and not battleRuntime.nativeIntroHudNeeded(self) then
+        return
+      end
+      return self._gen1ModernBattleNativeHud(self, ...)
+    end
+    state.drawTextArea = function(self, ...)
+      if battleRuntime.ownsClassicSurface(self) then return end
+      return self._gen1ModernBattleNativeText(self, ...)
+    end
+    return state
+  end
+
+  function battleRuntime.battlerVisible(state, side)
+    state = battleRuntime.inputState(state) or state or {}
+    if (tonumber(state.introSlide) or 0) ~= 0 or state.introBalls then
+      return false
+    end
+    if side == "enemy" then
+      local enemy = state.enemy
+      if not enemy or state.showEnemyTrainer or state.enemySendingOut
+          or enemy.fainted then return false end
+      if type(state.growInScale) == "function" then
+        local ok, growing = pcall(state.growInScale, state, enemy)
+        if ok and growing then return false end
+      end
+      return true
+    end
+    return state.player ~= nil and not state.safari and not state.demo
+      and not state.showPlayerBack
+  end
+
+  function battleRuntime.drawPartyStatus(theme, party, x, y, w, label)
+    if type(party) ~= "table" then return 0 end
+    local spacing = theme.spacing
+    local captionFont = font(fontCache, theme.typography.caption)
+    local dot = math.max(10, textHeight(captionFont) - 2)
+    local h = spacing.sm * 2 + textHeight(captionFont) + spacing.xs + dot
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("line", x + 0.5, y + 0.5,
+      math.max(1, w - 1), math.max(1, h - 1), theme.radii.sm)
+    love.graphics.setFont(captionFont)
+    setColor(theme.colors.textMuted)
+    drawText(label or "PARTY", x + spacing.md, y + spacing.sm)
+    local palette = runtime.healthPalette(theme)
+    local startX = x + w - spacing.md - dot * 6 - spacing.xs * 5
+    local dotY = y + spacing.sm + textHeight(captionFont) + spacing.xs
+    for index = 1, 6 do
+      local mon = party[index]
+      local color = palette.track
+      if mon then
+        local hp = tonumber(mon.hp) or tonumber(mon.mon and mon.mon.hp) or 0
+        local status = mon.status or mon.mon and mon.mon.status
+        color = hp <= 0 and palette.critical
+          or status and palette.medium or palette.high
+      end
+      setColor(color)
+      love.graphics.circle("fill",
+        startX + (index - 1) * (dot + spacing.xs) + dot / 2,
+        dotY + dot / 2, dot / 2)
+      setColor(theme.colors.divider)
+      love.graphics.circle("line",
+        startX + (index - 1) * (dot + spacing.xs) + dot / 2,
+        dotY + dot / 2, dot / 2)
+    end
+    return h
+  end
+
+  function battleRuntime.drawCleanup(theme, x, y, w, h)
+    if w <= 0 or h <= 0 then return end
+    setColor(battleRuntime.opaque(theme.colors.surface))
+    love.graphics.rectangle("fill", math.floor(x), math.floor(y),
+      math.ceil(w), math.ceil(h))
+  end
+
+  function battleRuntime.caughtValue(source, overlays)
+    local caught = battleRuntime.overlayValue(source, overlays,
+      { "caughtIndicator", "caught" })
+    if type(caught) == "table" then
+      if caught.caught ~= nil then return caught.caught == true end
+      return caught.owned == true
+    end
+    return caught == true
+  end
+
+  -- FIXED battles expose the exact centred surface rectangle through the HUD
+  -- viewport. Anchor modern battle furniture to that surface instead of the
+  -- whole monitor, which is especially important on ultrawide displays.
+  function battleRuntime.viewportRect(viewport, state)
+    local safeX, safeY, safeW, safeH = presenterRect(viewport)
+    local x = tonumber(viewport and viewport.gameX)
+    local y = tonumber(viewport and viewport.gameY)
+    local w = tonumber(viewport and viewport.gameWidth)
+    local h = tonumber(viewport and viewport.gameHeight)
+    if x and y and w and h and w > 0 and h > 0 then
+      local right = math.min(safeX + safeW, x + w)
+      local bottom = math.min(safeY + safeH, y + h)
+      x, y = math.max(safeX, x), math.max(safeY, y)
+      if right > x and bottom > y then
+        w, h = right - x, bottom - y
+      else
+        x, y, w, h = safeX, safeY, safeW, safeH
+      end
+    else
+      x, y, w, h = safeX, safeY, safeW, safeH
+    end
+    -- WIDE's 304:144 surface is intentionally panoramic, but mirroring that
+    -- full span with modern furniture makes every card and button feel
+    -- needlessly stretched on desktop. Keep the live source scene untouched
+    -- while bringing the ornamental frame and controls modestly inward.
+    if runtime.battleUsesWideLayout(state) and w > h * 1.78 then
+      local framedW = math.min(w, h * 1.78, safeW * 0.90)
+      x = x + (w - framedW) / 2
+      w = framedW
+    end
+    return x, y, w, h
+  end
+
+  -- Level-up is a battle child, but it is still part of the modern battle
+  -- presentation.  Keep the host responsible for the stat transition and
+  -- read the resulting public mon values into a compact, content-sized card.
+  -- This deliberately does not redraw the battle scene or the Pokémon: those
+  -- remain source-owned so their animation, palette, and transition timing
+  -- continue uninterrupted underneath the card.
+  runtime.drawBattleLevelUp = function(game, state, viewport, theme, model)
+    local x, y, w, h = battleRuntime.viewportRect(viewport, state)
+    theme = battleRuntime.presentationTheme(theme, w, h)
+    local spacing = theme.spacing
+    local top = battleRuntime.topState(game) or state
+    local mon = top and top.mon or top and top.pokemon or {}
+    local stats = type(mon.stats) == "table" and mon.stats or {}
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local inset = math.max(spacing.md,
+      math.floor(math.min(w, h) * 0.018))
+    local titleH = textHeight(titleFont)
+    local bodyH = textHeight(bodyFont)
+    local captionH = textHeight(captionFont)
+    local tileH = math.max(bodyH, captionH) + spacing.sm * 2
+    local panelW = math.min(w - inset * 2,
+      math.max(300, math.min(460, w * 0.44)))
+    local panelH = spacing.md + titleH + spacing.xs + bodyH
+      + spacing.md + tileH * 2 + spacing.sm + spacing.md
+    panelH = math.min(h - inset * 2, panelH)
+    local panelX
+    if w < 640 then
+      panelX = x + (w - panelW) / 2
+    else
+      panelX = x + w - panelW - inset
+    end
+    local panelY = y + math.max(inset, (h - panelH) * 0.30)
+    local nickname = safeText(mon.nickname or mon.name or mon.species)
+    local level = safeText(mon.level or top.level)
+    local rows = {
+      { "ATTACK", stats.attack },
+      { "DEFENSE", stats.defense },
+      { "SPEED", stats.speed },
+      { "SPECIAL", stats.special },
+    }
 
     love.graphics.push("all")
     love.graphics.origin()
-    drawPresenterBackdrop(theme, viewport)
-    setColor(theme.colors.surface)
-    love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.lg)
-    drawPanelFrame(theme, px, py, panelW, panelH, theme.radii.lg)
-    drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
+    local surface = battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface)
+    runtime.drawPanelFrame(theme, panelX, panelY, panelW, panelH,
+      theme.radii.lg, surface)
+    runtime.drawPanelAccent(theme, panelX, panelY, panelW,
+      theme.radii.lg, 3)
+
     setColor(theme.colors.text)
-    love.graphics.setFont(font(fontCache, theme.typography.title))
-    drawText(state.kind == "trainer" and "TRAINER BATTLE" or "BATTLE",
-      px + spacing.lg, py + spacing.md)
-    setColor(theme.colors.textMuted)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
-    drawText("LIVE BATTLE", px + panelW - spacing.lg - 82, py + spacing.md + 5)
-
-    drawBattleCard(game, theme, state.enemy, px + spacing.lg,
-      py + spacing.lg + 34, cardW, cardH, false)
-    drawBattleCard(game, theme, state.player,
-      px + panelW - cardW - spacing.lg, py + panelH - footerH - cardH - spacing.lg,
-      cardW, cardH, true)
-
-    local enemyImage = battleImage(game, state, state.enemy, "front")
-    local playerImage = battleImage(game, state, state.player, "back")
-    local spriteW, spriteH = panelW * 0.34, arenaH * 0.82
-    if enemyImage then
-      drawBattleFit(enemyImage, px + panelW - spriteW - spacing.xl,
-        arenaY, spriteW, spriteH * 0.56)
-    end
-    if playerImage then
-      drawBattleFit(playerImage, px + spacing.xl,
-        arenaY + arenaH * 0.32, spriteW, spriteH * 0.68)
+    love.graphics.setFont(titleFont)
+    drawText("LEVEL UP!", panelX + spacing.md, panelY + spacing.md)
+    local identityY = panelY + spacing.md + titleH + spacing.xs
+    love.graphics.setFont(bodyFont)
+    setColor(theme.colors.text)
+    local levelText = level ~= "" and ("Lv " .. level) or ""
+    local levelW = bodyFont:getWidth(levelText)
+    drawText(truncate(nickname ~= "" and nickname or "POKEMON",
+      math.max(40, panelW - spacing.md * 2 - levelW - spacing.sm)),
+      panelX + spacing.md, identityY)
+    if levelText ~= "" then
+      setColor(theme.colors.textMuted)
+      drawText(levelText, panelX + panelW - spacing.md - levelW, identityY)
     end
 
-    drawBattleActionPanel(game, state, theme, px + spacing.lg,
-      py + panelH - footerH, panelW - spacing.lg * 2, footerH)
-    setColor(theme.colors.textMuted)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
-    drawHintIfUseful(theme, "A  select    B  back", px + spacing.lg,
-      py + panelH - spacing.sm - 14, panelW - spacing.lg * 2)
+    local gridY = identityY + bodyH + spacing.md
+    local columnW = (panelW - spacing.md * 2 - spacing.sm) / 2
+    for index, row in ipairs(rows) do
+      local column = (index - 1) % 2
+      local line = math.floor((index - 1) / 2)
+      local cellX = panelX + spacing.md + column * (columnW + spacing.sm)
+      local cellY = gridY + line * (tileH + spacing.sm)
+      setColor(battleRuntime.opaque(theme.colors.selected
+        or theme.colors.surface))
+      love.graphics.rectangle("fill", cellX, cellY, columnW, tileH,
+        theme.radii.sm)
+      setColor(theme.colors.divider)
+      love.graphics.rectangle("line", cellX, cellY, columnW, tileH,
+        theme.radii.sm)
+      setColor(theme.colors.textMuted)
+      love.graphics.setFont(captionFont)
+      drawText(row[1], cellX + spacing.sm,
+        cellY + (tileH - captionH) / 2)
+      local value = row[2] == nil and "--" or safeText(row[2])
+      setColor(theme.colors.text)
+      love.graphics.setFont(bodyFont)
+      drawText(value, cellX + columnW - spacing.sm - bodyFont:getWidth(value),
+        cellY + (tileH - bodyH) / 2)
+    end
     love.graphics.pop()
+  end
+
+  runtime.drawBattle2dHud = function(game, state, viewport, theme, model,
+      options)
+    options = options or {}
+    local x, y, w, h = battleRuntime.viewportRect(viewport, state)
+    theme = battleRuntime.presentationTheme(theme, w, h)
+    local spacing = theme.spacing
+    local source, overlays = battleRuntime.dataSource(game, state, model)
+    local native = battleRuntime.inputState(source) or state
+    local phase = source.phase or native.phase
+    local shakeX, shakeY, enemyShakeX =
+      battleRuntime.animationOffsets(source, w, h)
+    local inset = math.max(spacing.md,
+      math.floor(math.min(w, h) * 0.018))
+    local innerX, innerY = x + inset, y + inset
+    local innerW, innerH = w - inset * 2, h - inset * 2
+    local arenaH = math.max(spacing.xl,
+      h * (104 / 144) - inset)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    -- A single ornamental arena frame gives the 2D presentation a coherent
+    -- silhouette without putting another opaque box behind the source scene.
+    runtime.drawPanelFrame(theme, innerX, innerY, innerW, arenaH,
+      theme.radii.lg, false)
+    runtime.drawPanelAccent(theme, innerX, innerY, innerW,
+      theme.radii.lg, 3)
+
+    local compactLandscape = h < 480 and w > h
+    local cardW = math.min(innerW * 0.44, math.max(300, w * 0.38))
+    local enemyX = innerX + spacing.md
+    local enemyY = innerY + spacing.md
+    local playerX = innerX + innerW - cardW - spacing.md
+    -- The compact card typography may shrink on a short battle surface, but
+    -- its semantic position must not jump into the foe's top row. Keep the
+    -- player's status ribbon in the lower-right half of the framed arena.
+    local playerY = innerY + arenaH * 0.52
+    local experience = battleRuntime.overlayValue(source, overlays,
+      { "experience", "expBar", "experienceBar" })
+    if battleRuntime.battlerVisible(source, "enemy") then
+      runtime.drawBattle2dCard(game, theme, source.enemy,
+        enemyX + shakeX + enemyShakeX, enemyY + shakeY, cardW, {
+          caught = battleRuntime.caughtValue(source, overlays),
+          typeText = battleRuntime.typeText(game, source.enemy),
+          rateText = battleRuntime.catchRateText(source, overlays),
+          compact = compactLandscape,
+        })
+    elseif native.showEnemyBalls and native.enemyParty then
+      battleRuntime.drawPartyStatus(theme, native.enemyParty,
+        enemyX + shakeX + enemyShakeX, enemyY + shakeY,
+        cardW, "FOE PARTY")
+    end
+    if not options.hidePlayerCard
+        and battleRuntime.battlerVisible(source, "player") then
+      runtime.drawBattle2dCard(game, theme, source.player,
+        playerX + shakeX, playerY + shakeY, cardW, {
+          typeText = battleRuntime.typeText(game, source.player),
+          experience = experience,
+          compact = compactLandscape,
+        })
+    end
+
+    -- Bag, Party, choices, and other battle children own the foreground.
+    -- Their native draw is suppressed by screen.render_visible on new hosts;
+    -- the compose fallback handles older clients. Leaving the lower battle
+    -- dock empty prevents a redundant message/menu behind the child panel.
+    if battleRuntime.childOpen(game, native) then
+      love.graphics.pop()
+      return
+    end
+
+    local isMove = phase == "moveSelect" or phase == "mimicSelect"
+    if isMove then
+      local panelW = math.min(innerW,
+        math.max(620, math.min(980, innerW * 0.68)))
+      local moves = phase == "mimicSelect" and source.mimicMoves
+        or source.moves or source.player and source.player.curMoves or {}
+      local probeH = battleRuntime.movePanelHeight(theme,
+        type(moves) == "table" and #moves or 0)
+      local panelX = x + (w - panelW) / 2 + shakeX
+      local panelY = y + h - inset - probeH + shakeY
+      runtime.drawBattle2dMoves(game, source, theme,
+        panelX, panelY, panelW)
+    elseif phase == "menu" then
+      local panelW = math.min(innerW,
+        math.max(460, math.min(720, innerW * 0.48)))
+      local probeH = battleRuntime.commandPanelHeight(theme)
+      local panelX = x + (w - panelW) / 2 + shakeX
+      local panelY = y + h - inset - probeH + shakeY
+      runtime.drawBattle2dCommands(game, source, theme,
+        panelX, panelY, panelW)
+    else
+      local message = runtime.battleMessage(source)
+      if message ~= "" then
+        runtime.drawBattle2dMessage(theme, message,
+          innerX + shakeX, innerY + shakeY, innerW, innerH,
+          source.msgWaiting or source.msgPrompt)
+      end
+    end
+    love.graphics.pop()
+  end
+
+  runtime.drawBattleHud = function(game, state, viewport, theme, model, mode)
+    local top = battleRuntime.topState(game)
+    if battleRuntime.isLevelUpState(game, top) then
+      -- A level-up is a modern battle child, not permission to expose the
+      -- native StatBox.  Always use the full 2D battle surface here so the
+      -- live scene remains visible even when battleUiMode was set to HUD.
+      runtime.drawBattle2dHud(game, state, viewport, theme, model, {
+        hidePlayerCard = true,
+      })
+      runtime.drawBattleLevelUp(game, state, viewport, theme, model)
+      return
+    end
+    if mode == "full" then
+      return runtime.drawBattle2dHud(game, state, viewport, theme, model)
+    end
+    local x, y, w, h = presenterRect(viewport)
+    local spacing = theme.spacing
+    local source, overlays = battleRuntime.dataSource(game, state, model)
+    local native = battleRuntime.inputState(source) or state
+    local phase = source.phase or native.phase
+    local voxel = mode == "hud"
+    local shortLandscape = h < 480 and w > h
+    local inset = math.max(spacing.md, math.floor(math.min(w, h) * 0.018))
+    local cardW = math.min(430, math.max(250, w * 0.415))
+    local experience = battleRuntime.overlayValue(source, overlays,
+      { "experience", "expBar", "experienceBar" })
+    local enemyCardH = math.min(184, math.max(112, h * 0.22))
+    local playerCardH = math.min(196, math.max(112,
+      h * (voxel and 0.20 or 0.24)))
+    local enemyX, enemyY = x, y + h * 0.04
+    local playerX = x + w - cardW
+    local isMove = phase == "moveSelect" or phase == "mimicSelect"
+    local playerY = shortLandscape and enemyY
+      or y + h * (voxel and 0.52 or 0.43)
+    local panelH = isMove
+      and math.min(h - inset * 2, math.max(190, math.min(280, h * 0.34)))
+      or math.min(h - inset * 2, math.max(132, math.min(230, h * 0.30)))
+    local panelY = y + h - inset - panelH
+    local panelX, panelW = x + w * 0.11, w * 0.78
+    local message = runtime.battleMessage(source)
+    local canPresentAction = phase == "menu" or isMove
+      or (message ~= nil and message ~= "")
+
+    love.graphics.push("all")
+    love.graphics.origin()
+
+    if mode == "full" then
+      -- The 2D layout still gets the requested full-arena frame, but its
+      -- center remains transparent so the source renderer's live sprites,
+      -- move effects, flashes, and transitions are never re-created here.
+      runtime.drawPanelFrame(theme, x + inset, y + inset,
+        w - inset * 2, h - inset * 2, theme.radii.lg, false)
+      runtime.drawPanelAccent(theme, x + inset, y + inset,
+        w - inset * 2, theme.radii.lg, 3)
+    end
+
+    if battleRuntime.battlerVisible(source, "enemy") then
+      -- The card itself occupies the complete legacy status footprint. Its
+      -- forced-opaque surface prevents names/HP from leaking at the edges
+      -- even when the global panel-opacity preference is reduced.
+      runtime.drawBattleCard(game, theme, source.enemy, enemyX, enemyY,
+        cardW, enemyCardH, false, nil, {
+          caught = battleRuntime.caughtValue(source, overlays),
+        })
+    end
+    if battleRuntime.battlerVisible(source, "player") then
+      runtime.drawBattleCard(game, theme, source.player, playerX, playerY,
+        cardW, playerCardH, true, nil, { experience = experience })
+    end
+
+    if canPresentAction then
+      -- WideBattle owns the full lower strip; classic move selection also
+      -- owns a large TYPE/PP box at lower-left. Opaque cleanup plates remove
+      -- both native layouts while leaving every sprite/animation region above
+      -- them untouched.
+      battleRuntime.drawCleanup(theme, x, panelY - spacing.sm,
+        w, y + h - panelY + spacing.sm)
+      if isMove then
+        local gap = spacing.sm
+        local detailsX = x + inset
+        local detailsW = math.min(w * 0.40, 430)
+        local actionX = detailsX + detailsW + gap
+        local actionW = x + w - inset - actionX
+        runtime.drawBattleMoveDetails(game, source, theme,
+          detailsX, panelY, detailsW, panelH)
+        runtime.drawBattleActionPanel(game, source, theme,
+          actionX, panelY, actionW, panelH)
+      else
+        runtime.drawBattleActionPanel(game, source, theme,
+          panelX, panelY, panelW, panelH)
+      end
+      battleRuntime.drawExtras(theme, source, overlays,
+        x + inset, y + h * 0.26, math.min(cardW, w * 0.46),
+        math.max(36, h * 0.15), true, true)
+    end
+    love.graphics.pop()
+  end
+
+  runtime.drawBattle = function(game, state, viewport, theme)
+    local nativeState = state
+    local model = battleRuntime.sourceModel(game, state)
+    if model then
+      -- Pointer selection and semantic button taps must still mutate the
+      -- source-owned BattleState, never the read-only normalized model copy.
+      model._gen1ModernBattleState = nativeState
+      setmetatable(model, { __index = state })
+      state = model
+    end
+    -- The internal `full` value now means the larger 2D FRAMED composition,
+    -- not ownership of the battlefield canvas. `hud` selects the tighter
+    -- SCENE HUD placement. Both
+    -- preserve the same live source draw and all of its animations.
+    local mode = battleRuntime.presentationMode(state, model)
+    runtime.drawBattleHud(game, state, viewport, theme, model, mode)
+  end
+
+  -- Remove only the standard or wide 2D HUD rectangles from the native battle
+  -- surface before it is scaled/composited. The arena pictures and animation
+  -- layer remain untouched. This is substantially safer than covering broad
+  -- screen-space bands and lets the modern cards be genuinely content-sized.
+  function battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
+    if not (game and ctx and ctx.uiCanvas and type(layers) == "table") then
+      return false
+    end
+    local battleState
+    for _, layer in ipairs(layers) do
+      if layer.kind == "battle" then battleState = layer.state break end
+    end
+    if not battleState then return false end
+    local model = battleRuntime.sourceModel(game, battleState)
+    if model then
+      model._gen1ModernBattleState = battleState
+      if getmetatable(model) == nil then
+        setmetatable(model, { __index = battleState })
+      end
+    end
+    local source = model or battleState
+    local top = battleRuntime.topState(game)
+    local levelUp = battleRuntime.isLevelUpState(game, top)
+    if battleRuntime.presentationMode(battleState, model) ~= "full"
+        and not levelUp then
+      return false
+    end
+    local canvasW, canvasH = ctx.uiCanvas:getDimensions()
+    local wide = runtime.battleUsesWideLayout(battleState)
+    local nativeW = wide and 304 or 160
+    if canvasW < nativeW or canvasH < 144 then return false end
+    local offsetX = math.floor((canvasW - nativeW) / 2)
+    local native = battleState
+    local childOpen = top ~= nil and top ~= native
+
+    -- New classic BattleState instances are isolated before drawing: their
+    -- scene, sprites, flashes, and animation layer reach this canvas, while
+    -- drawHUDs/drawTextArea are already absent. Never paint over that scene.
+    -- On old hosts the rectangle scrub below remains the safe fallback.
+    if battleState._gen1ModernBattleSceneIsolation and not wide
+        and battleRuntime.ownsClassicSurface(battleState)
+        and (not childOpen or runtime.renderVisibleHookSeen) then
+      return true
+    end
+
+    love.graphics.push("all")
+    love.graphics.setCanvas(ctx.uiCanvas)
+    love.graphics.origin()
+    local transparentWorld = battleRuntime.ownsWorldSurface(battleState)
+    local worldDim = transparentWorld
+      and clamp(tonumber(renderer and renderer.battleDim) or 0, 0, 1) or 0
+    local worldSceneX, worldSceneY, worldSceneW, worldSceneH
+    local worldSceneLeft, worldSceneRight
+    local function setWorldOutsidePaint()
+      love.graphics.setColor(0, 0, 0, worldDim)
+    end
+    if transparentWorld then
+      -- Replace, rather than alpha-blend, these exact native HUD rectangles
+      -- with transparent pixels. This exposes the already-rendered WORLD
+      -- canvas without treating legitimate white pixels in battle sprites as
+      -- a color key.
+      love.graphics.setBlendMode("replace")
+      love.graphics.setColor(0, 0, 0, 0)
+      -- Remove every source pixel outside the same native arena rectangle
+      -- used by the WORLD draw decorator. This catches retained canvas pixels
+      -- and animated effects that would otherwise remain active in the bright
+      -- side gutters beyond the modern frame.
+      worldSceneX, worldSceneY, worldSceneW, worldSceneH =
+        battleRuntime.worldSceneRect(battleState)
+      worldSceneLeft = offsetX + worldSceneX
+      worldSceneRight = worldSceneLeft + worldSceneW
+      love.graphics.rectangle("fill", 0, 0, worldSceneLeft, canvasH)
+      love.graphics.rectangle("fill", worldSceneRight, 0,
+        math.max(0, canvasW - worldSceneRight), canvasH)
+      love.graphics.rectangle("fill", worldSceneLeft, 0,
+        worldSceneW, worldSceneY)
+      love.graphics.rectangle("fill", worldSceneLeft,
+        worldSceneY + worldSceneH, worldSceneW,
+        math.max(0, canvasH - worldSceneY - worldSceneH))
+      -- Renderer dims the overworld outside its complete native UI viewport.
+      -- Reapply that same veil to our now-transparent inner gutters so the
+      -- old viewport cannot survive as a conspicuously brighter rectangle.
+      if worldDim > 0 then
+        setWorldOutsidePaint()
+        love.graphics.rectangle("fill", 0, 0, worldSceneLeft, canvasH)
+        love.graphics.rectangle("fill", worldSceneRight, 0,
+          math.max(0, canvasW - worldSceneRight), canvasH)
+        love.graphics.rectangle("fill", worldSceneLeft, 0,
+          worldSceneW, worldSceneY)
+        love.graphics.rectangle("fill", worldSceneLeft,
+          worldSceneY + worldSceneH, worldSceneW,
+          math.max(0, canvasH - worldSceneY - worldSceneH))
+      end
+    else
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+    if childOpen and not levelUp
+        and (not top or not top._gen1ModernBattleChildNativeDraw) then
+      -- If this host never passed the child through ui.state.decorate, there
+      -- is no reliable way to recover the battle pixels after a centred
+      -- classic child overwrites them. Keep the WORLD outside dimmed and
+      -- restore only the framed arena paper instead of filling the entire
+      -- canvas with that dim color.
+      if transparentWorld then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setScissor(worldSceneLeft, worldSceneY,
+          worldSceneW, worldSceneH)
+        love.graphics.rectangle("fill", worldSceneLeft, worldSceneY,
+          worldSceneW, worldSceneH)
+        love.graphics.setScissor()
+      else
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.rectangle("fill", 0, 0, canvasW, canvasH)
+      end
+      love.graphics.pop()
+      return true
+    end
+    if transparentWorld then
+      -- The native HP boxes live inside the arena. Erase their text and bars
+      -- back to battle paper, not transparency, so no map-shaped holes remain
+      -- around the modern content-sized status ribbons.
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.setScissor(worldSceneLeft, worldSceneY,
+        worldSceneW, worldSceneH)
+    end
+    if battleRuntime.battlerVisible(source, "enemy") then
+      love.graphics.rectangle("fill", offsetX, 0,
+        wide and 132 or 90, wide and 36 or 32)
+    end
+    if battleRuntime.battlerVisible(source, "player") then
+      love.graphics.rectangle("fill", offsetX + (wide and 180 or 72),
+        wide and 52 or 56, wide and 124 or 88, wide and 48 or 40)
+    end
+    if levelUp then
+      -- StatBox is a battle child. Remove its native stat window while
+      -- leaving the live battle scene and all source-owned animations intact;
+      -- drawBattleLevelUp paints the modern card after this scrub.
+      love.graphics.rectangle("fill", offsetX + 72, 16, 88, 80)
+    end
+    if transparentWorld then love.graphics.setScissor() end
+    local phase = source.phase or native.phase
+    local isMove = phase == "moveSelect" or phase == "mimicSelect"
+    local message = runtime.battleMessage(source)
+    if childOpen or phase == "menu" or isMove or message ~= "" then
+      if transparentWorld then setWorldOutsidePaint() end
+      love.graphics.rectangle("fill", offsetX, wide and 104 or 96,
+        nativeW, wide and 40 or 48)
+    end
+    if isMove and not wide then
+      if transparentWorld then love.graphics.setColor(1, 1, 1, 1) end
+      love.graphics.rectangle("fill", offsetX, 56, 92, 48)
+    end
+    love.graphics.pop()
+    return true
   end
 
   -- LinkState owns networking and input, but its released renderer is a
   -- small native 160x144 canvas. Present its public stages as ordinary modern
   -- rows while leaving every transition/callback in LinkState untouched.
-  local function drawLink(game, state, viewport, theme)
+  runtime.drawLink = function(game, state, viewport, theme)
     local stage = state.stage or "menu"
     local title = ({
       menu = "LINK",
@@ -8944,37 +10910,37 @@ return function(mod)
     end
     if #rows == 0 then row("WAITING...", nil, false) end
 
-    local layout = layoutFor(viewport, theme, "link", rows, Strings(title), footer)
+    local layout = runtime.layoutFor(viewport, theme, "link", rows, Strings(title), footer)
     selected = clamp(selected, 1, #rows)
     local scroll = 0
     love.graphics.push("all")
     love.graphics.origin()
-    if not layout.sidePanel then drawPresenterBackdrop(theme, viewport) end
+    if not layout.sidePanel then runtime.drawPresenterBackdrop(theme, viewport) end
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h,
       layout.radius)
-    drawHeader(theme, layout, Strings(title))
-    drawRows(theme, layout, rows, selected, scroll, game)
+    runtime.drawHeader(theme, layout, Strings(title))
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
-      themeMetric(theme, "divider", 1))
+      runtime.themeMetric(theme, "divider", 1))
     setColor(theme.colors.textMuted)
-    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + theme.spacing.sm,
       layout.w - theme.spacing.lg * 2)
     love.graphics.pop()
   end
 
-  local function drawModern(game, state, kind, viewport, theme, asModal, underKind,
+  runtime.drawModern = function(game, state, kind, viewport, theme, asModal, underKind,
       underState, overKind, overState)
-    if not presenterEnabled(kind) then return end
+    if not runtime.presenterEnabled(kind) then return end
     if kind == "text" or kind == "choice" or kind == "quantity"
         or (asModal and underKind == "text") then
-      theme = dialogueTheme(theme)
+      theme = runtime.dialogueTheme(theme)
     end
     if kind == "text" then
-      drawDialogue(state, viewport, theme, game, overKind, overState)
+      runtime.drawDialogue(state, viewport, theme, game, overKind, overState)
       return
     end
     if kind == "move_learn" then
@@ -9019,62 +10985,62 @@ return function(mod)
       return
     end
     if asModal or kind == "choice" or kind == "quantity" then
-      drawModalRows(game, state, kind, viewport, theme, underKind, underState)
+      runtime.drawModalRows(game, state, kind, viewport, theme, underKind, underState)
       return
     end
     if kind == "battle" then
-      drawBattle(game, state, viewport, theme)
+      runtime.drawBattle(game, state, viewport, theme)
       return
     end
     if kind == "link" then
-      drawLink(game, state, viewport, theme)
+      runtime.drawLink(game, state, viewport, theme)
       return
     end
     if kind == "mod_manager" then
-      drawManager(game, state, viewport, theme)
+      runtime.drawManager(game, state, viewport, theme)
       return
     end
-    local minimal = option("minimalUi", false) == true
+    local minimal = runtime.option("minimalUi", false) == true
     local forceGeneric = minimal and kind == "pokedex"
     if kind == "gen3_box" then
-      drawGen3Box(game, state, viewport, theme)
+      runtime.drawGen3Box(game, state, viewport, theme)
       return
     end
     if kind == "dex_entry" then
-      drawDexEntry(game, state, viewport, theme)
+      runtime.drawDexEntry(game, state, viewport, theme)
       return
     end
     if kind == "summary" then
-      drawSummary(game, state, viewport, theme)
+      runtime.drawSummary(game, state, viewport, theme)
       return
     end
     if kind == "trainer_card" then
-      drawTrainerCard(game, state, viewport, theme)
+      runtime.drawTrainerCard(game, state, viewport, theme)
       return
     end
     if kind == "party" then
-      drawParty(game, state, viewport, theme)
+      runtime.drawParty(game, state, viewport, theme)
       return
     end
     if kind == "box_mon_list" then
-      drawBoxPokemonList(game, state, viewport, theme)
+      runtime.drawBoxPokemonList(game, state, viewport, theme)
       return
     end
     if kind == "pokedex" and not forceGeneric then
-      drawPokedex(game, state, viewport, theme)
+      runtime.drawPokedex(game, state, viewport, theme)
       return
     end
     if kind == "bag" and not forceGeneric then
-      drawBag(game, state, viewport, theme)
+      runtime.drawBag(game, state, viewport, theme)
       return
     end
     if (kind == "shop_list" or kind == "pc_list") and not forceGeneric then
-      drawContextList(game, state, kind, viewport, theme)
+      runtime.drawContextList(game, state, kind, viewport, theme)
       return
     end
-    local rows, selected, scroll, title, footerText = rowsFor(game, state, kind)
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
-    local layout = layoutFor(viewport, theme, kind, rows, title, footerText)
+    local layout = runtime.layoutFor(viewport, theme, kind, rows, title, footerText)
     scroll = clamp(scroll, 0, math.max(0, #rows - layout.visible))
     selected = clamp(selected, 1, math.max(1, #rows))
     if selected <= scroll then scroll = selected - 1 end
@@ -9082,15 +11048,15 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    if not layout.sidePanel then drawPresenterBackdrop(theme, viewport) end
+    if not layout.sidePanel then runtime.drawPresenterBackdrop(theme, viewport) end
     local surface = theme.colors.surface
     if layout.sidePanel then
       surface = { surface[1], surface[2], surface[3], math.min(surface[4] or 1, 0.96) }
     end
     setColor(surface)
     love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h, layout.radius)
-    drawHeader(theme, layout, title)
-    drawRows(theme, layout, rows, selected, scroll, game)
+    runtime.drawHeader(theme, layout, title)
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
     setColor(theme.colors.divider)
     love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2, 1)
@@ -9099,7 +11065,7 @@ return function(mod)
       (kind == "choice" and "A  choose    B  cancel"
       or kind == "quantity" and "A  confirm    B  cancel"
       or "Arrow keys / A  select    B  back")
-    drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
+    runtime.drawHintIfUseful(theme, Strings(footer), layout.x + theme.spacing.lg,
       layout.y + layout.h - layout.footer + 8,
       layout.w - theme.spacing.lg * 2)
     if kind == "menu" and state and state.screenId == "StartMenu" then
@@ -9114,7 +11080,7 @@ return function(mod)
   -- modal layers should switch to the compact rows card.  Treating every
   -- layer after the first as modal made those screens render an empty
   -- "Nothing here" card and hid the page that was just opened.
-  local function isModalLayer(kind)
+  runtime.isModalLayer = function(kind)
     return kind == "menu" or kind == "list" or kind == "choice"
       or kind == "quantity" or kind == "text" or kind == "pic_box"
   end
@@ -9123,7 +11089,7 @@ return function(mod)
   -- expose meaningful controls that cannot be represented by row clicks.
   -- Surface only those extras, and leave mobile's native TouchControls alone:
   -- they receive pointer first refusal and already provide the full pad.
-  local function pointerControlsFor(kind, state)
+  runtime.pointerControlsFor = function(kind, state)
     if not state then return {} end
     local actions, seen = {}, {}
     local function add(action)
@@ -9188,6 +11154,11 @@ return function(mod)
       add("up"); add("down")
     elseif kind == "dex_radar" then
       add("up"); add("down"); add("left"); add("right")
+    elseif kind == "battle" then
+      -- Battle cells register their own hover/click regions. Keep the dock
+      -- available for phases such as message waits, move selection, and
+      -- source-owned battle states that do not expose every cell visually.
+      add("up"); add("down"); add("left"); add("right"); add("select")
     end
 
     if state.pageJump then add("left"); add("right") end
@@ -9225,13 +11196,13 @@ return function(mod)
     return POINTER_CONTROL_LABEL[action] or action:upper()
   end
 
-  local function drawPointerControls(theme, context)
-    if option("pointerUi", false) ~= true or not context
+  runtime.drawPointerControls = function(theme, context)
+    if runtime.option("pointerUi", false) ~= true or not context
         or not context.primaryPanel
         or (context.viewport and context.viewport._gen1TouchVisible) then
       return
     end
-    local actions = pointerControlsFor(context.kind, context.state)
+    local actions = runtime.pointerControlsFor(context.kind, context.state)
     if #actions == 0 then return end
     local panel = context.primaryPanel
     local vx, vy, vw, vh = presenterRect(context.baseViewport or context.viewport)
@@ -9285,7 +11256,7 @@ return function(mod)
         context.kind, context.state, action)
       drawText(label, x + (width - controlFont:getWidth(label)) / 2,
         dockY + (buttonH - textHeight(controlFont)) / 2)
-      registerPointerRegion(x, dockY, width, buttonH, {
+      runtime.registerPointerRegion(x, dockY, width, buttonH, {
         action = context.kind == "external" and nil or action,
         adapterAction = context.kind == "external" and action or nil,
         activate = true, interactive = true,
@@ -9295,12 +11266,14 @@ return function(mod)
     end
   end
 
-  local function drawModernStack(game, layers, viewport)
-    local theme = responsiveTheme(currentTheme(viewport), viewport, responsiveThemeCache)
+  runtime.drawModernStack = function(game, layers, viewport)
+    local topState = layers[#layers] and layers[#layers].state or nil
+    local theme = responsiveTheme(runtime.currentTheme(viewport, topState), viewport,
+      responsiveThemeCache)
     pointerRuntime.generation = pointerRuntime.generation + 1
     pointerRegions = {}
     pointerRuntime.topOrder = #layers
-    local nextTopState = layers[#layers] and layers[#layers].state or nil
+    local nextTopState = topState
     if pointerRuntime.topState ~= nextTopState then
       hoveredPointer = nil
       for _, capture in pairs(pointerCaptures) do capture.invalid = true end
@@ -9314,21 +11287,21 @@ return function(mod)
       local underState = index > 1 and layers[index - 1].state or nil
       local overKind = index < #layers and layers[index + 1].kind or nil
       local overState = index < #layers and layers[index + 1].state or nil
-      local modal = index > 1 and isModalLayer(layer.kind)
-      if modal and not modalActive then drawModalScrim(theme, viewport) end
+      local modal = index > 1 and runtime.isModalLayer(layer.kind)
+      if modal and not modalActive then runtime.drawModalScrim(theme, viewport) end
       modalActive = modal
-      local offsetX, offsetY = layerOffset(layer.kind, viewport)
+      local offsetX, offsetY = runtime.layerOffset(layer.kind, viewport)
       local layerViewport = shiftedViewport(viewport, offsetX, offsetY)
       pointerDrawContext = {
         kind = layer.kind, state = layer.state,
         layerKey = safeText(layer.kind or "screen") .. ":" .. index,
         viewport = layerViewport, baseViewport = viewport, order = index,
       }
-      drawModern(game, layer.state, layer.kind, layerViewport, theme,
+      runtime.drawModern(game, layer.state, layer.kind, layerViewport, theme,
         modal, underKind, underState,
         overKind, overState)
       if index == #layers then
-        drawPointerControls(theme, pointerDrawContext)
+        runtime.drawPointerControls(theme, pointerDrawContext)
       end
       pointerDrawContext = nil
     end
@@ -9336,11 +11309,11 @@ return function(mod)
     love.graphics.pop()
   end
 
-  local function pointerInputReady()
+  runtime.pointerInputReady = function()
     return mod.input and type(mod.input.tap) == "function"
   end
 
-  local function pointerContains(region, x, y)
+  runtime.pointerContains = function(region, x, y)
     return type(x) == "number" and type(y) == "number"
       and x >= region.x and x <= region.x + region.w
       and y >= region.y and y <= region.y + region.h
@@ -9396,14 +11369,14 @@ return function(mod)
     return true
   end
 
-  local function pointerHit(x, y)
+  runtime.pointerHit = function(x, y)
     -- Regions are appended in draw order. Only the active/top layer may own
     -- hover or click; visible parents underneath a modal remain context, not
     -- live hit targets. Reverse iteration still gives controls and rows first
     -- refusal over their panel's drag surface.
     for index = #pointerRegions, 1, -1 do
       local region = pointerRegions[index]
-      if pointerContains(region, x, y)
+      if runtime.pointerContains(region, x, y)
           and region.interactive ~= false
           and pointerRuntime.regionAlive(currentGame, region) then
         return region
@@ -9415,7 +11388,7 @@ return function(mod)
   pointerRuntime.insideUi = function(x, y)
     for index = #pointerRegions, 1, -1 do
       local region = pointerRegions[index]
-      if pointerContains(region, x, y)
+      if runtime.pointerContains(region, x, y)
           and (region.role == "panel" or region.role == "modal"
             or region.role == "scrim" or region.role == "control") then
         return true
@@ -9458,7 +11431,7 @@ return function(mod)
     return a ~= nil and a == b
   end
 
-  local function pointerSelectionField(region)
+  runtime.pointerSelectionField = function(region)
     local state = region and (region.selectionState or region.state)
     if not state then return nil end
     if region.selectionField then return region.selectionField end
@@ -9477,7 +11450,7 @@ return function(mod)
     return nil
   end
 
-  local function setPointerSelection(region, desiredIndex, game)
+  runtime.setPointerSelection = function(region, desiredIndex, game)
     local state = region and (region.selectionState or region.state)
     if not state or not region
         or not pointerRuntime.regionAlive(game or currentGame, region) then return false end
@@ -9495,7 +11468,7 @@ return function(mod)
     end
     local index = tonumber(desiredIndex or region.selectionIndex
       or region.rowIndex)
-    local field = pointerSelectionField(region)
+    local field = runtime.pointerSelectionField(region)
     if not state or not index or not field then return false end
     index = math.floor(index)
     if tonumber(region.rowCount) then
@@ -9536,7 +11509,7 @@ return function(mod)
     return ok
   end
 
-  local function updatePointerHover(region, game)
+  runtime.updatePointerHover = function(region, game)
     if region and not pointerRuntime.regionAlive(game or currentGame, region) then
       region = nil
     end
@@ -9555,11 +11528,11 @@ return function(mod)
       -- Hovering a row is the mouse equivalent of moving the native cursor.
       -- Selection remains owned by the live state, so the next draw naturally
       -- paints the same highlight used by keyboard/controller navigation.
-      setPointerSelection(region, nil, game)
+      runtime.setPointerSelection(region, nil, game)
     end
   end
 
-  local function pointerScroll(region, normalizedScroll)
+  runtime.pointerScroll = function(region, normalizedScroll)
     local state = region and region.state
     if not state or type(state.scroll) ~= "number"
         or not region.scrollable
@@ -9578,7 +11551,7 @@ return function(mod)
       -- the nearest selectable row as a drag scrolls; manager section headers
       -- are deliberately skipped so a touch can never strand its cursor on
       -- an inert heading.
-      local field = pointerSelectionField(region)
+      local field = runtime.pointerSelectionField(region)
       local current = field and tonumber(state[field])
       if field and current then
         local first = scroll + 1
@@ -9603,12 +11576,12 @@ return function(mod)
     end)
   end
 
-  local function tapGameButton(game, button)
+  runtime.tapGameButton = function(game, button)
     local ok, result = pcall(mod.input.tap, mod.input, game, button)
     return ok and result ~= false
   end
 
-  local function tapPointerAction(game, region)
+  runtime.tapPointerAction = function(game, region)
     if not region or not pointerRuntime.regionAlive(game, region) then return false end
     if region.pointerCommand == "dismiss_help" then
       if region.state and region.state._gen1OptionDescription then
@@ -9621,21 +11594,21 @@ return function(mod)
       return mod._gen1ModernCompatibility:action(game, region.state,
         region.adapterAction, region.adapterIndex)
     end
-    if region.action then return tapGameButton(game, region.action) end
+    if region.action then return runtime.tapGameButton(game, region.action) end
     local hasSelection = region.rowIndex ~= nil or region.selectionField ~= nil
       or region.namingRow ~= nil
       or (region.gridRow ~= nil and region.gridCol ~= nil)
-    local selected = not hasSelection or setPointerSelection(region, nil, game)
+    local selected = not hasSelection or runtime.setPointerSelection(region, nil, game)
     if not selected then return false end
     local canActivate = region.activate == true or region.rowIndex ~= nil
       or region.namingRow ~= nil
       or (region.gridRow ~= nil and region.gridCol ~= nil)
       or region.kind == "text" or region.kind == "quantity"
     if not canActivate then return false end
-    return tapGameButton(game, "a")
+    return runtime.tapGameButton(game, "a")
   end
 
-  local function pointerCaptureKey(pointer)
+  runtime.pointerCaptureKey = function(pointer)
     local source = pointer and pointer.source or "mouse"
     local id = pointer and pointer.id ~= nil and pointer.id or "mouse"
     return tostring(source) .. ":" .. tostring(id)
@@ -9649,8 +11622,8 @@ return function(mod)
       return next(game, pointer)
     end
     local phase = pointer.phase
-    local key = pointerCaptureKey(pointer)
-    if option("pointerUi", false) ~= true or not pointerInputReady() then
+    local key = runtime.pointerCaptureKey(pointer)
+    if runtime.option("pointerUi", false) ~= true or not runtime.pointerInputReady() then
       -- A setting or compatibility change can happen in the middle of a
       -- gesture. Never leave that pointer's old capture waiting to fire when
       -- click support is enabled again later.
@@ -9674,14 +11647,14 @@ return function(mod)
       -- the active layer. A visible parent beneath a modal blocks click-
       -- through but is never allowed to move its hidden cursor.
       local region = mouseAction == "b" and nil
-        or pointerHit(pointer.x, pointer.y)
+        or runtime.pointerHit(pointer.x, pointer.y)
       local insideUi = pointerRuntime.insideUi(pointer.x, pointer.y)
       local blocked = mouseAction ~= "b" and not region and insideUi
       if not region and not mouseAction and not blocked then
-        if pointer.source == "mouse" then updatePointerHover(nil, game) end
+        if pointer.source == "mouse" then runtime.updatePointerHover(nil, game) end
         return next(game, pointer)
       end
-      if region then setPointerSelection(region, nil, game) end
+      if region then runtime.setPointerSelection(region, nil, game) end
       local startX = tonumber(pointer.x) or (region and region.x) or 0
       local startY = tonumber(pointer.y) or (region and region.y) or 0
       pointerCaptures[key] = {
@@ -9691,8 +11664,8 @@ return function(mod)
         blocked = blocked,
         startX = startX,
         startY = startY,
-        offsetX = region and select(1, layerOffset(region.kind, region.viewport)) or 0,
-        offsetY = region and select(2, layerOffset(region.kind, region.viewport)) or 0,
+        offsetX = region and select(1, runtime.layerOffset(region.kind, region.viewport)) or 0,
+        offsetY = region and select(2, runtime.layerOffset(region.kind, region.viewport)) or 0,
         lastX = startX,
         lastY = startY,
         scrollStart = region and (tonumber(region.scrollValue)
@@ -9707,7 +11680,7 @@ return function(mod)
     local capture = pointerCaptures[key]
     if not capture then
       if phase == "moved" and pointer.source == "mouse" then
-        updatePointerHover(pointerHit(pointer.x, pointer.y), game)
+        runtime.updatePointerHover(runtime.pointerHit(pointer.x, pointer.y), game)
       end
       return next(game, pointer)
     end
@@ -9738,18 +11711,18 @@ return function(mod)
         local rows = math.floor((distance + step * 0.20) / step)
         if rows > 0 then
           capture.scrolled = true
-          pointerScroll(region, capture.scrollStart
+          runtime.pointerScroll(region, capture.scrollStart
             + (totalY < 0 and rows or -rows))
         end
         return true
       end
 
       local panelDrag = region.dragHandle == true
-      if option("dragPanels", false) == true and panelDrag
+      if runtime.option("dragPanels", false) == true and panelDrag
           and (math.abs(totalX) >= threshold or math.abs(totalY) >= threshold) then
         capture.moved = true
         capture.panelMoved = true
-        capture.offsetX, capture.offsetY = rememberLayerOffset(
+        capture.offsetX, capture.offsetY = runtime.rememberLayerOffset(
           region.kind, region.viewport,
           capture.offsetX + totalX - (capture.dragX or 0),
           capture.offsetY + totalY - (capture.dragY or 0), false)
@@ -9770,20 +11743,20 @@ return function(mod)
         if capture.region then
           -- Re-hit on release and act through the current region, not the
           -- table captured before a menu transition or responsive redraw.
-          local releasedOver = pointerHit(x, y)
+          local releasedOver = runtime.pointerHit(x, y)
           if pointerRuntime.sameTarget(capture.region, releasedOver) then
-            tapPointerAction(game, releasedOver)
+            runtime.tapPointerAction(game, releasedOver)
           end
         elseif capture.buttonAction == "b" then
-          tapGameButton(game, "b")
+          runtime.tapGameButton(game, "b")
         elseif capture.buttonAction == "a"
             and not pointerRuntime.insideUi(x, y) then
-          tapGameButton(game, "a")
+          runtime.tapGameButton(game, "a")
         end
       end
       if capture.panelMoved and capture.region
           and pointerRuntime.regionAlive(game, capture.region) then
-        rememberLayerOffset(capture.region.kind, capture.region.viewport,
+        runtime.rememberLayerOffset(capture.region.kind, capture.region.viewport,
           capture.offsetX, capture.offsetY, true)
       end
       return true
@@ -9806,7 +11779,7 @@ return function(mod)
     -- path continue. Errors raised by a downstream hook are not ours to hide.
     if forwarded then error(result, 0) end
     if type(pointer) == "table" then
-      local keyOk, failedKey = pcall(pointerCaptureKey, pointer)
+      local keyOk, failedKey = pcall(runtime.pointerCaptureKey, pointer)
       if keyOk then pointerCaptures[failedKey] = nil end
     end
     hoveredPointer = nil
@@ -9837,15 +11810,15 @@ return function(mod)
       local originalDraw = decorated.draw
       decorated._gen1ModernTitleMenu = true
       local function drawTitleMenu(self)
-        if option("hideOriginalUi", true) ~= false
-            and option("menuUi", true) ~= false then
+        if runtime.option("hideOriginalUi", true) ~= false
+            and runtime.option("menuUi", true) ~= false then
           local stack = game and game.stack and game.stack.states
           local titleOnStack = false
           for _, visible in ipairs(type(stack) == "table" and stack or {}) do
-            if isTitleState(visible) then titleOnStack = true break end
+            if runtime.isTitleState(visible) then titleOnStack = true break end
           end
           if titleOnStack then
-            local layers, complete = presentationStack(game)
+            local layers, complete = runtime.presentationStack(game)
             if complete then
               for _, layer in ipairs(layers) do
                 if layer.state == self then return end
@@ -9876,6 +11849,37 @@ return function(mod)
         return self._gen1ModernOptionsNativeDraw(self)
       end
     end
+    -- Some released hosts still draw an opaque Bag/Party child into the
+    -- battle canvas even after screen.render_visible rejects it. Suppress a
+    -- fully modeled child at its source while a framed battle is underneath;
+    -- this avoids trying to erase a centred 160x144 child after it has already
+    -- overwritten the live back/front sprites on the 304px WIDE surface.
+    if type(decorated.draw) == "function"
+        and runtime.kindFor(decorated, game) ~= "battle"
+        and not decorated._gen1ModernBattleChildNativeDraw
+        and not decorated._gen1ModernTitleMenu
+        and not decorated._gen1ModernOptionsMenu then
+      decorated._gen1ModernBattleChildNativeDraw = decorated.draw
+      decorated.draw = function(self, ...)
+        local activeGame = self.game or game or currentGame
+        if runtime.option("hideOriginalUi", true) ~= false
+            and battleRuntime.fullBattleInStack(activeGame)
+            and runtime.canSuppressState(activeGame, self) then
+          return
+        end
+        return self._gen1ModernBattleChildNativeDraw(self, ...)
+      end
+    end
+    -- Classic BattleState's public draw is already split into scene pictures,
+    -- animation sprites, HUD, and text methods. Intercept only the latter two
+    -- on the instance. The host still owns every timer, palette effect,
+    -- send-out/capture/faint sequence, and source sprite draw, while native
+    -- status/menu tiles can no longer flash through during HP animation.
+    battleRuntime.decorateClassicScene(game, decorated)
+    if runtime.kindFor(decorated, game) == "battle" then
+      battleRuntime.decorateWideScenePlacement(decorated)
+      battleRuntime.decorateWorldSurface(decorated)
+    end
     return decorated
   end, 100)
 
@@ -9892,10 +11896,11 @@ return function(mod)
   -- Support both the current `(visibleByDefault, state)` signature and the
   -- early one-argument fixture used by development clients.
   mod.hooks:wrap("screen.render_visible", function(next, visible, state)
+    runtime.renderVisibleHookSeen = true
     local oneArgument = state == nil and type(visible) == "table"
     if oneArgument then state, visible = visible, true end
     local game = currentGame or (state and state.game)
-    local complete, hidden = visibleSuppressionProof(game)
+    local complete, hidden = runtime.visibleSuppressionProof(game)
     if complete and hidden[state] then return false end
     if oneArgument then return next(state) end
     return next(visible, state)
@@ -9911,8 +11916,8 @@ return function(mod)
   mod.hooks:wrap("render.compose", function(next, renderer, ctx)
     local handled = next(renderer, ctx)
     local game = currentGame
-    local layers, complete, suppressCanvas = presentationStack(game)
-    local hide = option("hideOriginalUi", true) ~= false
+    local layers, complete, suppressCanvas = runtime.presentationStack(game)
+    local hide = runtime.option("hideOriginalUi", true) ~= false
     if handled ~= true and hide and complete and #layers > 0
         and love and love.graphics and ctx and ctx.uiCanvas then
       if suppressCanvas then
@@ -9920,6 +11925,8 @@ return function(mod)
         love.graphics.setCanvas(ctx.uiCanvas)
         love.graphics.clear(0, 0, 0, 0)
         love.graphics.pop()
+      else
+        battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
       end
       -- TitleState and its Menu share the same canvas as the logo and title
       -- artwork. The title Menu decorator above already suppresses duplicate
@@ -9937,12 +11944,12 @@ return function(mod)
     currentGame = game
     next(game, viewport)
     if not (love and love.graphics) then return end
-    spriteAnimationOn = option("spriteAnimation", true) ~= false
-    local layers, complete = presentationStack(game)
+    spriteAnimationOn = runtime.option("spriteAnimation", true) ~= false
+    local layers, complete = runtime.presentationStack(game)
     local topState = game and game.stack and game.stack.top
       and game.stack:top() or nil
-    local modernWorld = option("menuUi", true) ~= false
-      and option("hideOriginalUi", true) ~= false
+    local modernWorld = runtime.option("menuUi", true) ~= false
+      and runtime.option("hideOriginalUi", true) ~= false
     local overworldActive = game and game.overworld
       and topState == game.overworld
     local modernOwnsQolBanner = modernWorld
@@ -9950,7 +11957,7 @@ return function(mod)
     mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
       game, modernOwnsQolBanner)
     if complete and #layers > 0 then
-      drawModernStack(game, layers, viewportForTouchControls(game, viewport))
+      runtime.drawModernStack(game, layers, viewportForTouchControls(game, viewport))
     else
       pointerRegions = {}
       pointerRuntime.topOrder = 0
@@ -9962,7 +11969,7 @@ return function(mod)
       if overworldActive and modernWorld then
         mod._gen1ModernSpecialPresenters.drawQolLocationBanner(
           game, viewportForTouchControls(game, viewport),
-          responsiveTheme(currentTheme(viewport), viewport,
+            responsiveTheme(runtime.currentTheme(viewport, nil), viewport,
             responsiveThemeCache))
       end
     end

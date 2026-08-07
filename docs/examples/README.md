@@ -9,6 +9,7 @@ another mod's directory.
 | [`useful_bag_adapter.lua`](useful_bag_adapter.lua) | Useful Bag | Six-pocket item projection, counts, pocket switching, and source-owned item actions. |
 | [`dex_radar_adapter.lua`](dex_radar_adapter.lua) | Dex Radar | Encounter sections, seen/owned state, levels/rates, cursor movement, and back. |
 | [`rby_mmo_adapter.lua`](rby_mmo_adapter.lua) | RBYMMO | Profile, rank, and character selection models, portraits, and semantic navigation. |
+| [`battle_adapter.lua`](battle_adapter.lua) | Battle/voxel/QOL source mods | Public battlers, moves, messages, EXP/caught/catch-rate data, and source-owned actions. |
 | [`option_rows_adapter.lua`](option_rows_adapter.lua) | Run Mode, Shiny Pokémon, Quality of Life, and similar settings mods | Public option rows and source-owned setting changes. |
 | [`gen1_modern_ui_adapter.lua`](gen1_modern_ui_adapter.lua) | New integrations | A general profile, theme, frame, and image-catalog starter. |
 

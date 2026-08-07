@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.8.1 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
+Version 0.8.2 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
 releases plus the released 1.x line. The packaged mod does not require a
 custom engine checkout or a patched binary.
 
@@ -136,10 +136,10 @@ custom engine checkout or a patched binary.
   rescaling them into a system-font line box. It falls back safely on older game builds that do not ship the asset
   and uses the system face for any missing glyphs.
 - The normal UI font remains the host/LÖVE font so the mod stays lightweight.
-  When a presenter encounters non-Latin Unicode text, it automatically uses
-  the game's Plain Pixel font for that render pass. This keeps Japanese,
-  Cyrillic, Greek, Arabic, CJK, emoji, and similar translation text readable
-  without adding a large fallback font to the mod package.
+  Each rendered string is checked against that face's actual glyph coverage;
+  only a string containing an unsupported glyph uses the game's Plain Pixel
+  fallback. The choice is never cached for the rest of the screen, so ordinary
+  Latin rows cannot be switched merely because another row is multilingual.
 - OptionRows-based settings screens from Run Mode, Shiny Pokémon, and Quality
   of Life are presented through the same live-row path. Their callbacks and
   input remain owned by the source mod; unknown custom screen shapes stay
@@ -334,14 +334,39 @@ migrate existing saves.
 
 ### Battle presentation
 
-Battles have a responsive overlay with enemy/player status cards, live HP
-bars, replacement sprites, action buttons, move rows, and battle messages. It
-is draw-only: the existing `BattleState` still owns all navigation, timing,
-callbacks, and third-party battle hooks. The overlay recognizes wild, trainer,
-link, safari, and scripted battle phases through their public state fields.
-The move presenter follows the active battle layout: WIDE keeps the native 2x2
-cursor (including empty slots), while OG uses a vertical list so fewer-than-
-four moves retain the engine's up/down selection order.
+Battles have an opt-in responsive presenter with enemy/player status cards,
+palette-aware HP bars, action buttons, move rows, and battle messages. It is
+draw-only: the existing `BattleState` still owns all navigation, timing,
+callbacks, and third-party battle hooks. `BATTLE UI MODE` offers `AUTO`,
+`2D FRAMED`, and `SCENE HUD`. In the classic 2D path, Modern UI isolates the
+native HUD and text methods while retaining the source picture, attack-effect,
+send-out, capture, faint, palette, shake, and fade layers. This makes Modern UI
+the complete presentation compositor without duplicating battle simulation or
+animation timing. WIDE and scene-owned battles keep their native draw path and
+use the conservative composition fallback. AUTO uses the framed compositor for
+ordinary 2D battles, then switches to compact voxel-safe card placement when
+an active scene marker is published.
+
+Source mods may publish a data-only `layer = "battle"` adapter. Its model can
+provide public battlers, moves, message text, and data-only `experience`,
+`caughtIndicator`, or `catchRates` overlays. Modern UI never calls a source
+mod's draw callback; semantic actions and all validation, networking, and
+state transitions remain source-owned. If the adapter is missing, malformed,
+throws, the battle falls back to the native UI. A battle adapter enriches the
+overlay only; its `canSuppressNative` value never suppresses BattleState.
+
+Modern status cards stay present during source-owned effects and follow the
+live animated HP value. The last active message is retained during a source
+message hold, so attacks and HP drains do not flash a blank panel. Native intro
+party-ball animation remains delegated to the host; the compositor supplies a
+compact party-status row for the post-faint enemy-party reveal.
+
+The overlay recognizes wild, trainer, link, safari, and scripted battle phases
+through their public state fields.
+The move presenter uses a source-indexed 2x2 grid in both OG and WIDE battle
+layouts. WIDE keeps its native four-direction cursor; OG directional edges are
+mapped onto the same grid before BattleState performs the selected move's
+normal PP, disabled-slot, callback, and turn validation.
 
 The battle presenter is WIP and disabled by default; leave its option off for
 normal play while its responsive layout is stabilized. The mod options expose

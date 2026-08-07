@@ -261,6 +261,21 @@ function love.load()
   check(optionDefault(schemas, "pointerUi") == false
       and optionDefault(schemas, "dragPanels") == false,
     "experimental pointer interaction and panel dragging default off")
+  local battleWipRow, battleModeRow
+  for _, schema in ipairs(schemas) do
+    for _, row in ipairs(schema) do
+      if row.key == "battleUiWip" then battleWipRow = row end
+      if row.key == "battleUiMode" then battleModeRow = row end
+    end
+  end
+  check(battleWipRow and battleWipRow.default == false,
+    "battle UI remains opt-in while WIP")
+  check(battleModeRow and #battleModeRow.choices == 3
+      and battleModeRow.choices[1][2] == "auto"
+      and battleModeRow.choices[2][2] == "full"
+      and battleModeRow.choices[3][2] == "hud"
+      and battleModeRow.default == "auto",
+    "battle UI exposes AUTO, 2D FRAMED, and SCENE HUD modes")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -395,6 +410,23 @@ function love.load()
         },
         layer = "screen", canSuppressNative = true,
       },
+      Battle = {
+        match = function(state)
+          return state.screenId == "TestBattle"
+        end,
+        model = function(_, state)
+          return {
+            title = "BATTLE", rows = { "FIGHT", "ITEM" }, index = 1,
+            phase = state.phase, player = state.player, enemy = state.enemy,
+            moves = state.moves, message = state.message,
+            overlays = state.overlays,
+          }
+        end,
+        actions = {
+          select = function(_, state) state.selected = true end,
+        },
+        layer = "battle", canSuppressNative = true,
+      },
     },
     themes = {
       test = {
@@ -419,13 +451,15 @@ function love.load()
     "adapter contract registers a namespaced source frame")
   check(mod.exports.frames["test_source:frame-two"] == "assets/pixel_frame2.png",
     "adapter contract registers multiple source frames")
-  local hasFrameOne, hasFrameTwo = false, false
-  for _, choice in ipairs(mod.exports.frameChoices) do
-    hasFrameOne = hasFrameOne or choice[2] == "test_source:frame"
-    hasFrameTwo = hasFrameTwo or choice[2] == "test_source:frame-two"
+  do
+    local hasFrameOne, hasFrameTwo = false, false
+    for _, choice in ipairs(mod.exports.frameChoices) do
+      hasFrameOne = hasFrameOne or choice[2] == "test_source:frame"
+      hasFrameTwo = hasFrameTwo or choice[2] == "test_source:frame-two"
+    end
+    check(#mod.exports.frameChoices == 5 and hasFrameOne and hasFrameTwo,
+      "multiple source frames appear in the pixel-frame selector")
   end
-  check(#mod.exports.frameChoices == 5 and hasFrameOne and hasFrameTwo,
-    "multiple source frames appear in the pixel-frame selector")
   check(mod.exports.themes["test_source:test"]
       and mod.exports.themes["test_source:test"].frame.asset
         == "test_source:frame",
@@ -450,36 +484,49 @@ function love.load()
     contract = { apiVersion = 1, screens = { Bad = { match = function() return true end,
       model = function() return {} end, draw = function() end } } } }),
     "third-party draw callbacks are rejected")
-  local adapterGame = { overworld = {}, stack = {} }
-  local adapterState = { screenId = "TestScreen", isOpaque = true,
-    draw = function() end }
-  adapterGame.stack.states = { adapterGame.overworld, adapterState }
-  adapterGame.stack.top = function(self) return self.states[#self.states] end
-  hooks["render.zones"](function(_, zones) return zones end, adapterGame, {})
-  check(hooks["screen.render_visible"](function(visible) return visible end,
-    true, adapterState) == false,
-    "valid adapter suppresses only its native draw")
-  local normalizedModel = mod._gen1ModernCompatibility:modelFor(
-    adapterGame, adapterState)
-  check(normalizedModel and normalizedModel.assets
-      and normalizedModel.assets.badge == "assets/pixel_frame1.png",
-    "source model preserves a public image asset catalog")
-  check(mod._gen1ModernCompatibility:action(adapterGame, adapterState,
-    "select", 3) and adapterActions.select == 3,
-    "adapter actions remain source-owned semantic callbacks")
-  check(mod._gen1ModernCompatibility:action(adapterGame, adapterState,
-    "hover", 2) and adapterActions.hover == 2,
-    "adapter hover actions receive row context")
-  local usefulBagState = {
-    screenId = "BagMenu", items = {}, title = "MEDICINE", index = 1,
-    scroll = 0, __pocketIndex = 2, __pocketIds = {},
-    __project = function() end,
-  }
-  check(mod._gen1ModernCompatibility:isUsefulBagState(usefulBagState),
-    "Useful Bag's public pocket projection is recognized")
-  usefulBagState.__pocketIds = nil
-  check(not mod._gen1ModernCompatibility:isUsefulBagState(usefulBagState),
-    "malformed Useful Bag state stays on the native fallback")
+  do
+    local adapterGame = { overworld = {}, stack = {} }
+    local adapterState = { screenId = "TestScreen", isOpaque = true,
+      draw = function() end }
+    adapterGame.stack.states = { adapterGame.overworld, adapterState }
+    adapterGame.stack.top = function(self) return self.states[#self.states] end
+    hooks["render.zones"](function(_, zones) return zones end, adapterGame, {})
+    check(hooks["screen.render_visible"](function(visible) return visible end,
+      true, adapterState) == false,
+      "valid adapter suppresses only its native draw")
+    local normalizedModel = mod._gen1ModernCompatibility:modelFor(
+      adapterGame, adapterState)
+    check(normalizedModel and normalizedModel.assets
+        and normalizedModel.assets.badge == "assets/pixel_frame1.png",
+      "source model preserves a public image asset catalog")
+    check(mod._gen1ModernCompatibility:action(adapterGame, adapterState,
+      "select", 3) and adapterActions.select == 3,
+      "adapter actions remain source-owned semantic callbacks")
+    check(mod._gen1ModernCompatibility:action(adapterGame, adapterState,
+      "hover", 2) and adapterActions.hover == 2,
+      "adapter hover actions receive row context")
+    local battleAdapterState = { screenId = "TestBattle", phase = "menu",
+      player = { mon = { species = "TESTMON", hp = 10 } },
+      enemy = { mon = { species = "TESTMON", hp = 8 } },
+      overlays = { caughtIndicator = { caught = true } } }
+    local battleModel = mod._gen1ModernCompatibility:modelFor(
+      adapterGame, battleAdapterState)
+    check(battleModel and battleModel.player and battleModel.overlays,
+      "battle adapter preserves public battlers and data-only overlays")
+    check(mod._gen1ModernCompatibility:action(adapterGame,
+      battleAdapterState, "select") and battleAdapterState.selected == true,
+      "battle adapter actions remain source-owned")
+    local usefulBagState = {
+      screenId = "BagMenu", items = {}, title = "MEDICINE", index = 1,
+      scroll = 0, __pocketIndex = 2, __pocketIds = {},
+      __project = function() end,
+    }
+    check(mod._gen1ModernCompatibility:isUsefulBagState(usefulBagState),
+      "Useful Bag's public pocket projection is recognized")
+    usefulBagState.__pocketIds = nil
+    check(not mod._gen1ModernCompatibility:isUsefulBagState(usefulBagState),
+      "malformed Useful Bag state stays on the native fallback")
+  end
   check(mod.exports.registerFrame({ owner = "test_source", id = "frame",
     asset = "assets/pixel_frame1.png" }) == "test_source:frame",
     "source mods can register namespaced frame assets")
@@ -493,21 +540,23 @@ function love.load()
     "unregister removes source-owned theme and frame assets")
   check(#mod.exports.frameChoices == 3,
     "source frame choices are removed when the owner unregisters")
-  local bannerGame = {
-    data = {
-      field = { townMap = { locations = {
-        PALLET_TOWN = { name = "Pallet Town" },
+  do
+    local bannerGame = {
+      data = {
+        field = { townMap = { locations = {
+          PALLET_TOWN = { name = "Pallet Town" },
+        } } },
+      },
+      save = { options = { modOptions = {
+        quality_of_life = { qol_location_banners = 2 },
       } } },
-    },
-    save = { options = { modOptions = {
-      quality_of_life = { qol_location_banners = 2 },
-    } } },
-  }
-  check(mod._gen1ModernSpecialPresenters.qolLocationDuration(bannerGame) == 2,
-    "QOL banner duration follows the saved feature option")
-  check(mod._gen1ModernSpecialPresenters.qolLocationName(
-      bannerGame, "PALLET_TOWN") == "PALLET TOWN",
-    "QOL banner uses the resolved Town Map location name")
+    }
+    check(mod._gen1ModernSpecialPresenters.qolLocationDuration(bannerGame) == 2,
+      "QOL banner duration follows the saved feature option")
+    check(mod._gen1ModernSpecialPresenters.qolLocationName(
+        bannerGame, "PALLET_TOWN") == "PALLET TOWN",
+      "QOL banner uses the resolved Town Map location name")
+  end
 
   check(namingGridHasNumberRows(hooks["ui.naming.grid"]),
     "naming grid adds numeric entry before the case page")
@@ -516,17 +565,19 @@ function love.load()
   check(namingGridNormalizesRbyMmoSwitch(hooks["ui.naming.grid"]),
     "naming grid normalizes RBY MMO case-switch labels")
 
-  local titleGame = { stack = { states = {} } }
-  local titleState = setmetatable({}, { __index = titleClass })
-  local titleMenu = setmetatable({ game = titleGame,
-    titleUiBox = { 0, 0, 12, 3 } }, { __index = menuClass })
-  titleGame.stack.states = { titleState, titleMenu }
-  eventListeners["screen.pushed"]({ state = titleMenu })
-  check(titleMenu.titleUiBox[3] == 20 and titleMenu.titleUiBox[4] == 18,
-    "title menu expands its palette zone while modern menu is active")
-  eventListeners["screen.popped"]({ state = titleMenu })
-  check(titleMenu.titleUiBox[3] == 12 and titleMenu.titleUiBox[4] == 3,
-    "title menu restores its original palette zone on close")
+  do
+    local titleGame = { stack = { states = {} } }
+    local titleState = setmetatable({}, { __index = titleClass })
+    local titleMenu = setmetatable({ game = titleGame,
+      titleUiBox = { 0, 0, 12, 3 } }, { __index = menuClass })
+    titleGame.stack.states = { titleState, titleMenu }
+    eventListeners["screen.pushed"]({ state = titleMenu })
+    check(titleMenu.titleUiBox[3] == 20 and titleMenu.titleUiBox[4] == 18,
+      "title menu expands its palette zone while modern menu is active")
+    eventListeners["screen.popped"]({ state = titleMenu })
+    check(titleMenu.titleUiBox[3] == 12 and titleMenu.titleUiBox[4] == 3,
+      "title menu restores its original palette zone on close")
+  end
 
   local state = setmetatable({ screenId = "OptionsMenu", rows = {}, index = 1 },
     { __index = optionsClass })
@@ -545,34 +596,38 @@ function love.load()
   } }
   check(type(hooks["ui.start_menu.items"]) == "function",
     "start-menu hook registered")
-  local shortcutItems = hooks["ui.start_menu.items"](
-    function(_, items) return items end, game,
-    { { label = "SAVE" }, { label = "OPTION" }, { label = "MODS" } })
-  local shortcutFound, modMenusRow
-  for _, item in ipairs(shortcutItems) do
-    if item.id == "gen1_modern_ui.options" then shortcutFound = true end
-    if item.id == "gen1_modern_ui.mod_menus" then modMenusRow = item end
+  do
+    local shortcutItems = hooks["ui.start_menu.items"](
+      function(_, items) return items end, game,
+      { { label = "SAVE" }, { label = "OPTION" }, { label = "MODS" } })
+    local shortcutFound, modMenusRow
+    for _, item in ipairs(shortcutItems) do
+      if item.id == "gen1_modern_ui.options" then shortcutFound = true end
+      if item.id == "gen1_modern_ui.mod_menus" then modMenusRow = item end
+    end
+    check(not shortcutFound and modMenusRow,
+      "UI settings default under the MOD MENUS start entry")
+    modMenusRow.onSelect()
+    local groupedMenu = game.stack:top()
+    check(groupedMenu._gen1ModMenus and #groupedMenu.items == 1
+        and groupedMenu.items[1].id == "gen1_modern_ui.options",
+      "MOD MENUS contains UI SETTINGS by default")
+    groupedMenu.items[1].onSelect()
+    local shortcutManager = game.stack:top()
+    check(shortcutManager.currentMod
+        and shortcutManager.currentMod.id == "gen1_modern_ui",
+      "UI SETTINGS shortcut opens the categorized modern options context")
+    hooks["input.step"](function() end,
+      { input = { pressQueue = {} }, stack = game.stack }, 0)
+    check(shortcutManager.optionRows[1]
+        and shortcutManager.optionRows[1].id == "__category:appearance",
+      "direct UI SETTINGS opens with categorized option rows")
+    game.stack:pop()
+    game.stack:pop()
   end
-  check(not shortcutFound and modMenusRow,
-    "UI settings default under the MOD MENUS start entry")
-  modMenusRow.onSelect()
-  local groupedMenu = game.stack:top()
-  check(groupedMenu._gen1ModMenus and #groupedMenu.items == 1
-      and groupedMenu.items[1].id == "gen1_modern_ui.options",
-    "MOD MENUS contains UI SETTINGS by default")
-  groupedMenu.items[1].onSelect()
-  local shortcutManager = game.stack:top()
-  check(shortcutManager.currentMod and shortcutManager.currentMod.id == "gen1_modern_ui",
-    "UI SETTINGS shortcut opens the categorized modern options context")
-  hooks["input.step"](function() end,
-    { input = { pressQueue = {} }, stack = game.stack }, 0)
-  check(shortcutManager.optionRows[1]
-      and shortcutManager.optionRows[1].id == "__category:appearance",
-    "direct UI SETTINGS opens with categorized option rows")
-  game.stack:pop()
-  game.stack:pop()
   local modMenuRow = { id = "example.dexnav", label = "DEXNAV",
     onSelect = function() end }
+  do
   local groupedItems = hooks["ui.start_menu.items"](
     function(_, list) list[#list + 1] = modMenuRow return list end, game,
     { { label = "OPTION" }, { label = "MODS" } })
@@ -666,37 +721,78 @@ function love.load()
   end
   check(flatFound, "Start menu grouping can be disabled")
   values.startMenuModMenus = true
+  end
   check(type(hooks["input.step"]) == "function", "Start fast-jump hook registered")
-  local jumpMenu = setmetatable({ screenId = "StartMenu", startCloses = true, index = 1,
-    items = { {}, {}, {}, {}, {}, {}, {}, {} },
-    clampScroll = function(self) self.clamped = true end }, { __index = menuClass })
-  local jumpGame = { input = { pressQueue = { "right" }, }, save = {}, stack = {
-    top = function(self) return jumpMenu end,
-  } }
-  hooks["input.step"](function() end, jumpGame, 0)
-  check(jumpMenu.index == 6 and jumpMenu.clamped
-      and jumpGame.save.startMenuIndex == 6,
-    "Start fast-jump advances five rows")
-  jumpGame.input.pressQueue = { "left" }
-  hooks["input.step"](function() end, jumpGame, 0)
-  check(jumpMenu.index == 1, "Start fast-jump wraps back by five rows")
-  local optionState = {
-    screenId = "ManagerState", screen = "options", cursor = 1,
-    optionRows = { { id = "theme", label = "UI THEME" } },
-  }
-  local optionGame = { input = { pressQueue = { "select" } }, stack = {
-    top = function(self) return optionState end,
-  } }
-  hooks["input.step"](function() end, optionGame, 0)
-  check(optionState._gen1OptionDescription
-      and optionState._gen1OptionDescription.title == "UI THEME"
-      and #optionGame.input.pressQueue == 0,
-    "SELECT opens the focused option description")
-  optionGame.input.pressQueue = { "b" }
-  hooks["input.step"](function() end, optionGame, 0)
-  check(optionState._gen1OptionDescription == nil
-      and #optionGame.input.pressQueue == 0,
-    "A/B/SELECT closes the option description")
+  do
+    local jumpMenu = setmetatable({ screenId = "StartMenu", startCloses = true, index = 1,
+      items = { {}, {}, {}, {}, {}, {}, {}, {} },
+      clampScroll = function(self) self.clamped = true end }, { __index = menuClass })
+    local jumpGame = { input = { pressQueue = { "right" }, }, save = {}, stack = {
+      top = function(self) return jumpMenu end,
+    } }
+    hooks["input.step"](function() end, jumpGame, 0)
+    check(jumpMenu.index == 6 and jumpMenu.clamped
+        and jumpGame.save.startMenuIndex == 6,
+      "Start fast-jump advances five rows")
+    jumpGame.input.pressQueue = { "left" }
+    hooks["input.step"](function() end, jumpGame, 0)
+    check(jumpMenu.index == 1, "Start fast-jump wraps back by five rows")
+    local optionState = {
+      screenId = "ManagerState", screen = "options", cursor = 1,
+      optionRows = { { id = "theme", label = "UI THEME" } },
+    }
+    local optionGame = { input = { pressQueue = { "select" } }, stack = {
+      top = function() return optionState end,
+    } }
+    hooks["input.step"](function() end, optionGame, 0)
+    check(optionState._gen1OptionDescription
+        and optionState._gen1OptionDescription.title == "UI THEME"
+        and #optionGame.input.pressQueue == 0,
+      "SELECT opens the focused option description")
+    optionGame.input.pressQueue = { "b" }
+    hooks["input.step"](function() end, optionGame, 0)
+    check(optionState._gen1OptionDescription == nil
+        and #optionGame.input.pressQueue == 0,
+      "A/B/SELECT closes the option description")
+
+    values.battleUiWip, values.battleUiMode = true, "full"
+    local moveState = {
+      phase = "moveSelect", moveIndex = 1,
+      wideLayout = function() return false end,
+      player = { curMoves = { {}, {}, {}, {} } },
+    }
+    local moveGame = { input = { pressQueue = { "right" } }, stack = {
+      top = function() return moveState end,
+    } }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 2 and #moveGame.input.pressQueue == 0,
+      "standard battle move grid maps RIGHT from slot 1 to slot 2")
+    moveGame.input.pressQueue = { "down" }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 4,
+      "standard battle move grid maps DOWN from slot 2 to slot 4")
+    moveGame.input.pressQueue = { "left" }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 3,
+      "standard battle move grid maps LEFT from slot 4 to slot 3")
+    moveGame.input.pressQueue = { "up" }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 1,
+      "standard battle move grid maps UP from slot 3 to slot 1")
+    moveState.wideLayout = function() return true end
+    moveGame.input.pressQueue = { "right" }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
+      "WIDE battle keeps directional input source-owned")
+    moveState.wideLayout = function() return false end
+    moveState.dramaticShapeShot = { canvas = true }
+    values.battleUiMode = "auto"
+    moveGame.input.pressQueue = { "right" }
+    hooks["input.step"](function() end, moveGame, 0)
+    check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
+      "AUTO scene HUD battle keeps directional input source-owned")
+    values.battleUiWip, values.battleUiMode = false, "auto"
+  end
   local zones = {}
   local returnedZones = hooks["render.zones"](
     function(_, value) return value end, game, zones)
@@ -964,6 +1060,328 @@ function love.load()
   compose(false)
   check(alpha() == 1, "battle UI stays native while WIP presenter is off")
 
+  values.battleUiWip = true
+  values.battleUiMode = "full"
+  do
+    local hudCalls, textCalls = 0, 0
+    local isolated = {
+      phase = "menu", queue = {}, kind = "wild",
+      wideLayout = function() return false end,
+      drawHUDs = function() hudCalls = hudCalls + 1 end,
+      drawTextArea = function() textCalls = textCalls + 1 end,
+    }
+    isolated = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, isolated, nil)
+    isolated:drawHUDs(0)
+    isolated:drawTextArea()
+    check(hudCalls == 0 and textCalls == 0,
+      "classic 2D battle decoration isolates native HUD and text at source")
+    isolated.introBalls = true
+    isolated:drawHUDs(0)
+    check(hudCalls == 1,
+      "classic 2D battle preserves source-owned intro party-ball animation")
+    isolated.introBalls = nil
+    values.battleUiMode = "hud"
+    isolated:drawHUDs(0)
+    isolated:drawTextArea()
+    check(hudCalls == 2 and textCalls == 1,
+      "scene HUD mode delegates native battle HUD and text unchanged")
+    values.battleUiMode = "full"
+
+    local worldBattle = {
+      phase = "menu", queue = {}, kind = "wild",
+      bgMode = function() return "world" end,
+      wideLayout = function() return true end,
+      drawPicsLayer = function(self, slide, sx, sy, onlySide)
+        self.lastPictureSide = onlySide
+        self.lastPictureX = sx
+      end,
+      draw = function()
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.rectangle("fill", 0, 0, 304, 144)
+        -- A white sprite pixel must remain opaque; WORLD transparency is
+        -- achieved by suppressing the exact paper fill, never by color key.
+        love.graphics.rectangle("fill", 150, 48, 4, 4)
+      end,
+    }
+    worldBattle = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, worldBattle, nil)
+    local worldCanvas = love.graphics.newCanvas(304, 144)
+    local rectangleBefore = love.graphics.rectangle
+    love.graphics.setCanvas(worldCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    worldBattle:draw()
+    love.graphics.setCanvas()
+    local worldImage = worldCanvas:newImageData()
+    local _, _, _, worldOutsideA = worldImage:getPixel(20, 20)
+    local worldPaperR, worldPaperG, worldPaperB, worldPaperA =
+      worldImage:getPixel(40, 20)
+    local worldSpriteR, worldSpriteG, worldSpriteB, worldSpriteA =
+      worldImage:getPixel(151, 49)
+    check(worldOutsideA == 0,
+      "WORLD battle decoration leaves the overworld clear outside its frame")
+    check(worldPaperA > 0.95 and worldPaperR > 0.95
+        and worldPaperG > 0.95 and worldPaperB > 0.95,
+      "WORLD battle decoration fills the modern arena with battle paper")
+    check(worldSpriteA > 0.95 and worldSpriteR > 0.95
+        and worldSpriteG > 0.95 and worldSpriteB > 0.95,
+      "WORLD battle decoration preserves legitimate white sprite pixels")
+    check(love.graphics.rectangle == rectangleBefore,
+      "WORLD battle decoration restores the graphics API after source draw")
+    worldBattle:drawPicsLayer(0, 0, 0, "enemy")
+    check(worldBattle.lastPictureX == -12,
+      "WIDE battle decoration pulls the opponent inside the modern frame")
+    worldBattle:drawPicsLayer(0, 0, 0, "player")
+    check(worldBattle.lastPictureX == 0,
+      "WIDE battle decoration leaves the player picture placement unchanged")
+
+    local pushedHudCalls, pushedTextCalls = 0, 0
+    local pushedBattle = {
+      game = game, phase = "menu", queue = {}, kind = "wild",
+      wideLayout = function() return false end,
+      drawHUDs = function() pushedHudCalls = pushedHudCalls + 1 end,
+      drawTextArea = function() pushedTextCalls = pushedTextCalls + 1 end,
+    }
+    eventListeners["screen.pushed"]({ state = pushedBattle })
+    pushedBattle:drawHUDs(0)
+    pushedBattle:drawTextArea()
+    check(pushedHudCalls == 0 and pushedTextCalls == 0
+        and pushedBattle._gen1ModernBattleSceneIsolation == true,
+      "screen push isolates classic battle HUD and text before first draw")
+  end
+  state = { phase = "menu", queue = {}, kind = "wild", menuIndex = 1,
+    draw = function() end,
+    wideLayout = function() return false end,
+    player = { mon = { species = "TESTMON", level = 5, hp = 20,
+      stats = { hp = 20 } } },
+    enemy = { mon = { species = "TESTMON", level = 3, hp = 12,
+      stats = { hp = 12 } } } }
+  game.stack.states = { state }
+  fill()
+  compose(false)
+  check(alpha() == 1,
+    "enabled full battle presenter preserves native animation canvas")
+  do
+    local sourceCanvas = love.graphics.newCanvas(160, 144)
+    love.graphics.setCanvas(sourceCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = sourceCanvas, uiw = 160, uih = 144,
+    })
+    local image = sourceCanvas:newImageData()
+    local enemyR, enemyG = image:getPixel(4, 4)
+    local playerR, playerG = image:getPixel(80, 60)
+    local menuR, menuG = image:getPixel(8, 112)
+    local sceneR, sceneG = image:getPixel(100, 40)
+    check(enemyR > 0.95 and enemyG > 0.95
+        and playerR > 0.95 and playerG > 0.95
+        and menuR > 0.95 and menuG > 0.95,
+      "2D battle compose scrubs only native HUD and command tiles")
+    check(sceneR > 0.95 and sceneG < 0.05,
+      "2D battle compose preserves the native sprite/animation arena")
+
+    state.wideLayout = function() return true end
+    local wideCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(wideCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = wideCanvas, uiw = 304, uih = 144,
+    })
+    local wideImage = wideCanvas:newImageData()
+    local wideEnemyR, wideEnemyG = wideImage:getPixel(4, 4)
+    local widePlayerR, widePlayerG = wideImage:getPixel(200, 60)
+    local wideMenuR, wideMenuG = wideImage:getPixel(8, 120)
+    local wideSceneR, wideSceneG = wideImage:getPixel(150, 48)
+    check(wideEnemyR > 0.95 and wideEnemyG > 0.95
+        and widePlayerR > 0.95 and widePlayerG > 0.95
+        and wideMenuR > 0.95 and wideMenuG > 0.95,
+      "WIDE 2D battle compose scrubs its native HUD and lower menu")
+    check(wideSceneR > 0.95 and wideSceneG < 0.05,
+      "WIDE 2D battle compose preserves its sprite and animation arena")
+
+    state.bgMode = function() return "world" end
+    love.graphics.setCanvas(wideCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = wideCanvas, uiw = 304, uih = 144,
+    })
+    local worldWideImage = wideCanvas:newImageData()
+    local _, _, _, worldWideHudA = worldWideImage:getPixel(4, 4)
+    local _, _, _, worldWideGutterA = worldWideImage:getPixel(290, 60)
+    local _, _, _, worldWideLeftEdgeA = worldWideImage:getPixel(27, 60)
+    local _, _, _, worldWideRightEdgeA = worldWideImage:getPixel(276, 60)
+    local worldWideSceneR, worldWideSceneG, _, worldWideSceneA =
+      worldWideImage:getPixel(150, 48)
+    check(worldWideHudA == 0,
+      "WORLD WIDE battle scrub exposes the map beneath native HUD tiles")
+    check(worldWideGutterA == 0,
+      "WORLD WIDE battle scrub clips retained scene pixels at its frame")
+    check(worldWideLeftEdgeA == 0 and worldWideRightEdgeA == 0,
+      "WORLD WIDE battle paper stays inside both horizontal frame edges")
+    check(worldWideSceneA > 0.95 and worldWideSceneR > 0.95
+        and worldWideSceneG < 0.05,
+      "WORLD WIDE battle scrub leaves the source sprite arena opaque")
+
+    love.graphics.setCanvas(wideCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.compose"](function() return false end,
+      { battleDim = 0.4 }, {
+        uiCanvas = wideCanvas, uiw = 304, uih = 144,
+      })
+    local dimmedWorldImage = wideCanvas:newImageData()
+    local dimR, dimG, dimB, dimA = dimmedWorldImage:getPixel(290, 60)
+    check(dimR < 0.05 and dimG < 0.05 and dimB < 0.05
+        and dimA > 0.35 and dimA < 0.45,
+      "WORLD WIDE battle matches the host veil across its former viewport")
+
+    local childBase = state
+    childBase.bgMode = function() return "world" end
+    childBase.wideLayout = function() return true end
+    childBase.phase = "menu"
+    local childOverlay = setmetatable({ screenId = "BagMenu", isOpaque = true },
+      { __index = listClass })
+    game.stack.states = { childBase, childOverlay }
+    local childCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(childCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    hooks["render.compose"](function() return false end,
+      { battleDim = 0.4 }, {
+        uiCanvas = childCanvas, uiw = 304, uih = 144,
+      })
+    local childImage = childCanvas:newImageData()
+    local childArenaR, childArenaG, childArenaB, childArenaA =
+      childImage:getPixel(150, 48)
+    local childGutterR, childGutterG, childGutterB, childGutterA =
+      childImage:getPixel(290, 60)
+    check(childArenaA > 0.95 and childArenaR > 0.95
+        and childArenaG > 0.95 and childArenaB > 0.95,
+      "WORLD battle keeps its white arena behind Bag/Party children")
+    check(childGutterR < 0.05 and childGutterG < 0.05
+        and childGutterB < 0.05 and childGutterA > 0.35
+        and childGutterA < 0.45,
+      "WORLD battle keeps its dimmed gutter behind Bag/Party children")
+    game.stack.states = { state }
+    state.bgMode = nil
+    state.wideLayout = function() return false end
+
+    local battleBase = state
+    battleBase.isOpaque = true
+    local childNativeDraws = 0
+    local originalListDraw = listClass.draw
+    listClass.draw = function() childNativeDraws = childNativeDraws + 1 end
+    local battleBag = setmetatable({ screenId = "BagMenu", items = {},
+      index = 1, scroll = 0, isOpaque = true }, { __index = listClass })
+    game.stack.states = { battleBase, battleBag }
+    battleBag = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, battleBag, nil)
+    game.stack.states[2] = battleBag
+    battleBag:draw()
+    check(childNativeDraws == 0
+        and type(battleBag._gen1ModernBattleChildNativeDraw) == "function",
+      "battle child source draw is suppressed before it can overwrite WIDE sprites")
+    eventListeners["screen.pushed"]({ state = battleBag })
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, battleBase) == true,
+      "battle native draw remains visible under a modern child screen")
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, battleBag) == false,
+      "Bag child native draw is hidden independently above BattleState")
+
+    -- Match the released host exactly: BattleState.StatBox has no kind,
+    -- screenId, isOpaque flag, or instance-owned draw/update functions. Its
+    -- public class identity is the only reliable discriminator.
+    local oldBattleMetatable = getmetatable(battleBase)
+    local oldBattleGame = battleBase.game
+    local oldBattleBgMode = battleBase.bgMode
+    local oldBattleWideLayout = battleBase.wideLayout
+    local battleClass = {}
+    battleClass.__index = battleClass
+    local statBoxClass = {}
+    statBoxClass.__index = statBoxClass
+    local levelUpNativeDraws = 0
+    statBoxClass.draw = function()
+      levelUpNativeDraws = levelUpNativeDraws + 1
+    end
+    statBoxClass.update = function() end
+    battleClass.StatBox = statBoxClass
+    setmetatable(battleBase, battleClass)
+    battleBase.game = game
+    battleBase.bgMode = function() return "world" end
+    battleBase.wideLayout = function() return true end
+    battleBase.phase = "menu"
+
+    local levelUpState = setmetatable({
+      game = game,
+      mon = {
+        nickname = "TESTMON",
+        level = 6,
+        stats = { attack = 12, defense = 11, speed = 13, special = 14 },
+      },
+    }, statBoxClass)
+    game.stack.states = { battleBase, levelUpState }
+    levelUpState = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, levelUpState, nil)
+    game.stack.states[2] = levelUpState
+    levelUpState:draw()
+    check(levelUpNativeDraws == 0
+        and type(levelUpState._gen1ModernBattleChildNativeDraw) == "function",
+      "level-up native StatBox draw is suppressed at its source")
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, battleBase) == true,
+      "battle scene remains visible under the modern level-up card")
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, levelUpState) == false,
+      "level-up native StatBox is hidden independently above BattleState")
+
+    local levelUpCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(levelUpCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = levelUpCanvas, uiw = 304, uih = 144,
+    })
+    local levelUpImage = levelUpCanvas:newImageData()
+    local outsideR, outsideG, outsideB, outsideA =
+      levelUpImage:getPixel(4, 4)
+    local _, _, _, topStripA = levelUpImage:getPixel(150, 5)
+    -- Sample above the player ribbon and to the right of the native StatBox
+    -- scrub so this remains a source-scene assertion, not a HUD assertion.
+    local sceneR, sceneG, sceneB, sceneA =
+      levelUpImage:getPixel(200, 48)
+    check(outsideA == 0,
+      "real host StatBox leaves WORLD visible outside the modern 9-slice")
+    check(topStripA == 0,
+      "real host StatBox cannot restore WORLD paper above the modern frame")
+    check(sceneR > 0.95 and sceneG < 0.05 and sceneB < 0.05
+        and sceneA > 0.95,
+      "real host StatBox preserves source battle pixels inside modern scene")
+
+    setmetatable(battleBase, oldBattleMetatable)
+    battleBase.game = oldBattleGame
+    battleBase.bgMode = oldBattleBgMode
+    battleBase.wideLayout = oldBattleWideLayout
+    listClass.draw = originalListDraw
+    battleBase.isOpaque = nil
+    game.stack.states = { battleBase }
+  end
+  values.battleUiMode = "hud"
+  fill()
+  compose(false)
+  check(alpha() == 1, "SCENE HUD battle presenter preserves native battle UI")
+  values.battleUiMode = "auto"
+  values.battleUiWip = false
+
   game.save = {
     player = { name = "RED", id = 1 }, money = 1234, playTime = 3600,
     inventory = { POTION = 2 }, pokedex = { seen = { TESTMON = true },
@@ -1046,7 +1464,19 @@ function love.load()
     hooks["render.hud"](function() end, game, activeViewport)
     love.graphics.setCanvas()
     if captureHud and name then
-      hudCanvas:newImageData():encode("png", "gen1_ui_" .. name .. ".png")
+      local image = hudCanvas:newImageData()
+      local shotDir = os.getenv("GEN1_UI_SHOT_DIR")
+      if shotDir and shotDir ~= "" then
+        local encoded = image:encode("png")
+        local separator = package.config:sub(1, 1)
+        local path = shotDir .. separator .. "gen1_ui_" .. name .. ".png"
+        local output, openError = io.open(path, "wb")
+        if not output then error(openError or ("cannot open " .. path)) end
+        output:write(encoded:getString())
+        output:close()
+      else
+        image:encode("png", "gen1_ui_" .. name .. ".png")
+      end
     end
     return hudCanvas
   end
@@ -1264,6 +1694,110 @@ function love.load()
     check(pixelAlpha(optionCanvas, 320, 180) > 0,
       "OptionRows adapter renders " .. screenId .. " through modern HUD")
   end
+
+  -- Battle fixtures intentionally render only the post-composite modern
+  -- layer. The native BattleState canvas remains underneath in the game so
+  -- its attack/send-out/capture/voxel animations keep running.
+  local savedMoves = game.data.moves
+  game.data.moves = {
+    BUBBLEBEAM = { name = "BUBBLEBEAM", type = "WATER", pp = 20,
+      power = 65, accuracy = 100 },
+    BODY_SLAM = { name = "BODY SLAM", type = "NORMAL", pp = 15,
+      power = 85, accuracy = 100 },
+    GUST = { name = "GUST", type = "FLYING", pp = 35,
+      power = 40, accuracy = 100 },
+    THUNDERBOLT = { name = "THUNDERBOLT", type = "ELECTRIC", pp = 15,
+      power = 95, accuracy = 100 },
+  }
+  local battle = {
+    phase = "moveSelect", queue = {}, kind = "wild", moveIndex = 1,
+    menuIndex = 1, draw = function() end,
+    wideLayout = function() return false end,
+    player = { name = "HERCULES", shownHP = 118,
+      mon = { species = "TESTMON", nickname = "HERCULES", level = 32,
+        hp = 118, exp = 1000, stats = { hp = 118 } },
+      curMoves = {
+        { id = "BUBBLEBEAM", pp = 20 }, { id = "BODY_SLAM", pp = 15 },
+        { id = "GUST", pp = 35 }, { id = "THUNDERBOLT", pp = 15 },
+      } },
+    enemy = { name = "PIDGEY", shownHP = 37,
+      mon = { species = "TESTMON", level = 15, hp = 37,
+        stats = { hp = 37 } } },
+    overlays = {
+      caughtIndicator = true,
+      catchRates = { pokeball = 34, greatBall = 51, ultraBall = 68 },
+      experience = { current = 42, maximum = 67 },
+    },
+  }
+  values.battleUiWip, values.battleUiMode = true, "full"
+  local battleCanvas = renderHud({ battle }, "battle_2d_moves")
+  local battleViewport = { width = 1024, height = 768,
+    safe = { x = 0, y = 0, width = 1024, height = 768 } }
+  renderHud({ battle }, "battle_2d_moves_desktop", battleViewport)
+  local visualLevelUp = {
+    mon = {
+      nickname = "HERCULES", level = 33,
+      stats = { attack = 104, defense = 73, speed = 74, special = 87 },
+    },
+  }
+  local levelUpCardCanvas = renderHud({ battle, visualLevelUp },
+    "battle_level_up_modern", battleViewport)
+  check(alphaBounds(levelUpCardCanvas) ~= nil,
+    "modern level-up stats card renders above the preserved battle scene")
+  local fixedBattleViewport = { width = 1600, height = 900,
+    safe = { x = 0, y = 0, width = 1600, height = 900 },
+    gameX = 320, gameY = 90, gameWidth = 960, gameHeight = 720 }
+  battle.wideLayout = function() return true end
+  local fixedBattleCanvas = renderHud({ battle },
+    "battle_2d_moves_fixed_surface", fixedBattleViewport)
+  local fixedBattleBounds = alphaBounds(fixedBattleCanvas)
+  check(fixedBattleBounds and fixedBattleBounds.x >= fixedBattleViewport.gameX
+      and fixedBattleBounds.y >= fixedBattleViewport.gameY
+      and fixedBattleBounds.x + fixedBattleBounds.w
+        <= fixedBattleViewport.gameX + fixedBattleViewport.gameWidth
+      and fixedBattleBounds.y + fixedBattleBounds.h
+        <= fixedBattleViewport.gameY + fixedBattleViewport.gameHeight,
+    "FIXED battle presenter stays inside the host battle surface")
+  battle.wideLayout = function() return false end
+  check(pixelAlpha(battleCanvas,
+      math.floor(viewport.width / 2), viewport.height - 12) > 0,
+    "2D battle replacement paints an opaque modern move region")
+  check(pixelAlpha(battleCanvas,
+      math.floor(viewport.width / 2), 80) == 0,
+    "2D battle arena frame leaves the live source scene visible")
+  battle.phase, battle.current, battle.introSlide = "messages", nil, 12
+  local introCanvas = renderHud({ battle }, "battle_native_intro_passthrough")
+  check(pixelAlpha(introCanvas, 100, 100) == 0
+      and pixelAlpha(introCanvas, math.floor(viewport.width / 2),
+        viewport.height - 40) == 0,
+    "battle intro and party-ball animations remain unobscured")
+  battle.introSlide = nil
+  battle.current = { text = "HERCULES used BUBBLEBEAM!" }
+  renderHud({ battle }, "battle_animation_message_seed")
+  battle.current = nil
+  battle.player.shownHP = 91
+  battle.animPlaying, battle.msgHold = true, true
+  local animationCanvas = renderHud({ battle },
+    "battle_animation_modern_hud")
+  check(pixelAlpha(animationCanvas, math.floor(viewport.width / 2),
+      viewport.height - 40) > 0,
+    "modern battle message and animated HP HUD remain visible during attacks")
+  battle.animPlaying, battle.msgHold = nil, nil
+  battle.player.shownHP = 118
+  battle.phase, battle.current, battle.msgWaiting =
+    "messages", { text = "Wild PIDGEY appeared!" }, true
+  renderHud({ battle }, "battle_2d_message")
+  renderHud({ battle }, "battle_2d_message_desktop", battleViewport)
+  battle.phase, battle.current, battle.msgWaiting = "menu", nil, nil
+  renderHud({ battle }, "battle_2d_commands")
+  renderHud({ battle }, "battle_2d_commands_desktop", battleViewport)
+  battle.dramaticShapeShot = { canvas = true }
+  values.battleUiMode = "auto"
+  renderHud({ battle }, "battle_voxel_commands")
+  renderHud({ battle }, "battle_voxel_commands_desktop", battleViewport)
+  battle.dramaticShapeShot = nil
+  values.battleUiWip, values.battleUiMode = false, "auto"
+  game.data.moves = savedMoves
   renderHud({ title, titleMenu }, "title_main_menu")
 
   local dex = setmetatable({ screenId = "PokedexMenu", title = "POKéDEX",
@@ -1459,10 +1993,28 @@ function love.load()
   check(alpha() == 0,
     "Bill release list remains modeled when retained row payloads are stale")
 
-  values.trainer = setmetatable({ screenId = "TrainerCard", game = game },
+  local leaderSheet = love.graphics.newCanvas(16, 16)
+  love.graphics.push("all")
+  love.graphics.setCanvas(leaderSheet)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(0, 0, 0, 1)
+  love.graphics.rectangle("fill", 3, 2, 10, 12)
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.rectangle("fill", 6, 5, 4, 5)
+  love.graphics.setCanvas()
+  love.graphics.pop()
+  local leaderQuad = love.graphics.newQuad(0, 0, 16, 16, 16, 16)
+  local leaderQuads = {}
+  for index = 0, 7 do leaderQuads[index] = leaderQuad end
+  values.trainer = setmetatable({ screenId = "TrainerCard", game = game,
+    faces = { img = leaderSheet, quads = leaderQuads } },
     { __index = trainerCardClass })
   renderHud({ values.trainer }, "trainer")
   renderHud({ values.trainer }, "trainer_portrait", portraitViewport)
+  local savedTrainerTheme = values.theme
+  values.theme = "gen1_modern_ui:dark"
+  renderHud({ values.trainer }, "trainer_dark_leader_paper")
+  values.theme = savedTrainerTheme
 
   do
     -- RBY MMO's profile/rank states are plain local classes with public

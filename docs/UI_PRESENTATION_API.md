@@ -296,20 +296,34 @@ remain compatible with existing saves and tools.
 
 The battle presenter is draw-only and leaves `BattleState` input, timing,
 queues, callbacks, and third-party hooks untouched. Its `battleUiWip` visibility
-toggle is independent from the `layoutStyle`, `panelOpacity`,
+toggle is independent from the `battleUiMode`, `layoutStyle`, `panelOpacity`,
 `foregroundOpacity`, `startMenuShortcut`, `startMenuFastJump`,
 `startMenuQuickView`, `startMenuInset`, `dialogueUi`, generic `menuUi`,
 `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by the mod
-options. The Start-menu quick view is off by default; `startMenuInset` is a
+options. `battleUiMode` accepts `AUTO`, `2D FRAMED`, or `SCENE HUD`. AUTO
+uses a full-arena frame and larger cards for ordinary 2D battles, then switches
+to compact voxel-safe placement when the active state or a public adapter model
+publishes a 3D scene marker. Classic 2D FRAMED decorates the active BattleState
+to omit only its native HUD and text methods. The source picture and animation
+layers remain live, so send-outs, attacks, capture sequences, faints, palette
+flashes, shakes, and fades still render with source timing. Modern cards track
+the live animated HP value and retain the current message across source message
+holds. WIDE, older-host, and DramaticShape scene paths retain their native draw
+and use conservative composition fallback instead of this source-level split.
+Battle adapters enrich the read-only model; `canSuppressNative` is deliberately
+ignored for `layer = "battle"`. The Start-menu quick view is off by default; `startMenuInset` is a
 0–50% Navigation setting in 10% steps, with 0% retaining edge docking.
 
 On portrait phones the presenter scales typography and row density modestly.
 Gen 3 Box cells remain square and reserve a caption strip for name/level text;
 battle move cells reserve a separate PP column. These are presentation-only
-choices and do not alter the underlying menu geometry or callbacks. Battle
-move presentation mirrors the public layout state: WIDE is a fixed 2x2 grid;
-OG is a vertical list, which keeps three-or-fewer move selections aligned with
-the engine's up/down cursor.
+choices and do not replace source callbacks. Battle moves use a source-indexed
+2x2 grid in both OG and WIDE: WIDE retains native grid navigation, while OG
+directional edges update the same public move index before BattleState handles
+selection, PP, disabled slots, swapping, and turn resolution. Optional
+data-only battle overlays may provide
+experience/EXP bars, caught indicators, and `P#`/`G#`/`U#` catch-rate values;
+their source mod remains responsible for calculating and updating that data.
 
 ## Input behavior
 

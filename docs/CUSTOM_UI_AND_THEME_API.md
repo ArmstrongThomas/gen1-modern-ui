@@ -95,6 +95,30 @@ Supported semantic actions are `up`, `down`, `left`, `right`, `select`,
 the presenter only routes keyboard, controller, pointer, and touch intent to
 them. A callback may return whatever the source mod normally returns.
 
+### Battle screens
+
+Battle adapters use `layer = "battle"` and the same version negotiation and
+error isolation as ordinary screens. A battle model may additionally publish
+read-only `phase`, `presentation`, `player`, `enemy`, `moves`, `message`,
+`isVoxelBattle`, and `overlays` fields. `overlays` accepts data such as:
+
+```lua
+overlays = {
+  experience = { current = 14, maximum = 100 },
+  caughtIndicator = { caught = true },
+  catchRates = { pokeball = 18, greatBall = 32, ultraBall = 48 },
+}
+```
+
+These values are presentation hints only. The source mod calculates them and
+continues to own battle validation, timing, callbacks, networking, and state
+transitions. `presentation = "hud"` or `isVoxelBattle = true` asks AUTO mode
+to use compact voxel-safe menu/status placement. All battle modes retain the
+native/source draw and its animations; `canSuppressNative` is ignored for
+`layer = "battle"`. Malformed or throwing adapters fall back to the native UI.
+No third-party draw callbacks are accepted. See
+[`examples/battle_adapter.lua`](examples/battle_adapter.lua).
+
 ## Models and rows
 
 The model may contain:

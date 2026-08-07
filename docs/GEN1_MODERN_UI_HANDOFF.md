@@ -61,6 +61,12 @@ pushes at an existing version are intentionally idempotent. For a curated
 release body, add `docs/releases/v<manifest.version>.md`; the workflow copies
 that file and appends the generated archive checksum.
 
+**Release reminder:** whenever a change set is ready to commit for release,
+check and bump `mods/gen1_modern_ui/manifest.json` first (and add the matching
+release notes when appropriate). Verify the version in the final commit before
+sharing or pushing it so a completed release cannot accidentally reuse the
+previous version.
+
 ## Architecture
 
 1. The released ordinary title Menu is identified by its `titleUiBox` marker
@@ -196,7 +202,13 @@ classic UI is suppressed independently.
   TextBox stays compact, while richer page models can expand up to five lines
   plus the prompt strip. High-resolution text is no longer needlessly padded.
 - The battle adapter reads public battler, phase, move, and message fields. Its
-  `battleUiWip` toggle is WIP and defaults off; other surfaces have independent
+  `battleUiWip` toggle is WIP and defaults off. `battleUiMode` selects AUTO,
+  2D FRAMED, or SCENE HUD. Classic 2D FRAMED decorates BattleState to omit only
+  native HUD/text drawing while preserving its picture, effect, send-out,
+  capture, faint, palette, shake, and fade layers. Modern cards follow animated
+  `shownHP`, and a short-lived message cache bridges source `msgHold` frames.
+  WIDE and active voxel/3D scenes retain the conservative composition fallback;
+  AUTO selects between those placements. Other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
   `startMenuFastJump`, `startMenuQuickView`, `startMenuInset`, `dialogueUi`,
   `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
@@ -417,6 +429,13 @@ When extending the standalone mod:
    same PhysFS path used by `LauncherMods.installZip`, then verifies that the
    root manifest and entry chunk are readable.
 
+Keep the installer’s factory-scope local count conservative: LÖVE/LuaJIT
+limits a function prototype to 200 local slots. Put growing feature state and
+helper families behind runtime tables (for example `battleRuntime` or
+`mod._gen1ModernCompatibility`) instead of adding more factory-scope local
+functions. Re-run the LÖVE smoke test after structural changes so this limit is
+caught before a game launch.
+
 ## Mobile QA notes
 
 The presenter measures the live virtual-control layout and reserves a
@@ -425,8 +444,10 @@ window, so translucent controls never reveal a misaligned classic frame.
 Portrait windows receive modest typography/row scaling; box cells stay square,
 with a dedicated caption strip for name/level text. The battle presenter is
 currently WIP and defaults off; when explicitly enabled, its move cells reserve
-a separate PP column and follow the active OG vertical list or WIDE 2x2 cursor,
-including empty WIDE slots. The smoke driver accepts
+a separate PP column and use a source-indexed 2x2 grid in both OG and WIDE.
+WIDE keeps native grid input, while OG directional edges are mapped to the
+same public move index before the source BattleState handles the action. The
+smoke driver accepts
 `SMOKE_INITIAL_WIDTH`/`SMOKE_INITIAL_HEIGHT` and `SMOKE_WIDTH`/`SMOKE_HEIGHT`
 for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
 

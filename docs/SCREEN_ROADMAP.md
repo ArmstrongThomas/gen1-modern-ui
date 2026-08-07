@@ -41,7 +41,7 @@ root/child contract and the title Menu: Bill lists require verified full-stack
 ancestry, while the ordinary title Menu is suppressed independently so its
 shared title-art canvas is preserved.
 
-The v1 source-mod contract now exposes `layer = "screen" | "modal"`,
+The v1 source-mod contract now exposes `layer = "screen" | "modal" | "battle"`,
 `canSuppressNative`, read-only models, source-owned semantic actions, and
 data-only namespaced themes and frames. Adapter exceptions remain narrower
 than their live semantic contract; custom draw callbacks are never accepted.
@@ -52,19 +52,24 @@ than their live semantic contract; custom draw callbacks are never accepted.
   discovery, namespaced themes and frames, model/action validation, reload and
   disable invalidation, error isolation, `screen.render_visible`, and the
   conservative `render.compose` fallback. RBYMMO and Dex Radar move to public
-  exports first, with an example source-mod adapter and API documentation.
+  exports first, with an example source-mod adapter and API documentation. The
+  opt-in battle foundation also lands here: animation-preserving 2D FRAMED
+  rendering, voxel-safe AUTO/SCENE HUD placement, source-owned battle actions, and data-only
+  EXP/caught/catch-rate overlay slots.
 - **0.9.x — compatibility and polish:** migrate remaining installed-mod
   integrations, test absence/disable/version mismatch/hot reload/malformed
   models, and complete released-game QA across themes, palettes, pixel assets,
   fonts, scaling, responsive layouts, nested modals, and pointer settings.
-  Controls/Bindings, Continue/save selection, battle, and touch/drag remain
-  explicitly WIP or deferred.
+  Exercise the battle presenter across ordinary, voxel, QOL-overlay, and
+  source-adapter fixtures. Controls/Bindings, Continue/save selection, and
+  touch/drag remain explicitly WIP or deferred.
 - **1.0.0 — stable core UI:** require the documented contract, public RBYMMO
   and Dex Radar adapters, source-mod-owned UI files that publish the contract,
   precise suppression with fallback, stable presenters and input safety, and
   synchronized manifest, changelog, API docs, and examples.
 - **After 1.0:** Controls/Bindings replacement, semantic save-slot cards,
-  battle, evolution/trade/Hall of Fame/Diploma/Credits/cinematics/minigames,
+  additional battle-specific surfaces,
+  evolution/trade/Hall of Fame/Diploma/Credits/cinematics/minigames,
   universal drag/drop or mouse interaction, custom third-party drawing, and
   the permanently dropped Kid Mode remain out of scope.
 
@@ -85,8 +90,9 @@ than their live semantic contract; custom draw callbacks are never accepted.
   PicBox, reports, and the third-party adapter API.
 - **P3 — title/online/special:** title family, Link/Tournament, and adapters for
   large custom UI mods.
-- **WIP — battle:** remains off until the screen-stack and animation ownership
-  architecture is stable.
+- **WIP — battle:** the dual-mode presenter is now implemented behind an
+  off-by-default toggle; scene ownership, animation-heavy phases, and released
+  game QA remain before it can be considered stable.
 - **Vanilla by design:** cinematics and minigames remain classic unless a full
   replacement is intentionally designed.
 
@@ -125,7 +131,7 @@ than their live semantic contract; custom draw callbacks are never accepted.
 | Naming / Name Rater | `NamingScreen` or semantic Name Rater state; glyph grid, row/col/case/maxLen, target nickname | Dedicated presenter | Responsive full character grid with editable existing nicknames, pointer activation, and preset menu layering. |
 | Title/Continue | ordinary title Menu over released TitleState; private ContinueInfo | Main Menu shipped; Continue classic | The title Menu draw is suppressed independently while preserving title art; any unknown overlay restores classic. ContinueInfo remains classic until it has a stable semantic presenter. |
 | Oak speech/intros | `OakSpeech`, `IntroMovie`, `YellowIntro`; art + TextBox/Menu/Naming | Vanilla | Leave cinematic canvas intact initially; revisit after dialogue and naming presenters. |
-| Battle | phase/queue/kind/player/enemy and battle screen variants | WIP, off | See battle section below. |
+| Battle | phase/queue/kind/player/enemy, public move/message fields, and optional source-mod overlays | WIP, opt-in | AUTO keeps the live source draw, adds the 2D FRAMED layout to ordinary battles, and switches to compact SCENE HUD placement for active voxel/3D scenes. |
 | Link | direct `LinkState`; stage/index/address/code/network/trade data | Vanilla | **P3.** Request stable screen ID; cover host/join/code/compatibility/settings/trade/wait states. |
 | Tournament | direct `Tournament`; stage/settings/bracket/roster/champion | Vanilla | **P3 after Link.** Request stable ID and build bracket/roster semantic models. |
 | Trade animation | `screenId="TradeAnim"`; sequence phases/sprites | Vanilla | Treat as cinematic; only replace as a complete animation. |
@@ -135,17 +141,35 @@ than their live semantic contract; custom draw callbacks are never accepted.
 
 ## Battle interface plan
 
-Battle stays labeled **WIP** and disabled by default. Native battle sprites,
-animations, HUD, prompts, and text currently share `uiCanvas`; the compositor
-cannot remove only the HUD while retaining the native animation layer.
+Battle remains labeled **WIP** and disabled by default. When enabled, the
+presenter has two deliberate modes:
 
-Required variants include wild/trainer/link, Safari, old-man demo, intro and
-party-ball sequences, messages, 2×2 commands, OG list versus WIDE 2×2 moves,
-fewer-than-four-move navigation, Mimic/move swapping, Bag/Party overlays,
-forced replacement, nickname prompts, and level-up StatBox. Implement one
-phase at a time only after P0. A future engine split between battle scene and
-battle HUD would lower the cost of a faithful replacement, but v0.3.0 does not
-require it.
+- **2D FRAMED** keeps the source battlefield live, adds the full-arena frame,
+  and replaces legacy status/menu regions with opponent/player cards,
+  palette-aware bars, messages, move details, and source-indexed cursor
+  geometry. On the classic renderer, native HUD/text methods are isolated at
+  the BattleState while its pictures and effect layers continue unchanged.
+- **SCENE HUD** uses tighter card placement without the arena frame for voxel
+  and other source-owned scenes. **AUTO** selects 2D FRAMED for ordinary 2D
+  battles and SCENE HUD only when the active state or public adapter model
+  publishes a voxel/3D marker.
+
+Both paths preserve the battle state and simulation. Classic 2D suppresses only
+native HUD/text drawing at its source; native sprites, move/send-out/capture/
+faint animations, palette effects, and timing continue running underneath the
+modern compositor. WIDE and scene-owned paths keep their complete native draw
+and use conservative region fallback, preserving voxel staging and additive
+QOL hooks. Source mods
+can publish a `layer = "battle"` data-only adapter when
+they want Modern UI to consume their public status, move, message, experience,
+caught, or catch-rate data. Actions remain source-owned semantic methods; no
+third-party draw callbacks are accepted.
+
+Required regression variants include wild/trainer/link, Safari, old-man demo,
+intro and party-ball sequences, messages, 2×2 commands, OG and WIDE 2×2
+moves, fewer-than-four-move navigation, Mimic/move swapping, Bag/Party
+overlays, forced replacement, nickname prompts, level-up StatBox, voxel scene
+preservation, experience/caught indicators, and catch-rate rows.
 
 ## Installed-mod adapters and compatibility
 
