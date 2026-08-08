@@ -74,6 +74,13 @@ local function namingGridNormalizesRbyMmoSwitch(hook)
     and lowerResult[#lowerResult][1] == "UPPER CASE"
 end
 
+local function namingGridKeepsNativeNewGame(hook, game, state)
+  local base = { { "A", "B", "C" }, { "ED" }, { "lower case" } }
+  local result = hook(function(grid) return grid end, base,
+    { lower = false, game = game, state = state })
+  return #result == #base and result[#result][1] == "lower case"
+end
+
 function love.load()
   local entryPath = os.getenv("GEN1_UI_MAIN")
   check(entryPath and entryPath ~= "", "GEN1_UI_MAIN is required")
@@ -143,6 +150,10 @@ function love.load()
   package.loaded["src.ui.MoveLearnMenu"] = { draw = function() end }
   package.loaded["src.ui.PicBox"] = { draw = function() end }
   package.loaded["src.ui.NamingScreen"] = { draw = function() end }
+  package.loaded["src.ui.OakSpeech"] = {
+    draw = function() end,
+    isOpaque = true,
+  }
   package.loaded["src.ui.TownMap"] = { draw = function() end }
   package.loaded["src.ui.QuarantineReport"] = { draw = function() end }
   package.loaded["src.mods.ManagerState"] = managerClass
@@ -202,14 +213,16 @@ function love.load()
       TextBox = textBoxClass,
       push = function(targetGame, screen)
         if screen ~= "ManagerState" then return nil end
-        local manager = {
+        local manager = setmetatable({
+          game = targetGame,
           screenId = "ManagerState", screen = "list", cursor = 1, optionRows = {},
+          isOpaque = true,
           byId = { ["gen1_modern_ui"] = { id = "gen1_modern_ui" } },
           openOptions = function(self)
             self.screen = "options"
             self.optionRows = { { id = "theme", label = "UI THEME" } }
           end,
-        }
+        }, { __index = managerClass })
         targetGame.stack:push(manager)
         return manager
       end,
@@ -564,6 +577,10 @@ function love.load()
     "naming grid keeps lowercase when a mod uses lower for digits")
   check(namingGridNormalizesRbyMmoSwitch(hooks["ui.naming.grid"]),
     "naming grid normalizes RBY MMO case-switch labels")
+  values.menuUi = false
+  check(not namingGridHasNumberRows(hooks["ui.naming.grid"]),
+    "disabled menu UI leaves the native naming grid unchanged")
+  values.menuUi = true
 
   do
     local titleGame = { stack = { states = {} } }
@@ -594,6 +611,17 @@ function love.load()
       return 1
     end,
   } }
+  do
+    local oakSpeech = setmetatable({ screenId = "OakSpeech" },
+      { __index = package.loaded["src.ui.OakSpeech"] })
+    local namingState = setmetatable({ screenId = "NamingScreen" },
+      { __index = package.loaded["src.ui.NamingScreen"] })
+    local priorStates = game.stack.states
+    game.stack.states = { overworld, oakSpeech, namingState }
+    check(namingGridKeepsNativeNewGame(hooks["ui.naming.grid"], game),
+      "New Game naming keeps the host-native keyboard")
+    game.stack.states = priorStates
+  end
   check(type(hooks["ui.start_menu.items"]) == "function",
     "start-menu hook registered")
   do
@@ -607,11 +635,19 @@ function love.load()
     end
     check(not shortcutFound and modMenusRow,
       "UI settings default under the MOD MENUS start entry")
+    -- Match the host Menu lifecycle: selecting a start-menu entry closes the
+    -- current menu before its callback pushes the destination screen.
+    game.stack:pop()
     modMenusRow.onSelect()
     local groupedMenu = game.stack:top()
     check(groupedMenu._gen1ModMenus and #groupedMenu.items == 1
         and groupedMenu.items[1].id == "gen1_modern_ui.options",
       "MOD MENUS contains UI SETTINGS by default")
+    values.menuUi, values.dialogueUi, values.managerUi = false, false, true
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, groupedMenu) == false,
+      "real MOD MENUS remains owned when generic menu and dialogue UI are off")
     groupedMenu.items[1].onSelect()
     local shortcutManager = game.stack:top()
     check(shortcutManager.currentMod
@@ -622,8 +658,15 @@ function love.load()
     check(shortcutManager.optionRows[1]
         and shortcutManager.optionRows[1].id == "__category:appearance",
       "direct UI SETTINGS opens with categorized option rows")
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, shortcutManager) == false,
+      "mod manager remains modern when generic menu and dialogue UI are off")
     game.stack:pop()
     game.stack:pop()
+    values.menuUi, values.dialogueUi = true, true
+    -- Restore the supported screen used by the compose-fallback checks below.
+    game.stack:push(state)
   end
   local modMenuRow = { id = "example.dexnav", label = "DEXNAV",
     onSelect = function() end }
@@ -638,6 +681,38 @@ function love.load()
   end
   check(groupedFound and not leaked,
     "Start menu groups rows appended by other mods")
+  do
+    local clonedVanilla = {
+      { id = "pokemon", label = "POKEMON" },
+      { id = "items", label = "ITEM" },
+      { id = "options", label = "OPTION" },
+    }
+    local clonedItems = hooks["ui.start_menu.items"](
+      function(_, list)
+        local copied = {}
+        for index, item in ipairs(list) do
+          copied[index] = { id = item.id, label = item.label,
+            onSelect = item.onSelect }
+        end
+        copied[#copied + 1] = {
+          id = "example.cloned_mod", label = "CLONED MOD",
+          onSelect = function() end,
+        }
+        return copied
+      end, game, clonedVanilla)
+    local vanillaCount, clonedModLeaked, clonedGroup = 0, false, false
+    for _, item in ipairs(clonedItems) do
+      if item.id == "pokemon" or item.id == "items" or item.id == "options" then
+        vanillaCount = vanillaCount + 1
+      elseif item.id == "example.cloned_mod" then
+        clonedModLeaked = true
+      elseif item.id == "gen1_modern_ui.mod_menus" then
+        clonedGroup = true
+      end
+    end
+    check(vanillaCount == 3 and clonedGroup and not clonedModLeaked,
+      "Start menu keeps vanilla rows when another hook clones descriptors")
+  end
   local pinMenuRow
   for _, item in ipairs(groupedItems) do
     if item.id == "gen1_modern_ui.mod_menus" then pinMenuRow = item end
@@ -838,7 +913,65 @@ function love.load()
   compose(false)
   check(alpha() == 1, "disabled presenter keeps the canvas")
 
+  values.managerUi = true
+  values.dialogueUi = false
+  local modMenusState = setmetatable({
+    _gen1ModMenus = true,
+    items = { { label = "UI SETTINGS" } },
+    index = 1,
+  }, { __index = menuClass })
+  game.stack.states = { overworld, modMenusState }
+  hooks["render.zones"](function(_, zones) return zones end, game, {})
+  fill()
+  compose(false)
+  check(alpha() == 0,
+    "MOD MENUS remains modern when menu and dialogue UI are disabled")
+  check(hooks["screen.render_visible"](
+      function(visible) return visible end, true, modMenusState) == false,
+    "MOD MENUS native rows stay suppressed under its manager presenter")
+
   values.menuUi = true
+  values.dialogueUi = true
+  do
+    local oakSpeech = setmetatable({
+      screenId = "OakSpeech",
+      isOpaque = true,
+    }, { __index = package.loaded["src.ui.OakSpeech"] })
+    local nativeChoice = setmetatable({
+      items = { { label = "NEW NAME" } },
+      index = 1,
+      isOpaque = true,
+    }, { __index = menuClass })
+    game.stack.states = { overworld, oakSpeech, nativeChoice }
+    oakSpeech.game = game
+    eventListeners["screen.pushed"]({ state = oakSpeech })
+    eventListeners["screen.pushed"]({ state = nativeChoice })
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    fill()
+    compose(false)
+    check(alpha() == 1,
+      "New Game Oak flow keeps the complete native UI canvas")
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, nativeChoice) == true,
+      "New Game nested menus remain visible through precise suppression")
+
+    local staleGame = { stack = { states = { overworld, state } } }
+    hooks["render.zones"](function(_, zones) return zones end, staleGame, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, nativeChoice) == true,
+      "New Game child keeps cached ownership over a stale render cache")
+    check(namingGridKeepsNativeNewGame(hooks["ui.naming.grid"], nil,
+        nativeChoice),
+      "New Game keyboard stays native without an explicit game context")
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    game.stack:pop()
+    eventListeners["screen.popped"]({ state = nativeChoice })
+    game.stack:pop()
+    eventListeners["screen.popped"]({ state = oakSpeech })
+    check(namingGridHasNumberRows(hooks["ui.naming.grid"]),
+      "New Game native ownership clears after returning to overworld")
+  end
+
   local underlying = { screenId = "ListMenu", draw = function() end }
   game.stack.states = { underlying, state }
   fill()
@@ -1032,6 +1165,31 @@ function love.load()
   compose(false)
   check(alpha() == 0, "fully modeled dialogue and choice stack is cleared")
 
+  local pendingTextBox = setmetatable({ pages = {}, pageIndex = 1,
+    lineIndex = 1, charIndex = 0, shown = {}, done = false, isOpaque = true },
+    { __index = textBoxClass })
+  game.stack.states = { overworld, pendingTextBox }
+  fill()
+  compose(false)
+  check(alpha() == 1,
+    "pending New Game dialogue keeps the native UI until text is ready")
+  hooks["render.zones"](function(_, zones) return zones end, game, {})
+  check(hooks["screen.render_visible"](
+      function(visible) return visible end, true, pendingTextBox) == true,
+    "pending New Game dialogue is never hidden by precise suppression")
+
+  local pendingMenu = setmetatable({ screenId = "Menu", items = {},
+    index = 1, isOpaque = true }, { __index = menuClass })
+  game.stack.states = { overworld, pendingMenu }
+  fill()
+  compose(false)
+  check(alpha() == 1,
+    "pending New Game name choice remains native until choices exist")
+  hooks["render.zones"](function(_, zones) return zones end, game, {})
+  check(hooks["screen.render_visible"](
+      function(visible) return visible end, true, pendingMenu) == true,
+    "pending New Game name choice is never hidden by precise suppression")
+
   local unknown = { draw = function() end }
   game.stack.states = { bag, unknown, choice }
   fill()
@@ -1059,6 +1217,80 @@ function love.load()
   fill()
   compose(false)
   check(alpha() == 1, "battle UI stays native while WIP presenter is off")
+
+  do
+    local originalDraw = function(self) self.drawCalls = (self.drawCalls or 0) + 1 end
+    local originalHud = function(self) self.hudCalls = (self.hudCalls or 0) + 1 end
+    local originalText = function(self) self.textCalls = (self.textCalls or 0) + 1 end
+    local originalPics = function(self) self.pictureCalls = (self.pictureCalls or 0) + 1 end
+    local disabledBattle = {
+      game = game, phase = "menu", queue = {}, kind = "wild",
+      bgMode = function() return "world" end,
+      wideLayout = function() return true end,
+      draw = originalDraw, drawHUDs = originalHud,
+      drawTextArea = originalText, drawPicsLayer = originalPics,
+    }
+    local decoratedBattle = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, disabledBattle, nil)
+    check(decoratedBattle.draw == originalDraw
+        and decoratedBattle.drawHUDs == originalHud
+        and decoratedBattle.drawTextArea == originalText
+        and decoratedBattle.drawPicsLayer == originalPics
+        and decoratedBattle._gen1ModernBattleSceneIsolation == nil,
+      "disabled battle UI leaves every native battle draw path untouched")
+
+    local originalChildDraw = function(self)
+      self.childDrawCalls = (self.childDrawCalls or 0) + 1
+    end
+    local introChild = { game = game, screenId = "ProfessorOakIntro",
+      draw = originalChildDraw }
+    game.stack.states = { disabledBattle, introChild }
+    introChild = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, introChild, nil)
+    check(introChild.draw == originalChildDraw
+        and introChild._gen1ModernBattleChildDraw == nil,
+      "disabled battle UI leaves intro and battle-child screens native")
+
+    local disabledBattleBag = setmetatable({
+      screenId = "BagMenu", items = {}, index = 1, scroll = 0,
+      isOpaque = true,
+    }, { __index = listClass })
+    game.stack.states = { disabledBattle, disabledBattleBag }
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(disabledBattleBag.isOpaque == true,
+      "disabled battle UI preserves opaque in-battle child screens")
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, disabledBattleBag) == true,
+      "disabled battle UI keeps in-battle Bag and Party screens native")
+    fill()
+    compose(false)
+    check(alpha() == 1,
+      "disabled battle UI keeps the native in-battle child canvas visible")
+    game.stack.states = { disabledBattle, introChild }
+
+    values.battleUiWip = true
+    disabledBattle = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, disabledBattle, nil)
+    introChild = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, introChild, nil)
+    check(disabledBattle.draw ~= originalDraw
+        and disabledBattle.drawHUDs ~= originalHud
+        and disabledBattle.drawTextArea ~= originalText
+        and disabledBattle.drawPicsLayer ~= originalPics
+        and introChild.draw ~= originalChildDraw,
+      "enabled battle UI installs scene and child decorators")
+
+    values.battleUiWip = false
+    game.stack.states = { disabledBattle, introChild }
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(disabledBattle.draw == originalDraw
+        and disabledBattle.drawHUDs == originalHud
+        and disabledBattle.drawTextArea == originalText
+        and disabledBattle.drawPicsLayer == originalPics
+        and introChild.draw == originalChildDraw,
+      "disabling battle UI restores decorators installed earlier in the session")
+    game.stack.states = { state }
+  end
 
   values.battleUiWip = true
   values.battleUiMode = "full"

@@ -372,7 +372,9 @@ local function titleFor(Strings, state, kind)
                mod_options = "OPTIONS", link = "LINK",
                party = "POKéMON", summary = "SUMMARY" })[kind]
   end
-  if kind == "choice" or (kind == "menu" and not (state and state.title)
+  if kind == "choice" or (kind == "menu"
+      and not (state and state._gen1ModMenus)
+      and not (state and state.title)
       and not (state and names[state.screenId])) then
     title = ""
   end
@@ -1089,6 +1091,8 @@ end
 
 return function(mod)
   local runtime = {}
+  runtime.nativeNewGameGames = setmetatable({}, { __mode = "k" })
+  runtime.stateGames = setmetatable({}, { __mode = "k" })
   local okStrings, engineStrings = pcall(require, "src.core.Strings")
   runtime.fallbackStrings = function(value, ...)
     if select("#", ...) == 0 then return value end
@@ -2454,6 +2458,7 @@ return function(mod)
   local runtimeClasses = {
     linkCodeEntry = runtime.optionalClass("src.link.CodeEntry"),
     linkNet = runtime.optionalClass("src.link.Net"),
+    oakSpeech = runtime.optionalClass("src.ui.OakSpeech"),
     stats = runtime.optionalClass("src.pokemon.Stats"),
   }
   -- The released overworld is a singleton class table rather than a normal
@@ -2475,6 +2480,90 @@ return function(mod)
     -- exposing the released TitleState class. Accept either identity signal.
     return state.screenId == "TitleState"
       or inherits(classOf(state), titleClass)
+  end
+
+  -- New Game clears TitleState before pushing OakSpeech, then layers native
+  -- TextBox, Menu, and NamingScreen states above it. Treat that complete stack
+  -- branch as one source-owned flow: partial replacement breaks Oak's speech,
+  -- the name choices, and the fixed-size native keyboard.
+  runtime.isOakSpeechState = function(state)
+    if not state then return false end
+    return state.screenId == "OakSpeech"
+      or (runtimeClasses.oakSpeech
+        and inherits(classOf(state), runtimeClasses.oakSpeech))
+      or false
+  end
+
+  runtime.markNativeNewGame = function(game)
+    if game then runtime.nativeNewGameGames[game] = true end
+  end
+
+  runtime.stackContainsState = function(game, state)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" or not state then return false end
+    for index = #states, 1, -1 do
+      if states[index] == state then return true end
+    end
+    return false
+  end
+
+  -- StateStack lifecycle payloads contain only the state. Cache ownership as
+  -- states are pushed so render-visible and naming hooks can still recognize
+  -- nested Oak menus even before render.zones refreshes currentGame.
+  runtime.ownerGame = function(state, fallback)
+    if not state then return fallback end
+    local game = state.game or runtime.stateGames[state]
+    if game then return game end
+    if fallback and runtime.stackContainsState(fallback, state) then
+      runtime.stateGames[state] = fallback
+      return fallback
+    end
+    for knownGame in pairs(runtime.nativeNewGameGames) do
+      if runtime.stackContainsState(knownGame, state) then
+        runtime.stateGames[state] = knownGame
+        return knownGame
+      end
+    end
+    return fallback
+  end
+
+  runtime.stackHasOakSpeech = function(game)
+    local states = game.stack and game.stack.states
+    if type(states) ~= "table" then return false end
+    for index = #states, 1, -1 do
+      if runtime.isOakSpeechState(states[index]) then return true end
+    end
+    return false
+  end
+
+  runtime.hasNativeNewGameFlow = function(game)
+    if not game then return false end
+    if runtime.stackHasOakSpeech(game) then
+      runtime.markNativeNewGame(game)
+      local states = game.stack and game.stack.states
+      if type(states) == "table" then
+        for index = 1, #states do
+          runtime.stateGames[states[index]] = game
+        end
+      end
+      return true
+    end
+    runtime.nativeNewGameGames[game] = nil
+    return false
+  end
+
+  runtime.isNativeNewGameState = function(game, state)
+    game = runtime.ownerGame(state, game)
+    if not (game and state) then return false end
+    if runtime.isOakSpeechState(state) then return true end
+    if not runtime.hasNativeNewGameFlow(game) then return false end
+    local states = game and game.stack and game.stack.states
+    if type(states) == "table" then
+      for index = #states, 1, -1 do
+        if states[index] == state then return true end
+      end
+    end
+    return runtime.ownerGame(state, game) == game
   end
 
   runtime.isLinkState = function(state)
@@ -2602,6 +2691,24 @@ return function(mod)
     return decorated
   end
 
+  -- Hook chains are allowed to rebuild row descriptor tables.  Match the
+  -- vanilla inventory by a stable public identity as well as object identity
+  -- so a copying wrapper cannot make every ordinary row look mod-added.
+  runtime.startMenuItemKey = function(item)
+    if type(item) ~= "table" then return nil end
+    local id = safeText(item.id)
+    if id ~= "" then return "id:" .. id end
+    local label = safeText(item.label):lower():gsub("%s+", " ")
+    if label ~= "" then return "label:" .. label end
+    return nil
+  end
+
+  runtime.copyArray = function(items)
+    local copied = {}
+    for _, item in ipairs(items or {}) do copied[#copied + 1] = item end
+    return copied
+  end
+
   runtime.uiSettingsRow = function(game)
     return {
       id = "gen1_modern_ui.options",
@@ -2620,6 +2727,13 @@ return function(mod)
       tx = 8, ty = 1, tw = 12,
       onCancel = function() mod.ui.push(game, "StartMenu") end,
     })
+    -- This is a Modern UI-owned manager surface, not an arbitrary native
+    -- Menu. Stamp its ownership explicitly so precise suppression never has
+    -- to infer the Game from a previous render frame, and so it remains
+    -- identifiable when the generic Menu/Dialogue presenters are disabled.
+    menu.game = menu.game or game
+    menu.screenId = menu.screenId or "Gen1ModernModMenus"
+    menu.title = menu.title or Strings("MOD MENUS")
     menu._gen1ModMenus = true
     game.stack:push(menu)
   end
@@ -2631,37 +2745,53 @@ return function(mod)
   -- former START UI SETTINGS shortcut setting).
   mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
     local original = {}
-    for _, item in ipairs(items or {}) do original[item] = true end
+    local originalCounts = {}
+    for _, item in ipairs(items or {}) do
+      original[item] = true
+      local key = runtime.startMenuItemKey(item)
+      if key then originalCounts[key] = (originalCounts[key] or 0) + 1 end
+    end
     local out = next(game, items)
     if type(out) ~= "table" then
       return out
     end
+    -- Never mutate a downstream mod's returned inventory in place.
+    out = runtime.copyArray(out)
 
-    -- There is no required mod-id field on this hook, so use object identity
-    -- for rows appended by another hook. This keeps the grouping opt-in at the
-    -- presentation layer without rewriting labels or guessing at vanilla rows.
+    -- There is no required source-mod field on this hook. Prefer exact object
+    -- identity, then consume stable id/label matches from the incoming vanilla
+    -- inventory. Rows that remain unmatched are the mod-menu candidates.
     local canGroupModMenus = mod.ui and mod.ui.Menu
       and type(mod.ui.Menu.new) == "function"
     local groupingEnabled = runtime.option("startMenuModMenus", true) ~= false
       and canGroupModMenus
     local settings = runtime.uiSettingsRow(game)
-    local added, addedSet, hasOriginal, hasGroup, hasSettings = {}, {}, false,
-      false, false
+    local added, addedSet, hasGroup, hasSettings = {}, {}, false, false
     local settingsItem
     local pinnedDirect = {}
     for _, item in ipairs(out) do
       if type(item) == "table" then
-        if original[item] then
-          hasOriginal = true
-        elseif item.id == "gen1_modern_ui.mod_menus" then
+        if item.id == "gen1_modern_ui.mod_menus" then
           hasGroup = true
         elseif item.id == "gen1_modern_ui.options" then
           hasSettings = true
           settingsItem = item
         else
-          added[#added + 1] = item
-          addedSet[item] = true
-          if runtime.isPinned(item) then pinnedDirect[item] = true end
+          local key = runtime.startMenuItemKey(item)
+          local isOriginal = original[item] == true
+          if isOriginal then
+            if key and (originalCounts[key] or 0) > 0 then
+              originalCounts[key] = originalCounts[key] - 1
+            end
+          elseif key and (originalCounts[key] or 0) > 0 then
+            isOriginal = true
+            originalCounts[key] = originalCounts[key] - 1
+          end
+          if not isOriginal then
+            added[#added + 1] = item
+            addedSet[item] = true
+            if runtime.isPinned(item) then pinnedDirect[item] = true end
+          end
         end
       end
     end
@@ -2698,7 +2828,7 @@ return function(mod)
           out[index] = runtime.decoratePinned(item)
         end
       end
-      if #groupedItems > 0 and hasOriginal and not hasGroup then
+      if #groupedItems > 0 and not hasGroup then
         local grouped = {
           id = "gen1_modern_ui.mod_menus",
           label = Strings("MOD MENUS"),
@@ -3197,8 +3327,7 @@ return function(mod)
     -- ManagerState is part of the released in-game mod manager.  It is not a
     -- Menu/ListMenu subclass, so identify it by its public screen id rather
     -- than by reaching into the engine's class hierarchy.
-    if id == "ManagerState" and managerClass
-        and inherits(class, managerClass) then return "mod_manager" end
+    if id == "ManagerState" then return "mod_manager" end
     if runtime.isGen3Box(state) then return "gen3_box" end
     if id == "DexEntryMenu" and ((dexEntryClass and inherits(class, dexEntryClass))
         or runtime.isUsefulDexEntry(state)) then return "dex_entry" end
@@ -3253,7 +3382,13 @@ return function(mod)
   -- classic UI on frames that render.hud will actually replace.  In
   -- particular, the unfinished battle presenter remains opt-in and never
   -- blanks the stable native battle UI by default.
-  runtime.presenterEnabled = function(kind)
+  runtime.presenterEnabled = function(kind, state)
+    -- MOD MENUS is a Modern UI-owned utility surface. It remains available
+    -- when ordinary Menu/Dialogue presenters are disabled and follows the
+    -- dedicated Mod Manager UI toggle instead.
+    if state and state._gen1ModMenus then
+      return runtime.option("managerUi", true) ~= false
+    end
     if kind == "external" then return runtime.option("menuUi", true) ~= false end
     if kind == "battle" then return runtime.option("battleUiWip", false) == true end
     if kind == "link" then return runtime.option("menuUi", true) ~= false end
@@ -3370,7 +3505,10 @@ return function(mod)
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   runtime.customDrawModeled = function(state, kind)
-    if state._gen1ModernBattleChildNativeDraw then return true end
+    if runtime.option("battleUiWip", false) == true
+        and state._gen1ModernBattleChildNativeDraw then
+      return true
+    end
     if kind == "external"
         and mod._gen1ModernCompatibility.active[state] then return true end
     if kind == "link" and runtime.isLinkState(state) then return true end
@@ -3515,6 +3653,19 @@ return function(mod)
           and mod._gen1ModernCompatibility:modelFor(game, state, context) ~= nil
       end
       return true
+    elseif kind == "text" then
+      -- TextBox states are pushed before the first page is always populated
+      -- (notably during the New Game introduction). Never hide that native
+      -- state until there is an actual page for the modern presenter to draw.
+      local pages = type(state) == "table" and state.pages
+      local page = type(pages) == "table" and pages[state.pageIndex or 1]
+      return type(page) == "table" and #page > 0
+    elseif kind == "menu" then
+      -- Menus can likewise exist for a frame before their choices arrive.
+      -- Suppressing that incomplete frame blanks prompts such as the first
+      -- New Game name question, so require at least one source-owned row.
+      return type(state) == "table" and type(state.items) == "table"
+        and #state.items > 0
     elseif kind == "summary" then
       local mon = runtime.summaryPokemon(state)
       return mon ~= nil and runtime.pokemonDefinition(game, mon.species) ~= nil
@@ -3524,13 +3675,41 @@ return function(mod)
     return true
   end
 
+  runtime.battleStateBelow = function(game, target)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" or not target then return nil end
+    local targetIndex
+    for index = #states, 1, -1 do
+      if states[index] == target then
+        targetIndex = index
+        break
+      end
+    end
+    if not targetIndex then return nil end
+    for index = targetIndex - 1, 1, -1 do
+      local candidate = states[index]
+      if candidate and runtime.kindFor(candidate, game) == "battle" then
+        return candidate
+      end
+    end
+    return nil
+  end
+
   -- The new host hook asks about one state at a time while StateStack is
   -- choosing its visible base. This predicate deliberately does not call
   -- `visibleBase` or `presentationStack`, so it is safe inside that query.
   runtime.canSuppressState = function(game, state)
     if not (game and state and state ~= game.overworld)
-        or runtime.isTitleState(state) or state.capture
+        or runtime.isTitleState(state)
+        or runtime.hasNativeNewGameFlow(game) or state.capture
         or runtime.option("hideOriginalUi", true) == false then
+      return false
+    end
+    -- Battle child screens share source-owned battle canvases and transitions.
+    -- If the WIP battle presenter is disabled, Bag/Party/choice children must
+    -- remain wholly native instead of being suppressed as standalone menus.
+    if runtime.option("battleUiWip", false) ~= true
+        and runtime.battleStateBelow(game, state) then
       return false
     end
     if type(battleRuntime) == "table"
@@ -3543,7 +3722,7 @@ return function(mod)
     end
     local kind = runtime.kindFor(state, game)
     if kind == "battle" then return false end
-    return kind and runtime.presenterEnabled(kind)
+    return kind and runtime.presenterEnabled(kind, state)
       and not runtime.hasUnknownDrawOverride(state, kind)
       and runtime.presenterReady(game, state, kind) or false
   end
@@ -3600,8 +3779,12 @@ return function(mod)
     local kind = runtime.kindFor(state, game)
     local revealWorld = runtime.worldVisibleLayout(nil)
       and runtime.option("hideOriginalUi", true) ~= false
-    local eligible = revealWorld and kind and runtime.presenterEnabled(kind)
+    local disabledBattleChild = runtime.option("battleUiWip", false) ~= true
+      and runtime.battleStateBelow(game, state) ~= nil
+    local nativeNewGame = runtime.hasNativeNewGameFlow(game)
+    local eligible = revealWorld and kind and runtime.presenterEnabled(kind, state)
       and kind ~= "battle" and not state.capture
+      and not disabledBattleChild and not nativeNewGame
       and not runtime.hasUnknownDrawOverride(state, kind)
       and runtime.presenterReady(game, state, kind)
     if eligible then
@@ -3738,20 +3921,33 @@ return function(mod)
     end, 90)
     mod.events:on("screen.pushed", function(payload)
       local state = payload and payload.state
-      local game = state and state.game or currentGame
-      if type(battleRuntime.decorateClassicScene) == "function" then
-        battleRuntime.decorateClassicScene(game, state)
+      local game = runtime.ownerGame(state, currentGame)
+      if game and state then runtime.stateGames[state] = game end
+      if runtime.isOakSpeechState(state) then
+        runtime.markNativeNewGame(game)
       end
-      if type(battleRuntime.decorateWorldSurface) == "function"
-          and runtime.kindFor(state, game) == "battle" then
-        battleRuntime.decorateWideScenePlacement(state)
-        battleRuntime.decorateWorldSurface(state)
+      if runtime.option("battleUiWip", false) == true then
+        if type(battleRuntime.decorateClassicScene) == "function" then
+          battleRuntime.decorateClassicScene(game, state)
+        end
+        if type(battleRuntime.decorateWorldSurface) == "function"
+            and runtime.kindFor(state, game) == "battle" then
+          battleRuntime.decorateWideScenePlacement(state)
+          battleRuntime.decorateWorldSurface(state)
+        end
+      elseif type(battleRuntime.restoreDecoratedState) == "function" then
+        battleRuntime.restoreDecoratedState(state)
       end
       runtime.syncTitleMenuPalette(game, state)
       runtime.syncStateVisibility(game, state)
     end, 90)
     mod.events:on("screen.popped", function(payload)
       local state = payload and payload.state
+      local game = runtime.ownerGame(state, currentGame)
+      if state then runtime.stateGames[state] = nil end
+      -- OakSpeech stays below all of its native child states. Its presence is
+      -- therefore the authoritative lifetime for the native New Game flow.
+      if game then runtime.hasNativeNewGameFlow(game) end
       if state and state._gen1OriginalTitleUiBox then
         state.titleUiBox = state._gen1OriginalTitleUiBox
         state._gen1OriginalTitleUiBox = nil
@@ -3776,7 +3972,15 @@ return function(mod)
     local layers = {}
     local preserveUiCanvas = false
     local topState = states[#states]
-    local levelUpTop = type(battleRuntime) == "table"
+    if runtime.hasNativeNewGameFlow(game) then
+      return {}, false
+    end
+    if runtime.option("battleUiWip", false) ~= true
+        and runtime.battleStateBelow(game, topState) then
+      return {}, false
+    end
+    local levelUpTop = runtime.option("battleUiWip", false) == true
+      and type(battleRuntime) == "table"
       and type(battleRuntime.isLevelUpState) == "function"
       and battleRuntime.isLevelUpState(game, topState) or false
     local optionRowsTop = runtime.isOptionRowsScreen(topState)
@@ -3813,7 +4017,7 @@ return function(mod)
           preserveUiCanvas = true
         else
           local kind = runtime.kindFor(visible, game)
-          if not kind or not runtime.presenterEnabled(kind) or visible.capture
+          if not kind or not runtime.presenterEnabled(kind, visible) or visible.capture
               or runtime.hasUnknownDrawOverride(visible, kind)
               or not runtime.presenterReady(game, visible, kind) then
             return {}, false
@@ -8057,6 +8261,16 @@ return function(mod)
 
   mod.hooks:wrap("ui.naming.grid", function(next, grid, ctxInfo)
     local out = next(grid, ctxInfo)
+    local namingState = type(ctxInfo) == "table" and ctxInfo.state or nil
+    local namingGame = runtime.ownerGame(namingState,
+      type(ctxInfo) == "table" and ctxInfo.game or currentGame)
+    -- Menus UI off means exactly native menu behavior. In particular, do not
+    -- append our numeric rows to the original naming keyboard, whose native
+    -- viewport cannot display or navigate the extended grid coherently.
+    if runtime.option("menuUi", true) == false
+        or runtime.hasNativeNewGameFlow(namingGame) then
+      return out
+    end
     -- RBY MMO uses the lower-case flag for its numeric page. Reuse the host's
     -- lower-case base page in that state, then add numbers to it, preserving
     -- both capabilities without requiring a third state in NamingScreen.
@@ -9923,6 +10137,7 @@ return function(mod)
   end
 
   function battleRuntime.fullBattleInStack(game)
+    if runtime.option("battleUiWip", false) ~= true then return nil end
     local states = game and game.stack and game.stack.states
     if type(states) ~= "table" then return nil end
     for index = #states, 1, -1 do
@@ -9936,6 +10151,58 @@ return function(mod)
       end
     end
     return nil
+  end
+
+  -- Battle UI is intentionally opt-in while it remains WIP. State decorators
+  -- must therefore be reversible: disabling the option in-session must leave
+  -- the host and every other mod with the exact draw methods they supplied.
+  -- Only restore a method when our wrapper is still the current owner; a later
+  -- third-party wrapper is never overwritten.
+  function battleRuntime.restoreDecoratedState(state)
+    if type(state) ~= "table" then return state end
+
+    if state._gen1ModernBattleChildDraw
+        and state.draw == state._gen1ModernBattleChildDraw then
+      state.draw = state._gen1ModernBattleChildNativeDraw
+      state._gen1ModernBattleChildDraw = nil
+      state._gen1ModernBattleChildNativeDraw = nil
+    end
+    if state._gen1ModernBattleHudDraw
+        and state.drawHUDs == state._gen1ModernBattleHudDraw then
+      state.drawHUDs = state._gen1ModernBattleNativeHud
+      state._gen1ModernBattleHudDraw = nil
+      state._gen1ModernBattleNativeHud = nil
+      state._gen1ModernBattleSceneIsolation = nil
+    end
+    if state._gen1ModernBattleTextDraw
+        and state.drawTextArea == state._gen1ModernBattleTextDraw then
+      state.drawTextArea = state._gen1ModernBattleNativeText
+      state._gen1ModernBattleTextDraw = nil
+      state._gen1ModernBattleNativeText = nil
+    end
+    if state._gen1ModernBattlePicturesDraw
+        and state.drawPicsLayer == state._gen1ModernBattlePicturesDraw then
+      state.drawPicsLayer = state._gen1ModernBattleNativePictures
+      state._gen1ModernBattlePicturesDraw = nil
+      state._gen1ModernBattleNativePictures = nil
+      state._gen1ModernBattleWidePictures = nil
+    end
+    if state._gen1ModernBattleSurfaceDraw
+        and state.draw == state._gen1ModernBattleSurfaceDraw then
+      state.draw = state._gen1ModernBattleWorldDraw
+      state._gen1ModernBattleSurfaceDraw = nil
+      state._gen1ModernBattleWorldDraw = nil
+      state._gen1ModernBattleWorldSurface = nil
+    end
+    return state
+  end
+
+  function battleRuntime.restoreBattleDecorations(game)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" then return end
+    for _, state in ipairs(states) do
+      battleRuntime.restoreDecoratedState(state)
+    end
   end
 
   function battleRuntime.childOpen(game, state)
@@ -10017,13 +10284,15 @@ return function(mod)
   -- opponent picture inward. This preserves send-out/faint picture timing and
   -- palette animation instead of drawing a second static sprite in the HUD.
   function battleRuntime.decorateWideScenePlacement(state)
-    if type(state) ~= "table" or type(state.drawPicsLayer) ~= "function"
+    if runtime.option("battleUiWip", false) ~= true
+        or type(state) ~= "table" or type(state.drawPicsLayer) ~= "function"
         or state._gen1ModernBattleWidePictures then
       return state
     end
     state._gen1ModernBattleWidePictures = true
     state._gen1ModernBattleNativePictures = state.drawPicsLayer
-    state.drawPicsLayer = function(self, slide, sx, sy, onlySide, ...)
+    state._gen1ModernBattlePicturesDraw = function(self, slide, sx, sy,
+        onlySide, ...)
       if runtime.option("battleUiWip", false) == true
           and runtime.option("hideOriginalUi", true) ~= false
           and battleRuntime.presentationMode(self, nil) == "full"
@@ -10034,6 +10303,7 @@ return function(mod)
       return self._gen1ModernBattleNativePictures(self,
         slide, sx, sy, onlySide, ...)
     end
+    state.drawPicsLayer = state._gen1ModernBattlePicturesDraw
     return state
   end
 
@@ -10043,13 +10313,14 @@ return function(mod)
   -- flashes, attacks, send-outs, captures, and shakes remain source-owned,
   -- while the overworld is visible everywhere outside our ornamental frame.
   function battleRuntime.decorateWorldSurface(state)
-    if type(state) ~= "table" or type(state.draw) ~= "function"
+    if runtime.option("battleUiWip", false) ~= true
+        or type(state) ~= "table" or type(state.draw) ~= "function"
         or state._gen1ModernBattleWorldSurface then
       return state
     end
     state._gen1ModernBattleWorldSurface = true
     state._gen1ModernBattleWorldDraw = state.draw
-    state.draw = function(self, ...)
+    state._gen1ModernBattleSurfaceDraw = function(self, ...)
       if not battleRuntime.ownsWorldSurface(self)
           or not (love and love.graphics
             and type(love.graphics.rectangle) == "function") then
@@ -10132,6 +10403,7 @@ return function(mod)
       if not ok then error(problem, 0) end
       return unpackValues(results, 1, results.n)
     end
+    state.draw = state._gen1ModernBattleSurfaceDraw
     return state
   end
 
@@ -10164,7 +10436,8 @@ return function(mod)
   end
 
   function battleRuntime.decorateClassicScene(game, state)
-    if type(state) ~= "table" or runtime.kindFor(state, game) ~= "battle"
+    if runtime.option("battleUiWip", false) ~= true
+        or type(state) ~= "table" or runtime.kindFor(state, game) ~= "battle"
         or type(state.drawHUDs) ~= "function"
         or type(state.drawTextArea) ~= "function"
         or state._gen1ModernBattleSceneIsolation then
@@ -10173,17 +10446,19 @@ return function(mod)
     state._gen1ModernBattleNativeHud = state.drawHUDs
     state._gen1ModernBattleNativeText = state.drawTextArea
     state._gen1ModernBattleSceneIsolation = true
-    state.drawHUDs = function(self, ...)
+    state._gen1ModernBattleHudDraw = function(self, ...)
       if battleRuntime.ownsClassicSurface(self)
           and not battleRuntime.nativeIntroHudNeeded(self) then
         return
       end
       return self._gen1ModernBattleNativeHud(self, ...)
     end
-    state.drawTextArea = function(self, ...)
+    state.drawHUDs = state._gen1ModernBattleHudDraw
+    state._gen1ModernBattleTextDraw = function(self, ...)
       if battleRuntime.ownsClassicSurface(self) then return end
       return self._gen1ModernBattleNativeText(self, ...)
     end
+    state.drawTextArea = state._gen1ModernBattleTextDraw
     return state
   end
 
@@ -10612,6 +10887,7 @@ return function(mod)
   -- layer remain untouched. This is substantially safer than covering broad
   -- screen-space bands and lets the modern cards be genuinely content-sized.
   function battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
+    if runtime.option("battleUiWip", false) ~= true then return false end
     if not (game and ctx and ctx.uiCanvas and type(layers) == "table") then
       return false
     end
@@ -10934,7 +11210,7 @@ return function(mod)
 
   runtime.drawModern = function(game, state, kind, viewport, theme, asModal, underKind,
       underState, overKind, overState)
-    if not runtime.presenterEnabled(kind) then return end
+    if not runtime.presenterEnabled(kind, state) then return end
     if kind == "text" or kind == "choice" or kind == "quantity"
         or (asModal and underKind == "text") then
       theme = runtime.dialogueTheme(theme)
@@ -11849,6 +12125,10 @@ return function(mod)
         return self._gen1ModernOptionsNativeDraw(self)
       end
     end
+    if runtime.option("battleUiWip", false) ~= true then
+      battleRuntime.restoreDecoratedState(decorated)
+      return decorated
+    end
     -- Some released hosts still draw an opaque Bag/Party child into the
     -- battle canvas even after screen.render_visible rejects it. Suppress a
     -- fully modeled child at its source while a framed battle is underneath;
@@ -11860,15 +12140,17 @@ return function(mod)
         and not decorated._gen1ModernTitleMenu
         and not decorated._gen1ModernOptionsMenu then
       decorated._gen1ModernBattleChildNativeDraw = decorated.draw
-      decorated.draw = function(self, ...)
+      decorated._gen1ModernBattleChildDraw = function(self, ...)
         local activeGame = self.game or game or currentGame
-        if runtime.option("hideOriginalUi", true) ~= false
+        if runtime.option("battleUiWip", false) == true
+            and runtime.option("hideOriginalUi", true) ~= false
             and battleRuntime.fullBattleInStack(activeGame)
             and runtime.canSuppressState(activeGame, self) then
           return
         end
         return self._gen1ModernBattleChildNativeDraw(self, ...)
       end
+      decorated.draw = decorated._gen1ModernBattleChildDraw
     end
     -- Classic BattleState's public draw is already split into scene pictures,
     -- animation sprites, HUD, and text methods. Intercept only the latter two
@@ -11888,6 +12170,9 @@ return function(mod)
   -- state without requiring engine internals or relying on a previous frame.
   mod.hooks:wrap("render.zones", function(next, game, zones)
     currentGame = game
+    if runtime.option("battleUiWip", false) ~= true then
+      battleRuntime.restoreBattleDecorations(game)
+    end
     return next(game, zones)
   end, 100)
 
@@ -11899,7 +12184,28 @@ return function(mod)
     runtime.renderVisibleHookSeen = true
     local oneArgument = state == nil and type(visible) == "table"
     if oneArgument then state, visible = visible, true end
-    local game = currentGame or (state and state.game)
+    -- A newly-pushed state can belong to a different Game/stack than the
+    -- render.zones cache from the previous frame (notably during New Game).
+    -- Always trust the screen's own owner first so an Oak child is never
+    -- suppressed using stale overworld evidence.
+    local game = runtime.ownerGame(state, currentGame)
+    if game and runtime.hasNativeNewGameFlow(game) then
+      if oneArgument then return next(state) end
+      return next(visible, state)
+    end
+    -- MOD MENUS is a manager-owned surface, not a generic game menu. Keep
+    -- its replacement usable when Menu UI and Dialogue UI are disabled,
+    -- while suppressing only the stock Menu instance created for it.
+    local managedKind = game and state and runtime.kindFor(state, game)
+    local isManagerSurface = state and (state._gen1ModMenus
+      or managedKind == "mod_manager" or managedKind == "mod_options")
+    local presenterKind = state and state._gen1ModMenus and "menu" or managedKind
+    if game and isManagerSurface
+        and runtime.option("hideOriginalUi", true) ~= false
+        and runtime.presenterEnabled(presenterKind, state)
+        and runtime.presenterReady(game, state, presenterKind) then
+      return false
+    end
     local complete, hidden = runtime.visibleSuppressionProof(game)
     if complete and hidden[state] then return false end
     if oneArgument then return next(state) end
