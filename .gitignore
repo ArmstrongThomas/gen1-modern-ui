@@ -5,3 +5,4 @@ artifacts/
 *.bak
 *.zip
 .DS_Store
+/test-output
