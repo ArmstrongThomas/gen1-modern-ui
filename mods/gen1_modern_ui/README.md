@@ -30,9 +30,10 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.8.3 targets `>=0.1.51 <2.0.0`: gen1recomp v0.1.51 and later 0.x
-releases plus the released 1.x line. The packaged mod does not require a
-custom engine checkout or a patched binary.
+Version 0.8.4 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
+gen1recomp v0.1.51 and later 0.x releases, the released 1.x line, and the
+development engine build for local testing. The packaged mod does not
+require a custom engine checkout or a patched binary.
 
 ## Input and compatibility
 

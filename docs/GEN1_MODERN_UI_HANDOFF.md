@@ -40,10 +40,11 @@ frequently used mod menus can remain direct Start-menu entries; disabling the
 option restores the flat list. This is intentionally conservative because the
 released hook does not require a mod-id field on every row.
 
-The manifest range, `>=0.1.51 <2.0.0`, requires gen1recomp v0.1.51 or newer
-and covers later 0.x plus released 1.x builds. Keep that range aligned with the
-released render-hook API when publishing a new version; a source checkout is
-optional for development and testing only.
+The manifest range, `0.0.0-dev || >=0.1.51 <2.0.0`, targets gen1recomp
+v0.1.51 or newer and covers later 0.x plus released 1.x builds. The
+`0.0.0-dev` exception is for local development-engine testing only. Keep that
+range aligned with the released render-hook API when publishing a new version;
+a source checkout is optional for development and testing.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed

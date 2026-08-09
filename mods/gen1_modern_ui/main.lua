@@ -1090,6 +1090,7 @@ local function isRbyMmoCharacterPickState(state)
 end
 
 return function(mod)
+
   local runtime = {}
   runtime.nativeNewGameGames = setmetatable({}, { __mode = "k" })
   runtime.stateGames = setmetatable({}, { __mode = "k" })
@@ -3572,6 +3573,7 @@ return function(mod)
     return mt and runtime.resolvedDraw(mt.__index, seen) or nil
   end
 
+  local orig_hasUnknownDrawOverride = runtime.hasUnknownDrawOverride
   runtime.hasUnknownDrawOverride = function(state, kind)
     if runtime.customDrawModeled(state, kind) then return false end
     -- Battle states are plain source-owned records rather than Menu/ListMenu
@@ -5812,13 +5814,20 @@ return function(mod)
         replaced = hooked ~= original
       end
     end
-    -- Load first so we can distinguish the engine's built-in pose sheets from
-    -- authored two-frame replacement art.  Built-in sheets are commonly
-    -- 16x32 or 16x96; the vanilla renderer selects one 16px rest frame from
-    -- those sheets, while replacement descriptors explicitly opt into their
-    -- own animation contract.
+
     local image = runtime.imageFor(entry)
     if not image then return nil end
+
+    -- =====================================================================
+    -- UNIQUE MENU ICONS FIX
+    -- We intercept the image path. If the game is loading the icon from the
+    -- mod's custom color folders, we force the native trueColor flag ON!
+    -- =====================================================================
+    local checkPath = type(originalEntry) == "table" and (originalEntry.image or originalEntry.path) or originalEntry
+    if type(checkPath) == "string" and (checkPath:find("icons_color") or checkPath:find("icons_gbc_red")) then
+        trueColor = true
+    end
+
     -- Icon descriptors are not automatically true-color art.  Mods such as
     -- Unique Menu Icons commonly provide grayscale PNGs as `{ image = ... }`
     -- descriptors, and those still need the active species palette.  Match
@@ -5827,6 +5836,7 @@ return function(mod)
     trueColor = trueColor or (type(entry) == "table" and entry.trueColor == true)
     paletteRuntime.setImage(image, not trueColor
       and paletteRuntime.pokemon(game, mon and mon.species) or nil)
+
     local followerSheet = runtime.knownSheetOptions(originalEntry or entry, image, 0)
     if followerSheet then image = runtime.markAnimated(image, followerSheet) end
     if hasDescriptor then
@@ -10665,8 +10675,10 @@ return function(mod)
     love.graphics.pop()
   end
 
-  runtime.drawBattle2dHud = function(game, state, viewport, theme, model,
-      options)
+  runtime.drawBattle2dHud = function(game, state, viewport, theme, model, options)
+    -- FIX 1: NEUTRALIZE FORCED OPACITY
+    battleRuntime.opaque = function(color) return color end
+
     options = options or {}
     local x, y, w, h = battleRuntime.viewportRect(viewport, state)
     theme = battleRuntime.presentationTheme(theme, w, h)
@@ -10685,24 +10697,28 @@ return function(mod)
 
     love.graphics.push("all")
     love.graphics.origin()
-    -- A single ornamental arena frame gives the 2D presentation a coherent
-    -- silhouette without putting another opaque box behind the source scene.
+
     runtime.drawPanelFrame(theme, innerX, innerY, innerW, arenaH,
       theme.radii.lg, false)
     runtime.drawPanelAccent(theme, innerX, innerY, innerW,
       theme.radii.lg, 3)
 
     local compactLandscape = h < 480 and w > h
-    local cardW = math.min(innerW * 0.44, math.max(300, w * 0.38))
-    local enemyX = innerX + spacing.md
-    local enemyY = innerY + spacing.md
-    local playerX = innerX + innerW - cardW - spacing.md
-    -- The compact card typography may shrink on a short battle surface, but
-    -- its semantic position must not jump into the foe's top row. Keep the
-    -- player's status ribbon in the lower-right half of the framed arena.
+
+    -- =====================================================================
+    -- FIX 2: EXACTLY 170 PIXELS WIDE
+    -- If Pokémon names truncate, slightly lower FONT SCALE in UI Settings!
+    -- =====================================================================
+    local cardW = 170
+
+    local enemyX = innerX + spacing.xl + 8
+    local enemyY = innerY + spacing.xl + 8
+    local playerX = innerX + innerW - cardW - spacing.xl - 8
     local playerY = innerY + arenaH * 0.52
+
     local experience = battleRuntime.overlayValue(source, overlays,
       { "experience", "expBar", "experienceBar" })
+
     if battleRuntime.battlerVisible(source, "enemy") then
       runtime.drawBattle2dCard(game, theme, source.enemy,
         enemyX + shakeX + enemyShakeX, enemyY + shakeY, cardW, {
@@ -10716,6 +10732,7 @@ return function(mod)
         enemyX + shakeX + enemyShakeX, enemyY + shakeY,
         cardW, "FOE PARTY")
     end
+
     if not options.hidePlayerCard
         and battleRuntime.battlerVisible(source, "player") then
       runtime.drawBattle2dCard(game, theme, source.player,
@@ -10726,52 +10743,68 @@ return function(mod)
         })
     end
 
-    -- Bag, Party, choices, and other battle children own the foreground.
-    -- Their native draw is suppressed by screen.render_visible on new hosts;
-    -- the compose fallback handles older clients. Leaving the lower battle
-    -- dock empty prevents a redundant message/menu behind the child panel.
     if battleRuntime.childOpen(game, native) then
       love.graphics.pop()
       return
     end
 
     local isMove = phase == "moveSelect" or phase == "mimicSelect"
-    if isMove then
-      local panelW = math.min(innerW,
-        math.max(620, math.min(980, innerW * 0.68)))
-      local moves = phase == "mimicSelect" and source.mimicMoves
-        or source.moves or source.player and source.player.curMoves or {}
-      local probeH = battleRuntime.movePanelHeight(theme,
-        type(moves) == "table" and #moves or 0)
-      local panelX = x + (w - panelW) / 2 + shakeX
-      local panelY = y + h - inset - probeH + shakeY
-      runtime.drawBattle2dMoves(game, source, theme,
-        panelX, panelY, panelW)
-    elseif phase == "menu" then
-      local panelW = math.min(innerW,
-        math.max(460, math.min(720, innerW * 0.48)))
-      local probeH = battleRuntime.commandPanelHeight(theme)
-      local panelX = x + (w - panelW) / 2 + shakeX
-      local panelY = y + h - inset - probeH + shakeY
-      runtime.drawBattle2dCommands(game, source, theme,
-        panelX, panelY, panelW)
-    else
-      local message = runtime.battleMessage(source)
-      if message ~= "" then
-        runtime.drawBattle2dMessage(theme, message,
-          innerX + shakeX, innerY + shakeY, innerW, innerH,
-          source.msgWaiting or source.msgPrompt)
-      end
+
+    local topState = game.stack and game.stack.top and game.stack:top()
+    local isTop = (topState == state or topState == native)
+
+    if isTop then
+        if isMove then
+          local panelW = math.min(innerW,
+            math.max(620, math.min(980, innerW * 0.68)))
+          local moves = phase == "mimicSelect" and source.mimicMoves
+            or source.moves or source.player and source.player.curMoves or {}
+          local probeH = battleRuntime.movePanelHeight(theme,
+            type(moves) == "table" and #moves or 0)
+          local panelX = x + (w - panelW) / 2 + shakeX
+          local panelY = y + h - inset - probeH + shakeY
+          runtime.drawBattle2dMoves(game, source, theme,
+            panelX, panelY, panelW)
+        elseif phase == "menu" then
+          local panelW = math.min(innerW,
+            math.max(460, math.min(720, innerW * 0.48)))
+          local probeH = battleRuntime.commandPanelHeight(theme)
+          local panelX = x + (w - panelW) / 2 + shakeX
+          local panelY = y + h - inset - probeH + shakeY
+          runtime.drawBattle2dCommands(game, source, theme,
+            panelX, panelY, panelW)
+        else
+          local message = runtime.battleMessage(source)
+
+          -- =====================================================================
+          -- FIX 3: THE INTRO TEXT KILLER
+          -- Delete the sticky fallback text as soon as a real message appears!
+          -- =====================================================================
+          if source and type(source) == "table" then
+              if message ~= "" and message ~= source.introText then
+                  source.introText = nil
+              end
+          end
+
+          -- Refresh message in case we just killed the fallback
+          message = runtime.battleMessage(source)
+
+          if message ~= "" then
+            runtime.drawBattle2dMessage(theme, message,
+              innerX + shakeX, innerY + shakeY, innerW, innerH,
+              source.msgWaiting or source.msgPrompt)
+          end
+        end
     end
     love.graphics.pop()
   end
 
   runtime.drawBattleHud = function(game, state, viewport, theme, model, mode)
+    -- FIX 1: NEUTRALIZE FORCED OPACITY
+    battleRuntime.opaque = function(color) return color end
+
     local top = battleRuntime.topState(game)
     if battleRuntime.isLevelUpState(game, top) then
-      -- A level-up is a modern battle child, not permission to expose the
-      -- native StatBox.  Always use the full 2D battle surface here so the
-      -- live scene remains visible even when battleUiMode was set to HUD.
       runtime.drawBattle2dHud(game, state, viewport, theme, model, {
         hidePlayerCard = true,
       })
@@ -10789,14 +10822,18 @@ return function(mod)
     local voxel = mode == "hud"
     local shortLandscape = h < 480 and w > h
     local inset = math.max(spacing.md, math.floor(math.min(w, h) * 0.018))
-    local cardW = math.min(430, math.max(250, w * 0.415))
+
+    -- FIX 2: EXACTLY 170 PIXELS WIDE
+    local cardW = 170
+
     local experience = battleRuntime.overlayValue(source, overlays,
       { "experience", "expBar", "experienceBar" })
     local enemyCardH = math.min(184, math.max(112, h * 0.22))
     local playerCardH = math.min(196, math.max(112,
       h * (voxel and 0.20 or 0.24)))
-    local enemyX, enemyY = x, y + h * 0.04
-    local playerX = x + w - cardW
+    local enemyX, enemyY = x + spacing.xl + 8, y + h * 0.04
+    local playerX = x + w - cardW - spacing.xl - 8
+
     local isMove = phase == "moveSelect" or phase == "mimicSelect"
     local playerY = shortLandscape and enemyY
       or y + h * (voxel and 0.52 or 0.43)
@@ -10805,7 +10842,19 @@ return function(mod)
       or math.min(h - inset * 2, math.max(132, math.min(230, h * 0.30)))
     local panelY = y + h - inset - panelH
     local panelX, panelW = x + w * 0.11, w * 0.78
+
     local message = runtime.battleMessage(source)
+
+    -- FIX 3: THE INTRO TEXT KILLER
+    if source and type(source) == "table" then
+        if message ~= "" and message ~= source.introText then
+            source.introText = nil
+        end
+    end
+
+    -- Refresh message in case we just killed the fallback
+    message = runtime.battleMessage(source)
+
     local canPresentAction = phase == "menu" or isMove
       or (message ~= nil and message ~= "")
 
@@ -10813,9 +10862,6 @@ return function(mod)
     love.graphics.origin()
 
     if mode == "full" then
-      -- The 2D layout still gets the requested full-arena frame, but its
-      -- center remains transparent so the source renderer's live sprites,
-      -- move effects, flashes, and transitions are never re-created here.
       runtime.drawPanelFrame(theme, x + inset, y + inset,
         w - inset * 2, h - inset * 2, theme.radii.lg, false)
       runtime.drawPanelAccent(theme, x + inset, y + inset,
@@ -10823,11 +10869,8 @@ return function(mod)
     end
 
     if battleRuntime.battlerVisible(source, "enemy") then
-      -- The card itself occupies the complete legacy status footprint. Its
-      -- forced-opaque surface prevents names/HP from leaking at the edges
-      -- even when the global panel-opacity preference is reduced.
       runtime.drawBattleCard(game, theme, source.enemy, enemyX, enemyY,
-        cardW, enemyCardH, false, nil, {
+        cardW, enemyCardH, true, nil, {
           caught = battleRuntime.caughtValue(source, overlays),
         })
     end
@@ -10837,29 +10880,34 @@ return function(mod)
     end
 
     if canPresentAction then
-      -- WideBattle owns the full lower strip; classic move selection also
-      -- owns a large TYPE/PP box at lower-left. Opaque cleanup plates remove
-      -- both native layouts while leaving every sprite/animation region above
-      -- them untouched.
       battleRuntime.drawCleanup(theme, x, panelY - spacing.sm,
         w, y + h - panelY + spacing.sm)
-      if isMove then
-        local gap = spacing.sm
-        local detailsX = x + inset
-        local detailsW = math.min(w * 0.40, 430)
-        local actionX = detailsX + detailsW + gap
-        local actionW = x + w - inset - actionX
-        runtime.drawBattleMoveDetails(game, source, theme,
-          detailsX, panelY, detailsW, panelH)
-        runtime.drawBattleActionPanel(game, source, theme,
-          actionX, panelY, actionW, panelH)
-      else
-        runtime.drawBattleActionPanel(game, source, theme,
-          panelX, panelY, panelW, panelH)
+
+      local topState = game.stack and game.stack.top and game.stack:top()
+      local isTop = (topState == state or topState == native)
+
+      if isTop then
+          if isMove then
+            local gap = spacing.sm
+            local detailsX = x + inset
+            local detailsW = math.min(w * 0.40, 430)
+            local actionX = detailsX + detailsW + gap
+            local actionW = x + w - inset - actionX
+            runtime.drawBattleMoveDetails(game, source, theme,
+              detailsX, panelY, detailsW, panelH)
+            runtime.drawBattleActionPanel(game, source, theme,
+              actionX, panelY, actionW, panelH)
+          else
+            runtime.drawBattleActionPanel(game, source, theme,
+              panelX, panelY, panelW, panelH)
+          end
+
+          if message ~= "" then
+            battleRuntime.drawExtras(theme, source, overlays,
+              x + inset, y + h * 0.26, math.min(cardW, w * 0.46),
+              math.max(36, h * 0.15), true, true)
+          end
       end
-      battleRuntime.drawExtras(theme, source, overlays,
-        x + inset, y + h * 0.26, math.min(cardW, w * 0.46),
-        math.max(36, h * 0.15), true, true)
     end
     love.graphics.pop()
   end

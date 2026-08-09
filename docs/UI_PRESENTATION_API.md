@@ -593,6 +593,7 @@ index for the generic, Dex Radar, RBYMMO, and OptionRows source-mod templates.
   and enabled; preserve the normal `render.compose` chain/result.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
-- Do not assume a custom engine build: version 0.8.0 targets released game
-  versions `>=0.1.51 <2.0.0` (v0.1.51 and later 0.x, plus 1.x).
+- Do not assume a custom engine build: the manifest targets `0.0.0-dev ||
+  >=0.1.51 <2.0.0` (`0.0.0-dev` for local engine testing, plus v0.1.51 and
+  later 0.x and released 1.x builds).
 - Test with LÖVE 11.5 in both portrait and landscape window sizes.
