@@ -606,6 +606,44 @@ optional art as a text-only row. This gives source mods reusable portraits,
 icons, badges, and animated image descriptors without adding draw callbacks or
 custom coordinate systems.
 
+### Transient source notices
+
+The same v1 contract may optionally expose one transient notice without turning
+its owner into a HUD renderer. This is intended for brief, non-modal results
+such as a completed tool action. The source owns whether a notice exists and
+when it expires; Gen1 Modern UI owns the current theme, responsive layout, and
+safe placement above virtual controls.
+
+```lua
+mod.exports.gen1ModernUi = {
+  apiVersion = 1,
+  screens = {},
+  transient = {
+    model = function(game)
+      local active = currentNotice()
+      if not active then return nil end
+      return {
+        id = "example_mod:operation",
+        title = active.title,
+        detail = active.detail,
+        severity = active.failed and "error" or "success",
+      }
+    end,
+  },
+}
+```
+
+`title` is required; `id`, `detail`, and `severity` are optional. Severity is
+`info`, `success`, `warning`, or `error`; unknown values become `info`. The
+returned model must be data-only. Custom draw callbacks, source-owned theme
+lookups, and arbitrary object references are rejected. The host bounds visible
+source notices and renders them in deterministic owner order.
+
+After registering the ordinary adapter, a source may call
+`isTransientPresentationActive(mod.id)`. If it returns false because Modern UI
+is absent, disabled, malformed, or unsupported, the source must retain its own
+native fallback. It must never draw both presentations for the same notice.
+
 Missing exports, unsupported API versions, malformed models, source-mod
 exceptions, disabled mods, and reload races immediately retain vanilla drawing
 for that state. The active adapter cache is refreshed when mods load and when a
