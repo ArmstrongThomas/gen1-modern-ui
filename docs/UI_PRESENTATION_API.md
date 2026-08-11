@@ -640,9 +640,13 @@ lookups, and arbitrary object references are rejected. The host bounds visible
 source notices and renders them in deterministic owner order.
 
 After registering the ordinary adapter, a source may call
-`isTransientPresentationActive(mod.id)`. If it returns false because Modern UI
-is absent, disabled, malformed, or unsupported, the source must retain its own
-native fallback. It must never draw both presentations for the same notice.
+`isTransientPresentationActive(mod.id, game)`. It returns true only while
+Modern UI and the source are enabled and the current model is valid and
+renderable. The game argument is optional; models used from an earlier render
+pass should tolerate `nil`. If the host is absent/disabled/unsupported or the
+model is missing, malformed, or throws, the call returns false and the source
+must retain its native fallback. It must never draw both presentations for the
+same notice.
 
 Missing exports, unsupported API versions, malformed models, source-mod
 exceptions, disabled mods, and reload races immediately retain vanilla drawing

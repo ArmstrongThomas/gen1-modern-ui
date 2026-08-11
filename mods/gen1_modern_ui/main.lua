@@ -1591,14 +1591,10 @@ return function(mod)
     return out
   end
 
-  function mod._gen1ModernCompatibility:transientActive(owner)
+  function mod._gen1ModernCompatibility:transientActive(owner, game)
     self:discover()
-    local entry = self.adapters[owner]
-    return runtime.option("menuUi", true) ~= false
-      and self:ownerActive(owner)
-      and type(entry) == "table" and type(entry.contract) == "table"
-      and type(entry.contract.transient) == "table"
-      and type(entry.contract.transient.model) == "function"
+    if runtime.option("menuUi", true) == false then return false end
+    return self:transientFor(owner, game) ~= nil
   end
 
   function mod._gen1ModernCompatibility:ownerActive(owner)
@@ -3190,8 +3186,8 @@ return function(mod)
     -- Lets a source mod retain its native HUD fallback whenever this optional
     -- presentation layer is disabled or unavailable. The source still owns
     -- notification content and lifetime through its data-only model.
-    isTransientPresentationActive = function(owner)
-      return mod._gen1ModernCompatibility:transientActive(owner)
+    isTransientPresentationActive = function(owner, game)
+      return mod._gen1ModernCompatibility:transientActive(owner, game)
     end,
     registerFrame = function(spec)
       return mod._gen1ModernCompatibility:registerFrame(spec)

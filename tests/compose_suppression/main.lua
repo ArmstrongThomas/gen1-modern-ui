@@ -2425,9 +2425,17 @@ function love.load()
     "disabled Modern UI releases transient presentation to the source fallback")
   values.menuUi = true
   transientNotice = { id = "test_source:bad", title = "BAD", leaked = function() end }
+  check(not mod.exports.isTransientPresentationActive("test_source", game),
+    "a malformed source model releases the native fallback")
   transientCanvas = renderHud({ game.overworld }, "malformed_source_transient", viewport)
   check(alphaBounds(transientCanvas) == nil,
     "a malformed transient model is ignored without drawing arbitrary callbacks")
+  local throwingModel = mod._gen1ModernCompatibility.adapters.test_source
+    .contract.transient
+  throwingModel.model = function() error("injected source failure") end
+  check(not mod.exports.isTransientPresentationActive("test_source", game),
+    "a throwing source model releases the native fallback")
+  throwingModel.model = function() return transientNotice end
   transientNotice = nil
   check(mod.exports.unregisterAdapter("test_source"),
     "source transient unregisters with the ordinary adapter lifecycle")
