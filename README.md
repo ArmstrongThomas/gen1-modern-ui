@@ -5,7 +5,7 @@ Standalone high-resolution UI overhaul mod for released
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.8.4 targets gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.9.0 targets gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line). The development engine build identifier
 `0.0.0-dev` is also accepted for local testing.
 
@@ -69,11 +69,14 @@ when the listing is enabled there.
 - Health bars use theme-aware teal/gold/orange/purple states instead of a
   red/green-only ramp, with numeric HP labels retained as the authoritative
   color-independent cue.
-- Independent **UI SCALE** (AUTO or 75%–150%), **FONT SCALE** (AUTO or
-  80%–200%), and **DIALOGUE TEXT SCALE** (inherit–200%) controls measure
-  content at the selected size before laying out panels. AUTO responds to the
-  safe window dimensions. Long generic rows and dialogue reflow without
-  changing controller/keyboard ownership.
+- Independent **UI SCALE** (AUTO or 75%–400%), **FONT SCALE** (AUTO or manual
+  80%–400%), and **DIALOGUE TEXT SCALE** (inherit–200%) controls measure
+  content at the selected size before laying out panels. AUTO preserves the
+  established 720p/1080p sizes, then grows through 4K/5K while remaining
+  bounded by the safe viewport. Dialogue removes legacy 160-pixel line wraps
+  at presentation time without changing page, pause, or input ownership.
+  System-font AUTO may reach 500% on 5K to preserve the established
+  text-to-panel ratio; Plain Pixel AUTO selects only whole 1×–4× steps.
 - Rich Party, Pokédex, Bag, Shop, and item-detail panels now fit their visible
   rows and detail content instead of reserving a full-height readability card;
   detail columns wrap localized names, move data, prices, and descriptions
@@ -166,7 +169,9 @@ when the listing is enabled there.
   and Advanced categories instead of one long list.
 - Useful Dex, Dex Radar, and Gen 3 Box presenters with responsive encounter
   rows, square grids, active-palette icons, and animated authored art support.
-- Battle presentation remains explicitly WIP and disabled by default.
+- Battle presentation remains explicitly WIP and disabled by default. It is
+  limited to explicitly detected WIDE 2D battles; standard 160x144 and 3D/voxel
+  battles retain their complete native/source-owned interfaces.
 
 ## Compatibility with other mods
 
@@ -181,18 +186,20 @@ through an incorrect layout.
 
 ### Versioned source-mod UI contract
 
-Gen1 Modern UI 0.8.x also exposes a public compatibility foundation through
-`mod.exports.gen1ModernUi` (`apiVersion = 1`). Supporting mods may publish
-read-only screen models, source-owned semantic actions, and data-only
-namespaced themes and pixel frames. Their own assets stay in the source mod;
-Gen1 Modern UI supplies the shared nearest-neighbor nine-slice renderer and
-seven-pixel frame inset. Custom draw callbacks and private-state reach-through
-are rejected. Missing, malformed, unsupported, disabled, or failing adapters
-fall back to the native UI, with `screen.render_visible` preferred for precise
-suppression and `render.compose` retained for older hosts.
+Gen1 Modern UI 0.9.0 exposes a versioned compatibility foundation through
+`mod.exports.gen1ModernUi`. Existing `apiVersion = 1` mods may publish
+read-only screen models, source-owned semantic actions, additive extensions,
+and data-only namespaced themes and pixel frames. V2 adds structured detail
+fields, bottom-anchored footer lists, declarative modals, and an isolated custom
+surface lane for coordinate grids, frame-time animation, and scoped shader
+effects. V1 custom draw callbacks and private-state reach-through remain
+rejected; a v2 surface renders transactionally to a private canvas and replaces
+native UI only after a successful frame. Missing, malformed, unsupported,
+disabled, or failing adapters retain the native UI.
 
 See the [custom UI and theme guide](docs/CUSTOM_UI_AND_THEME_API.md), the
-[compatibility API](docs/UI_PRESENTATION_API.md#compatibility-contract-v1)
+[V1 compatibility contract](docs/UI_PRESENTATION_API.md#compatibility-contract-v1),
+the [V2 custom-surface contract](docs/UI_PRESENTATION_API.md#compatibility-contract-v2-custom-surfaces),
 and [source-mod adapter examples](docs/examples/README.md).
 
 Mod settings screens built with gen1recomp's public `src.ui.OptionRows`
@@ -229,6 +236,11 @@ installed-mod UI surface, its detection contract, priority, and fallback plan.
 The [readability and scaling plan](docs/READABILITY_SCALING_PLAN.md) documents
 the shipped UI/font/dialogue sizing contract and its remaining mobile reflow
 QA requirements.
+The [responsive layout plan](docs/RESPONSIVE_LAYOUT_PLAN.md) records the stable
+preset-envelope, whole-step pixel-font, overflow, and WIDE-battle contracts.
+The [in-game UI Gallery](docs/UI_GALLERY.md) documents the stable presenter IDs
+and controls for cycling every production presenter through scale, font, and
+content-stress cases without changing saved settings.
 The [input and interoperability audit](docs/INPUT_AND_INTEROP_AUDIT.md)
 documents the upstream pointer contract, safe direct-navigation rules, and the
 adapter plan for category bags and other replacement UIs.
@@ -277,7 +289,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.8.0.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.9.0.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -293,7 +305,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.8.0`) and push that commit to `main`. Each release includes a commit-based
+`0.9.1`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

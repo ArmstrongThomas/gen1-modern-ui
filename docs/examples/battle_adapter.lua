@@ -35,7 +35,9 @@ return function(mod)
             scroll = battle.scroll or 0,
             footer = { "A select", "B back" },
             phase = battle.phase,
-            presentation = battle.presentation,
+            -- Only an explicit 2D WIDE source is eligible. Omit this or set
+            -- it false for standard, unknown, and every 3D/voxel battle.
+            wideLayout = battle.wideLayout == true,
             isVoxelBattle = battle.isVoxelBattle == true,
             player = battle.player,
             enemy = battle.enemy,
@@ -71,10 +73,10 @@ return function(mod)
           end,
         },
 
-        -- Battle adapters never suppress the source draw. Publish
-        -- presentation = "hud"/isVoxelBattle for compact voxel-safe card
-        -- placement; ordinary 2D battles use the framed placement. Native
-        -- move/capture/send-out animations and source overlays keep running.
+        -- Battle adapters never suppress the source draw. Eligible 2D WIDE
+        -- battles use the fixed framed shell; standard and 3D/voxel sources
+        -- remain entirely native. Move/capture/send-out animations and source
+        -- overlays keep running inside the captured WIDE arena.
         layer = "battle",
         canSuppressNative = false,
       },

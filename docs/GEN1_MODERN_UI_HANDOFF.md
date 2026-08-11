@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Current status
 
-`mods/gen1_modern_ui` 0.8.0 is a standalone, visual-first overhaul for released
+`mods/gen1_modern_ui` 0.9.0 is a standalone, visual-first overhaul for released
 gen1recomp builds. It uses the released `render.zones`, `render.compose`, and
 `render.hud` hooks to suppress the classic UI only when a modern presenter is
 ready, preserve normal engine composition, and draw a high-resolution overlay.
@@ -28,9 +28,18 @@ layers render as one modern stack. Released Bill's PC root, deposit, withdraw,
 and release lists now have audited presenters; deposit/withdraw show the
 selected Pokémon's sprite, HP/status, current stats, and moves/PP while the
 released action/summary/confirmation states retain control. Party uses the same
-detail model and continues to render injected live submenu rows. Battle states
-have a responsive, draw-only overlay for status cards, HP bars, sprites,
-action/move panels, and messages, but it is WIP and disabled by default.
+  detail model and continues to render injected live submenu rows. Explicitly
+  detected 2D WIDE battle states have a responsive, draw-only overlay for
+  status cards, HP bars, sprites, action/move panels, and messages, but it is
+  WIP and disabled by default. Standard 160x144 and 3D/voxel battles remain
+  native.
+
+The Modern UI settings' **Advanced** category also exposes an in-game **UI
+Gallery**. It renders safe synthetic models through the production presenters
+listed in [`UI_GALLERY.md`](UI_GALLERY.md), labels every specimen with a stable
+ID/type/screen/variant tuple, and cycles content and scale stress levels
+without mutating save data or source-mod state. The post-catch nickname prompt
+and the NamingScreen it opens are cataloged and tested as separate states.
 
 The Start-menu hook collects rows appended by lower-priority mod hooks and this
 mod's UI settings into one **MOD MENUS** entry (`START MOD MENUS`, enabled by
@@ -48,7 +57,7 @@ a source checkout is optional for development and testing.
 
 The working tree may also contain earlier exploratory engine-seam changes from
 the abandoned touch-first prototype. They are not packaged, loaded, or needed
-by `gen1_modern_ui` 0.8.0. Treat the mod folder and its archive as the release
+by `gen1_modern_ui` 0.9.0. Treat the mod folder and its archive as the release
 boundary; clean up those prototype-only checkout changes separately before
 submitting unrelated engine work.
 
@@ -105,7 +114,7 @@ previous version.
    transitions, and callbacks. Pointer taps use only the host's source-safe
    action facade, and panel dragging does not synthesize game actions.
 
-Version 0.8.0 includes nine data-only themes: Gen1 Modern, Modern Glass,
+Version 0.9.0 includes nine data-only themes: Gen1 Modern, Modern Glass,
 Classic Mono, Pocket Green, Midnight, Midnight Glass, Frost, Light, and Dark.
 The default
 backdrop is explicitly opaque; glass theme alpha is honored now that supported
@@ -203,13 +212,13 @@ classic UI is suppressed independently.
   TextBox stays compact, while richer page models can expand up to five lines
   plus the prompt strip. High-resolution text is no longer needlessly padded.
 - The battle adapter reads public battler, phase, move, and message fields. Its
-  `battleUiWip` toggle is WIP and defaults off. `battleUiMode` selects AUTO,
-  2D FRAMED, or SCENE HUD. Classic 2D FRAMED decorates BattleState to omit only
-  native HUD/text drawing while preserving its picture, effect, send-out,
-  capture, faint, palette, shake, and fade layers. Modern cards follow animated
-  `shownHP`, and a short-lived message cache bridges source `msgHold` frames.
-  WIDE and active voxel/3D scenes retain the conservative composition fallback;
-  AUTO selects between those placements. Other surfaces have independent
+  `battleUiWip` toggle is WIP and defaults off. Only an explicitly detected 2D
+  WIDE layout is eligible; standard 160x144, false/missing/unknown geometry,
+  and active voxel/3D scenes retain their complete native interface. In the
+  supported WIDE path, source picture, effect, send-out, capture, faint,
+  palette, shake, and fade layers remain source-owned. Modern cards follow
+  animated `shownHP`, and a short-lived message cache bridges source `msgHold`
+  frames. Other surfaces have independent
   `layoutStyle`, `panelOpacity`, `foregroundOpacity`, `startMenuShortcut`,
   `startMenuFastJump`, `startMenuQuickView`, `startMenuInset`, `dialogueUi`,
   `menuUi`, `pokemonUi`, `managerUi`, and `spriteAnimation`
@@ -266,9 +275,10 @@ until the user physically pressed it. Horizontal choices now use atomic
 
 ## Theme API
 
-`gen1_modern_ui` exports API version 1 through `mod.exports`. A dependent theme
-mod calls `mod.find("gen1_modern_ui")` and registers a namespaced theme ID such
-as `theme_mod:midnight`:
+`gen1_modern_ui` keeps the original theme/compatibility export at API version 1
+and separately advertises `surfaceApiVersion = 2` plus capability negotiation.
+A dependent theme mod calls `mod.find("gen1_modern_ui")` and registers a
+namespaced theme ID such as `theme_mod:midnight`:
 
 ```lua
 return function(mod)
@@ -316,32 +326,47 @@ the color-independent cue for color-vision accessibility.
 also exports
 `scaleTokens` and
 `getScaleTokens(viewport)`. `uiScale` accepts a manual value or `AUTO`, which resolves
-from the safe window viewport, and adjusts geometry tokens before measurement;
+from the safe window viewport, preserves existing behavior through 1080p, and
+then grows up to 400% for 4K/5K displays. It adjusts geometry tokens before measurement;
 `fontScale` accepts the same responsive `AUTO` mode and adjusts typography and
-cached font sizes; and
+cached font sizes. System-font AUTO can reach 500% to preserve the released
+text/chrome ratio, while Plain Pixel AUTO stays on whole 1×–4× raster steps; and
 `dialogueTextScale` derives a larger text theme for dialogue, choices,
-quantities, and confirmation prompts. Dialogue panels omit the typewriter
+quantities, and confirmation prompts while growing their interior spacing in
+the same proportion. Dialogue panels omit the typewriter
 speed-up hint and reserve no changing hint strip while text flows, keeping their
-content-sized footprint stable. The built-in presenter executes no theme
+content-sized footprint stable. Legacy TextBox line/continuation placement is
+reflowed only after the engine has honored its typing and A/B gates; form-feed
+page boundaries are never merged. The built-in presenter executes no theme
 drawing callbacks and ships no ROM-derived art. Built-in and third-party
 themes share one live options list; re-registering a namespaced ID refreshes
 its name and tokens without adding a duplicate choice.
 
 The compatibility foundation also exposes the versioned
-`mod.exports.gen1ModernUi` contract (`apiVersion = 1`). Source mods may publish
-read-only screen models, source-owned semantic actions, and optional data-only
-`themes` and `frames`, then call `mod.find("gen1_modern_ui").exports.registerAdapter`.
+`mod.exports.gen1ModernUi` contract. V1 source mods may publish read-only screen
+models, additive extensions, source-owned semantic actions, and optional
+data-only `themes` and `frames`. V2 keeps that behavior and adds structured
+details, declarative modal actions, and isolated custom surfaces with virtual
+coordinates, frame timing, scoped effects, and pointer regions. Both versions
+register through `mod.find("gen1_modern_ui").exports.registerAdapter`.
 Frame IDs are namespaced to the source mod and may point to declared source
 paths or public image/texture/catalog references. Gen1 Modern UI owns the
 nearest-neighbor nine-slice rendering, integer pixel scale, and seven-pixel
-inset; source mods own assets and state transitions. Custom drawing callbacks,
+inset; source mods own assets and state transitions. V1 screen callbacks,
 private module access, malformed models, unsupported versions, and adapter
-errors are rejected with an immediate vanilla fallback. `screen.render_visible`
+errors are rejected with an immediate vanilla fallback. V2 render callbacks
+exist only on transactional private surfaces and clear native UI only after a
+successful commit. `screen.render_visible`
 is preferred for precise suppression, while `render.compose` remains the
 older-host fallback. See [`UI_PRESENTATION_API.md`](UI_PRESENTATION_API.md#compatibility-contract-v1)
 and the [`examples/README.md`](examples/README.md) integration templates.
 
 ## Responsive behavior
+
+The authoritative preset-envelope and overflow contract is recorded in the
+[`RESPONSIVE_LAYOUT_PLAN.md`](RESPONSIVE_LAYOUT_PLAN.md).
+The in-game presenter QA catalog and stable screen identifiers are recorded in
+[`UI_GALLERY.md`](UI_GALLERY.md).
 
 - The overlay uses the safe window viewport rather than the classic game
   rectangle, including portrait, landscape, tablet, desktop, and ultrawide
@@ -397,6 +422,8 @@ the mod to players.
    'C:\Program Files\LOVE\lovec.exe' tests/compose_suppression`.
    Set `$env:GEN1_UI_SHOTS = '1'` first to save the desktop/portrait gallery
    under LÖVE's `compose_suppression` save directory.
+   In a running game, use **Start → Mod Menus → UI Settings → Advanced → UI
+   Gallery** for the equivalent interactive presenter and scaling pass.
 6. Package for release with `python tools/modkit.py pack
    mods/gen1_modern_ui`. The archive root must contain `manifest.json` and
    `main.lua` directly.
@@ -444,11 +471,10 @@ presenter-only safe rect above it. The backdrop still covers the full safe
 window, so translucent controls never reveal a misaligned classic frame.
 Portrait windows receive modest typography/row scaling; box cells stay square,
 with a dedicated caption strip for name/level text. The battle presenter is
-currently WIP and defaults off; when explicitly enabled, its move cells reserve
-a separate PP column and use a source-indexed 2x2 grid in both OG and WIDE.
-WIDE keeps native grid input, while OG directional edges are mapped to the
-same public move index before the source BattleState handles the action. The
-smoke driver accepts
+currently WIP and defaults off; when explicitly enabled for a detected 2D WIDE
+layout, its move cells reserve a separate PP column and use a source-indexed
+2x2 grid while retaining native grid input. Standard 160x144 and 3D/voxel
+battles remain native. The smoke driver accepts
 `SMOKE_INITIAL_WIDTH`/`SMOKE_INITIAL_HEIGHT` and `SMOKE_WIDTH`/`SMOKE_HEIGHT`
 for exact-size runs such as 570x1278 portrait and 1280x640 landscape.
 

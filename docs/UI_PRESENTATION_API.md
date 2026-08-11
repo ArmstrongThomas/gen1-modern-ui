@@ -6,7 +6,7 @@ states, or own keyboard/controller input and callbacks.
 
 ## Frame hook sequence
 
-Version 0.8.0 uses the preferred `screen.render_visible` hook when the host
+The current release uses the preferred `screen.render_visible` hook when the host
 provides it, with the released `render.compose` path as a conservative fallback,
 plus a narrowly scoped class wrapper and the host's source-safe pointer/input
 hooks:
@@ -31,8 +31,10 @@ hooks:
    canvases. When the result is not `true`, **HIDE ORIGINAL UI** is on, and
    every visible drawing state has an enabled presenter, it clears only
    `ctx.uiCanvas` to transparent. It does not clear or replace the world
-   canvas. An unknown/custom draw, capture prompt, or incomplete presenter
-   chain retains the complete classic slice. Returning the unclaimed result
+   canvas. An unknown custom draw, capture prompt, or incomplete presenter
+   chain retains the complete classic slice. A registered v2 custom surface is
+   handled by a separate private-canvas transaction described below; its
+   native layer stays alive until that transaction commits. Returning the unclaimed result
    (`false`) lets the engine perform its normal composition, scaling, zones,
    fades, post-processing, and display effects.
 5. `render.hud` calls `next(game, viewport)` once, refreshes the live Game
@@ -73,6 +75,14 @@ the full `viewport.width`/`viewport.height`; it does not need to stay inside the
 160x144 game rectangle. `gen1_modern_ui` creates a presenter-only safe rect
 above the live virtual controls when they are visible; the game viewport and
 input coordinates are never changed.
+
+For an `apiVersion = 2` surface, the early `screen.render_visible` decision is
+always conservative. `render.compose` first keeps native drawing, builds and
+copies the source model, renders the surface on a private canvas, verifies the
+callback, and only then applies `native.policy = "replace"` to `ctx.uiCanvas`.
+`native.policy = "preserve"` never clears the native layer. A failed model or
+render transaction has no committed surface and therefore leaves the native
+frame untouched.
 
 The presenter marks viewports with visible virtual controls before layout.
 `layoutStyle=auto` is the default and leaves the area outside content-sized
@@ -217,10 +227,11 @@ presentation that keeps the same live rows, selection, prompts, and callbacks
 while omitting optional preview/detail panes, then measures the remaining
 content again so hidden regions do not leave empty columns or oversized cards.
 
-Dialogue panels size to the live wrapped text window: the released two-line
-TextBox stays compact, while richer page models can expand up to five wrapped
-lines plus their prompt strip. Typewriter reveal and callback ownership remain
-the same as the released TextBox.
+Dialogue panels size to the complete current page envelope while drawing only
+the currently revealed glyphs. Ordinary legacy line placement reflows to the
+modern width; continuation-gated windows remain bounded by the host's visible
+segment. Typewriter reveal and callback ownership remain the same as the
+released TextBox.
 
 `panelOpacity` controls backdrop and filled-surface alpha independently from
 `foregroundOpacity`, which controls text, borders, dividers, and accents. Both
@@ -228,14 +239,18 @@ are percentage values from 0 to 100 and multiply the authored theme alpha.
 
 The readability controls are applied before measurement and layout:
 
-- `uiScale` accepts `AUTO` or 75% through 150% in 5% steps and scales spacing,
-  row rhythm, icons, radii, borders, panel limits, and control-hint spacing.
-  `AUTO` resolves a bounded five-percent value from the safe window viewport;
-  landscape uses both width and height, while portrait uses width as the
-  limiting dimension.
-- `fontScale` accepts `AUTO` or 80% through 200% in 5% steps and scales the
-  cached title, body, caption, value, and hint fonts. Its `AUTO` value uses the
-  same responsive viewport policy as `uiScale`.
+- `uiScale` accepts `AUTO`, the existing 75% through 150% values in 5% steps,
+  and high-resolution presets from 175% through 400% in 25% steps. It scales
+  spacing, row rhythm, icons, radii, borders, panel limits, and control-hint
+  spacing. `AUTO` preserves the released curve through 1920×1080, then resumes
+  growing: 2560×1440 resolves to 200%, 3840×2160 to 300%, and a 5120×2784 safe
+  viewport to 385%. Landscape uses both dimensions, so ultrawide windows are
+  height-limited; every presenter still caps to its safe viewport.
+- `fontScale` accepts `AUTO`, 80% through 200% in 5% steps, and 225% through
+  400% in 25% steps. It scales the cached title, body, caption, value, and hint
+  fonts. Its `AUTO` value keeps the released 200:150 text-to-UI ratio through
+  high-resolution growth and may reach 500% on 5K; manual choices remain
+  capped at 400%.
 - `pixelFont` selects gen1recomp's bundled Plain Pixel face for every one of
   those font roles. This experimental option defaults off. When enabled, it
   requests monochrome hinting and nearest filtering. Plain Pixel's artwork
@@ -244,10 +259,14 @@ The readability controls are applied before measurement and layout:
   so fractional responsive panel coordinates do not soften the glyphs. Its
   multilingual metrics are used directly at that raster size rather than
   rescaled into a system-font line box. The system face remains a missing-glyph fallback and
-  replaces Plain Pixel entirely if the engine asset is absent.
+  replaces Plain Pixel entirely if the engine asset is absent. Its AUTO mode
+  derives a whole raster step from the responsive UI size: 1× on ordinary
+  desktop windows, 2× at 4K, and 3× on the reported 5120×2784 viewport.
 - `dialogueTextScale` accepts Inherit, 110%, 125%, 150%, 175%, and 200%. It
   derives a cached text theme for live dialogue, choices, quantities, and
-  confirmation prompts.
+  confirmation prompts. Padding, row rhythm, radii, and non-raster chrome grow
+  with the effective text step, so 200% does not place oversized text in a
+  100%-sized shell. Plain Pixel remains on whole 1×–4× raster steps.
 - `frameStyle` accepts `THEME`, `PIXEL`, `SOFT`, and `PLAIN`. `THEME` uses the
   active theme's authored frame tokens; the other values select a built-in
   ornamental treatment or disable the frame. Dialogue keeps its content-sized
@@ -260,7 +279,16 @@ remain aspect-fit and nearest-neighbor filtered. A dependent theme can inspect
 `mod.exports.scaleTokens` or call `mod.exports.getScaleTokens(viewport)`; pass
 the active safe viewport when resolving an `AUTO` setting outside the built-in
 presenter. Its authored typography, spacing, density, and `metrics` tokens are
-scaled consistently.
+scaled consistently. `fontMax` remains the manual 4.0 ceiling;
+`fontAutoMax` reports the system-font AUTO ceiling of 5.0.
+
+The host parses dialogue before Modern UI sees it. `\f` remains a hard page
+boundary and `\v` retains its A/B continuation gate. Once a fragment is
+eligible to display, Modern UI treats legacy `\n`/`\v` line placement and the
+host's 18-column soft wraps as reflow hints rather than mandatory modern-card
+breaks. Existing trailing spaces, hard-wrapped tokens, hyphenation, and
+unspaced CJK text are preserved while the visible sentence wraps to the real
+card width.
 
 Rows are rebuilt from live state during each HUD pass. Preserve descriptor
 identity and unknown fields in any data you add, and use stable `id` fields for
@@ -300,27 +328,26 @@ toggle is independent from the `battleUiMode`, `layoutStyle`, `panelOpacity`,
 `foregroundOpacity`, `startMenuShortcut`, `startMenuFastJump`,
 `startMenuQuickView`, `startMenuInset`, `dialogueUi`, generic `menuUi`,
 `pokemonUi`, `managerUi`, and `spriteAnimation` toggles exposed by the mod
-options. `battleUiMode` accepts `AUTO`, `2D FRAMED`, or `SCENE HUD`. AUTO
-uses a full-arena frame and larger cards for ordinary 2D battles, then switches
-to compact voxel-safe placement when the active state or a public adapter model
-publishes a 3D scene marker. Classic 2D FRAMED decorates the active BattleState
-to omit only its native HUD and text methods. The source picture and animation
-layers remain live, so send-outs, attacks, capture sequences, faints, palette
-flashes, shakes, and fades still render with source timing. Modern cards track
-the live animated HP value and retain the current message across source message
-holds. WIDE, older-host, and DramaticShape scene paths retain their native draw
-and use conservative composition fallback instead of this source-level split.
-Battle adapters enrich the read-only model; `canSuppressNative` is deliberately
-ignored for `layer = "battle"`. The Start-menu quick view is off by default; `startMenuInset` is a
+options. The modern presenter requires explicit proof of a 2D WIDE source
+layout. Standard 160x144 battles, false/missing/unknown WIDE markers, and all
+3D/voxel or other scene-owned battles retain their complete native/source draw,
+HUD, dialogue, child menus, and input behavior. Legacy `battleUiMode` values do
+not override that eligibility check and resolve to the same fixed WIDE shell
+once eligibility is proven. In a supported WIDE battle, source picture
+and animation layers remain live, so send-outs, attacks, capture sequences,
+faints, palette flashes, shakes, and fades still render with source timing.
+Modern cards track the live animated HP value and retain the current message
+across source message holds. Battle adapters enrich the read-only model;
+`canSuppressNative` is deliberately ignored for `layer = "battle"`. The
+Start-menu quick view is off by default; `startMenuInset` is a
 0–50% Navigation setting in 10% steps, with 0% retaining edge docking.
 
 On portrait phones the presenter scales typography and row density modestly.
 Gen 3 Box cells remain square and reserve a caption strip for name/level text;
 battle move cells reserve a separate PP column. These are presentation-only
-choices and do not replace source callbacks. Battle moves use a source-indexed
-2x2 grid in both OG and WIDE: WIDE retains native grid navigation, while OG
-directional edges update the same public move index before BattleState handles
-selection, PP, disabled slots, swapping, and turn resolution. Optional
+choices and do not replace source callbacks. Supported WIDE battle moves use a
+source-indexed 2x2 grid and retain native grid navigation before `BattleState`
+handles selection, PP, disabled slots, swapping, and turn resolution. Optional
 data-only battle overlays may provide
 experience/EXP bars, caught indicators, and `P#`/`G#`/`U#` catch-rate values;
 their source mod remains responsible for calculating and updating that data.
@@ -563,8 +590,9 @@ mod may instead pass another public image/texture reference. A plain string is
 reserved for a host-resolved public asset path; it is not interpreted relative
 to another mod's private root. Gen1 Modern UI does not load arbitrary sibling
 files or private modules. It accepts data-only themes, frames, public
-sprite/catalog references, and host-resolved public paths, but rejects custom
-draw/render callbacks and model functions that leak callbacks. Frame PNGs use
+sprite/catalog references, and host-resolved public paths. v1 screen and
+extension descriptors reject custom draw/render callbacks and every model
+rejects leaked callbacks. Frame PNGs use
 the same nearest-neighbor, nine-slice renderer as built-in themes, so source
 mods get repeating edges, integer pixel scaling, and the standard seven-pixel
 inset behavior.
@@ -584,15 +612,83 @@ for that state. The active adapter cache is refreshed when mods load and when a
 public export table is replaced. See the [`examples/README.md`](examples/README.md)
 index for the generic, Dex Radar, RBYMMO, and OptionRows source-mod templates.
 
+## Compatibility contract (v2 custom surfaces)
+
+API v2 extends rather than replaces v1. Existing `apiVersion = 1` screens and
+extensions retain their data-first renderer and action behavior. An
+`apiVersion = 2` contract may use the same shared screens/extensions and may
+add `surfaces` when it needs custom coordinates, frame-time animation, or a
+shader pass.
+
+Each surface descriptor requires:
+
+- non-empty string ID plus `match(state)`, `model(game, state)`, and
+  `render(model, ctx)` functions;
+- a data-only virtual `layout`, using `contain` and either `integer-fit` or
+  `smooth-fit`;
+- an explicit `native.policy` of `replace` or `preserve`, optionally scoped to
+  `uiCanvas`;
+- optional named `actions`, `input.pointer`, and data-only `gallery` fixtures.
+
+The default virtual canvas and every orientation override are limited to
+2048x2048 and four million pixels. Presets are `XS`, `S`, `M`, `L`, `XL`,
+`BATTLE_WIDE`, or `VIEWPORT`. The fit resolver caps the output to the safe
+monitor rectangle. Pixel fonts retain whole authored scale steps even when
+the surface itself must down-fit.
+
+Surface rendering is transactional. Modern UI copies a cycle-free,
+function-free model, binds a private canvas, and supplies virtual dimensions,
+output bounds, frame `time`/`dt`, theme/font/scale snapshots, scoped
+shader/palette/silhouette helpers, input-region collection, and Gallery bounds
+diagnostics. The renderer returns `true` to commit. Any match/model/render
+exception, invalid model, graphics-state violation, or non-true result discards
+the private frame and leaves native UI visible. With `preserve`, a successful
+surface is drawn over native UI; with `replace`, the native `uiCanvas` is
+removed only after the full frame succeeds.
+
+Pointer and touch regions are declared in the same virtual coordinates used by
+the renderer and route to names in `surface.actions`. An action may return a
+data-only `modal_overlay` containing labeled options; each option routes to
+another named action, so callbacks never enter the model or modal table.
+V2 shared-screen descriptors may use the same named-action modal routing;
+v1 shared screens continue to accept only the established semantic action set.
+
+API v2 also extends shared data-first detail models without requiring a custom
+surface:
+
+- `details.custom_fields = { columns, data }` formats `{ label, value, style }`
+  records into measured columns;
+- `details.footer_lists` reserves and bottom-anchors titled item lists while
+  shrinking the flexible sprite/details region above them;
+- `layout_options = { overflow = "shrink_to_fit",
+  max_content_height = "100%" }` fits measured content inside a stable preset
+  envelope rather than resizing the container as selection/pages change. At
+  the minimum whole pixel-font step, compact cells and bounded omission prevent
+  impossible content from overlapping the bottom-anchored footer.
+
+The complete descriptor, render-context, modal, and fallback rules are in
+[`CUSTOM_UI_AND_THEME_API.md`](CUSTOM_UI_AND_THEME_API.md). The copyable
+[`examples/custom_surface_v2.lua`](examples/custom_surface_v2.lua) template
+implements a 5x4 grid with host frame timing, effect helpers, virtual input
+regions, named actions, and EMPTY through OVERFLOW Gallery fixtures.
+
 ## Compatibility checklist
 
-- Call `next(game, viewport)` once before drawing.
+- An independent `render.hud` wrapper calls `next(game, viewport)` once before
+  drawing. A v2 surface renderer never calls `next`; Modern UI owns that hook
+  chain and invokes the surface on its private canvas.
 - Keep the overlay visual-first and leave state transitions and callbacks to
   the game; pointer taps may route through the host's source-safe action API.
-- Clear only `ctx.uiCanvas`, and only when the matching presenter is supported
-  and enabled; preserve the normal `render.compose` chain/result.
+- Independent compositor wrappers clear only `ctx.uiCanvas`, and only when the
+  matching presenter is supported and enabled. A v2 surface declares
+  `native.policy` and never clears a canvas itself.
 - Read dynamic rows each frame so other mods' additions remain visible.
 - Leave unsupported screens and unknown fields unchanged.
+- For a v2 surface, draw only inside the supplied virtual coordinate system,
+  return `true` only after the complete frame succeeds, and let Modern UI own
+  private-canvas binding and native replacement.
+- Exercise every surface Gallery fixture with portrait/landscape, all UI/font
+  scale choices, and forced model/render failures before shipping.
 - Do not assume a custom engine build: the manifest targets `0.0.0-dev ||
   >=0.1.51 <2.0.0` (`0.0.0-dev` for local engine testing, plus v0.1.51 and
   later 0.x and released 1.x builds).

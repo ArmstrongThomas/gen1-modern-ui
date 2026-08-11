@@ -10,6 +10,7 @@
 
 local MOD_ID = "gen1_modern_ui"
 local API_VERSION = 1
+local SURFACE_API_VERSION = 2
 
 local DEFAULT_THEME = {
   id = "default",
@@ -47,6 +48,33 @@ local DEFAULT_THEME = {
   -- effective UI scale resolver below adjusts these before any presenter
   -- measures text or chooses a panel size.
   metrics = { border = 4, divider = 1, icon = 38, dialogueMinHeight = 112 },
+}
+
+-- Stable logical envelopes at 100% UI scale. These are preferred complete
+-- frame bounds, including pixel-frame ornamentation; a viewport may clamp
+-- either axis, but content changes within an open state never select a new
+-- size. See docs/RESPONSIVE_LAYOUT_PLAN.md for the full contract.
+local RESPONSIVE_LAYOUT_PRESETS = {
+  XS = { width = 320, height = 200 },
+  S = { width = 400, height = 300 },
+  M = { width = 600, height = 420 },
+  L = { width = 760, height = 540 },
+  XL = { width = 960, height = 640 },
+  BATTLE_WIDE = { width = 640, height = 360 },
+  BATTLE_PORTRAIT = { width = 360, height = 640 },
+}
+
+local RESPONSIVE_KIND_PRESET = {
+  choice = "XS", quantity = "XS",
+  menu = "S", box_root = "S",
+  list = "M", options = "M", mod_options = "M",
+  mod_manager = "M", link = "M", external = "M",
+  party = "L", pokedex = "L", bag = "L", shop_list = "L",
+  pc_list = "L", summary = "L", trainer_card = "L",
+  dex_entry = "L", box_mon_list = "L",
+  gen3_box = "XL", naming = "XL", town_map = "XL",
+  dex_radar = "XL", rby_mmo_profile = "XL", rby_mmo_rank = "XL",
+  rby_mmo_char_pick = "XL", quarantine_report = "M",
 }
 
 -- Built-in themes are intentionally data-only. They are merged once during
@@ -390,9 +418,18 @@ local PLAIN_PIXEL_FONT = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
 -- rendered glyph bitmap undistorted.
 local PLAIN_PIXEL_CELL_HEIGHT = 11
 local PLAIN_PIXEL_RASTER_STEP = 15
+local UI_SCALE_MIN_PERCENT = 75
+local UI_SCALE_MAX_PERCENT = 400
+local FONT_SCALE_MIN_PERCENT = 80
+local FONT_SCALE_MAX_PERCENT = 400
+local FONT_AUTO_MAX_PERCENT = 500
+-- Preserve the released AUTO sizes through 1080p, then let large displays
+-- resume growing instead of pinning every 4K/5K presentation to the old cap.
+local UI_AUTO_LEGACY_CEILING_PERCENT = 150
+local FONT_AUTO_LEGACY_CEILING_PERCENT = 200
 local PIXEL_FONT_SCALE_CHOICES = {
-  { "1X", "100" }, { "2X", "200" }, { "3X", "300" },
-  { "4X", "400" },
+  { "AUTO", "auto" }, { "1X", "100" }, { "2X", "200" },
+  { "3X", "300" }, { "4X", "400" },
 }
 local FONT_SCALE_CHOICES = { { "AUTO", "auto" } }
 for percent = 80, 200, 5 do
@@ -400,9 +437,15 @@ for percent = 80, 200, 5 do
     percent .. "%", tostring(percent)
   }
 end
+for percent = 225, FONT_SCALE_MAX_PERCENT, 25 do
+  FONT_SCALE_CHOICES[#FONT_SCALE_CHOICES + 1] = {
+    percent .. "%", tostring(percent)
+  }
+end
 
 local function normalizedPixelFontScale(value, pixelEnabled)
   if pixelEnabled then
+    if value ~= nil and tostring(value):lower() == "auto" then return "auto" end
     local numeric = tonumber(value)
     if not numeric then return "100" end
     local scale = numeric < 10 and numeric or numeric / 100
@@ -410,7 +453,18 @@ local function normalizedPixelFontScale(value, pixelEnabled)
   end
   if value ~= nil and tostring(value):lower() == "auto" then return "auto" end
   local numeric = tonumber(value) or 100
-  return tostring(clamp(math.floor(numeric / 5 + 0.5) * 5, 80, 200))
+  return tostring(clamp(math.floor(numeric / 5 + 0.5) * 5,
+    FONT_SCALE_MIN_PERCENT, FONT_SCALE_MAX_PERCENT))
+end
+
+local function resolvedPixelFontPercent(value, uiPercent)
+  local normalized = normalizedPixelFontScale(value, true)
+  if normalized == "auto" then
+    local desired = (tonumber(uiPercent) or 100) / 100 / 1.5
+    local step = clamp(math.floor(desired + 0.5), 1, 4)
+    return step * 100, true
+  end
+  return tonumber(normalized) or 100, false
 end
 
 -- LÖVE's nearest texture filter cannot correct a fractional draw position.
@@ -518,11 +572,24 @@ local function font(cache, size, forcePixel)
     end
     if ok and loaded then
       selected = loaded
+      -- Plain Pixel's OpenType line box is substantially taller than its
+      -- authored raster cell (for example, a 15px raster reports a roughly
+      -- 28px line box). Normalize LÖVE's line advance to the same whole
+      -- raster step used to construct the atlas. This keeps printf, manual
+      -- wrapping, row measurement, and hit geometry on one integer grid.
+      local reportedHeight = type(selected.getHeight) == "function"
+        and selected:getHeight() or raster
+      local lineAdvance = raster
+      if type(selected.setLineHeight) == "function"
+          and type(reportedHeight) == "number" and reportedHeight > 0 then
+        pcall(selected.setLineHeight, selected, lineAdvance / reportedHeight)
+      end
       pixelFontMetrics[selected] = {
         cellHeight = PLAIN_PIXEL_CELL_HEIGHT,
         rasterStep = PLAIN_PIXEL_RASTER_STEP,
         raster = raster,
         rasterScale = rasterScale,
+        lineAdvance = lineAdvance,
       }
       if type(selected.setFilter) == "function" then
         pcall(selected.setFilter, selected, "nearest", "nearest", 0)
@@ -574,6 +641,10 @@ end
 
 local function textHeight(textFont)
   if not textFont then return 0 end
+  local pixelMetrics = pixelFontMetrics[textFont]
+  if pixelMetrics and type(pixelMetrics.lineAdvance) == "number" then
+    return pixelMetrics.lineAdvance
+  end
   local height = textFont:getHeight()
   if type(textFont.getLineHeight) == "function" then
     local ok, multiplier = pcall(textFont.getLineHeight, textFont)
@@ -706,6 +777,27 @@ local function drawWrappedText(text, x, y, maxWidth, textFont, lineGap)
   return y + #lines * lineGap, #lines
 end
 
+-- Measure once, then use this result for drawing, scrolling, clipping, and
+-- pointer geometry. Callers may add their own inter-block spacing, but they
+-- should not infer a block's height from a theme token after this point.
+local function measureTextBlock(text, maxWidth, textFont, lineGap)
+  text = safeText(text)
+  textFont = fontForCurrentText(textFont, text)
+  local advance = lineGap or textHeight(textFont)
+  local lines = wrappedLines(text, maxWidth, textFont)
+  local width = 0
+  for _, line in ipairs(lines) do
+    width = math.max(width, textFont:getWidth(line))
+  end
+  return {
+    font = textFont,
+    lines = lines,
+    lineHeight = advance,
+    width = math.min(math.max(1, tonumber(maxWidth) or 1), width),
+    height = math.max(advance, #lines * advance),
+  }
+end
+
 local function viewportRect(viewport)
   if viewport and viewport.safe then
     local safe = viewport.safe
@@ -727,25 +819,33 @@ local function viewportRect(viewport)
   return 0, 0, math.max(1, w), math.max(1, h)
 end
 
--- AUTO keeps the authored scale controls responsive to the usable window while
--- retaining the same bounded, five-percent increments as the manual choices.
--- Landscape sizing uses both dimensions so an ultrawide window cannot grow
--- panels based on width alone; portrait sizing keys off width because that is
--- the limiting dimension for readable phone UI.
-local function autoScalePercent(viewport, minimum, maximum)
+-- AUTO keeps the released scale curve intact through 1080p. Beyond that
+-- plateau, a caller-selected fraction of the authored-canvas ratio becomes
+-- the presentation scale. UI uses one half (300% at 4K, 385% on the reported
+-- 5120x2784 viewport); system text uses two thirds to retain the released
+-- 200:150 text/chrome ratio. Landscape still keys off both dimensions so an
+-- ultrawide cannot grow from width alone; portrait keys off limiting width.
+local function autoScalePercent(viewport, minimum, maximum, legacyCeiling,
+    largeViewportFactor)
   local _, _, width, height = viewportRect(viewport)
-  local ratio
+  local authoredRatio
   if height > width * 1.2 then
-    ratio = width / 400
+    authoredRatio = width / 400
   else
-    ratio = math.min(width / 640, height / 360)
+    authoredRatio = math.min(width / 640, height / 360)
   end
+  local legacyRatio = (tonumber(legacyCeiling) or maximum) / 100
+  largeViewportFactor = tonumber(largeViewportFactor) or 0.5
+  local ratio = math.max(math.min(authoredRatio, legacyRatio),
+    authoredRatio * largeViewportFactor)
   return normalizedPercent(ratio * 100, 100, minimum, maximum)
 end
 
-local function resolvedScalePercent(value, viewport, minimum, maximum)
+local function resolvedScalePercent(value, viewport, minimum, maximum,
+    legacyCeiling, autoMaximum, largeViewportFactor)
   if safeText(value):lower() == "auto" then
-    return autoScalePercent(viewport, minimum, maximum), true
+    return autoScalePercent(viewport, minimum, autoMaximum or maximum,
+      legacyCeiling, largeViewportFactor), true
   end
   return normalizedPercent(value, 100, minimum, maximum), false
 end
@@ -923,9 +1023,9 @@ local function responsiveTheme(theme, viewport, cache)
   local _, _, w, h = viewportRect(viewport)
   if not (h > w * 1.55 and w <= 720) then return theme end
   local scale = clamp(w / 460, 1.16, 1.28)
-  local key = viewportClass(viewport) .. ":" .. ("%.3f"):format(scale)
+  local cacheKey = viewportClass(viewport) .. ":" .. ("%.3f"):format(scale)
   local bucket = cache and cache[theme]
-  if bucket and bucket[key] then return bucket[key] end
+  if bucket and bucket[cacheKey] then return bucket[cacheKey] end
   local out = copy(theme)
   out.typography = copy(theme.typography)
   out.spacing = copy(theme.spacing)
@@ -933,7 +1033,14 @@ local function responsiveTheme(theme, viewport, cache)
   out.frame = copy(theme.frame or {})
   out.density = copy(theme.density)
   out.metrics = copy(theme.metrics or {})
-  for key, value in pairs(out.typography) do out.typography[key] = value * scale end
+  -- Plain Pixel may only use authored whole-number raster steps. Portrait
+  -- responsiveness is therefore applied to chrome and geometry, never as a
+  -- fractional second font scale.
+  if not (theme.scale and theme.scale.pixelFontStep) then
+    for key, value in pairs(out.typography) do
+      out.typography[key] = value * scale
+    end
+  end
   for key, value in pairs(out.spacing) do out.spacing[key] = value * scale end
   for key, value in pairs(out.radii) do out.radii[key] = value * scale end
   for key, value in pairs(out.frame) do
@@ -944,11 +1051,20 @@ local function responsiveTheme(theme, viewport, cache)
     end
   end
   out.density.rowHeight = out.density.rowHeight * scale
+  if type(out.density.panelMax) == "number" then
+    out.density.panelMax = out.density.panelMax * scale
+  end
   for key, value in pairs(out.metrics) do out.metrics[key] = value * scale end
+  out.scale = copy(theme.scale or {})
+  out.scale.ui = (tonumber(out.scale.ui) or 1) * scale
+  if not out.scale.pixelFontStep then
+    out.scale.font = (tonumber(out.scale.font) or 1) * scale
+  end
+  out.scale.responsive = scale
   if cache then
     bucket = bucket or {}
     cache[theme] = bucket
-    bucket[key] = out
+    bucket[cacheKey] = out
   end
   return out
 end
@@ -1116,6 +1232,10 @@ return function(mod)
   local themePresentationCache = setmetatable({}, { __mode = "k" })
   local responsiveThemeCache = setmetatable({}, { __mode = "k" })
   local dialogueThemeCache = setmetatable({}, { __mode = "k" })
+  runtime.layoutEnvelopeCache = setmetatable({}, { __mode = "k" })
+  runtime.dialogueRectCache = setmetatable({}, { __mode = "k" })
+  runtime.presenterThemeCache = setmetatable({}, { __mode = "k" })
+  runtime.layoutDiagnostics = { generation = 0, layers = {}, current = nil }
   local imageCache = {}
   local modAssetCache = {}
   local utf8Library
@@ -1159,18 +1279,27 @@ return function(mod)
   -- presenter module.
   mod._gen1ModernCompatibility = {
     apiVersion = API_VERSION,
+    surfaceApiVersion = SURFACE_API_VERSION,
+    supportedApiVersions = { [API_VERSION] = true,
+      [SURFACE_API_VERSION] = true },
     adapters = {},
     active = setmetatable({}, { __mode = "k" }),
+    activeSurfaces = setmetatable({}, { __mode = "k" }),
+    declarativeModals = setmetatable({}, { __mode = "k" }),
     errors = {},
     legacy = {},
     frames = {},
     frameChoices = { { "FRAME 1", "1" }, { "FRAME 2", "2" },
       { "FRAME 3", "3" } },
     assetOwners = {},
+    summaryPages = setmetatable({}, { __mode = "k" }),
+    surfaceGalleryContexts = {},
+    surfaceGalleryOwners = {},
     knownOwners = { "rby_mmo", "dex_radar", "useful_dex", "gen3_box",
       "modern_bag", "useful_bag", "dv_tracker",
       "quality_of_life", "qol", "dramatic_shape", "dramatic_shape_voxel",
-      "pokemon-gen1-recomp-mod-qol" },
+      "pokemon-gen1-recomp-mod-qol", "modern_ui_party_row_colors",
+      "modern_ui_trainer_card_page", "modern_ui_feliznavidad_battle_menu" },
   }
 
   -- Useful Bag is a separate source mod. Its current release deliberately
@@ -1214,17 +1343,38 @@ return function(mod)
 
   function mod._gen1ModernCompatibility:validate(contract)
     if type(contract) ~= "table" then return false, "contract is not a table" end
-    if tonumber(contract.apiVersion) ~= self.apiVersion then
+    local apiVersion = tonumber(contract.apiVersion)
+    if not self.supportedApiVersions[apiVersion] then
       return false, "unsupported gen1ModernUi apiVersion"
     end
-    if type(contract.screens) ~= "table" then
-      return false, "contract.screens is required"
+    if contract.screens ~= nil and type(contract.screens) ~= "table" then
+      return false, "contract.screens must be a table"
+    end
+    if contract.extensions ~= nil and type(contract.extensions) ~= "table" then
+      return false, "contract.extensions must be a table"
+    end
+    if contract.surfaces ~= nil and type(contract.surfaces) ~= "table" then
+      return false, "contract.surfaces must be a table"
+    end
+    if contract.surfaces ~= nil and apiVersion ~= self.surfaceApiVersion then
+      return false, "contract.surfaces requires apiVersion 2"
+    end
+    if contract.screens == nil and contract.extensions == nil
+        and contract.surfaces == nil then
+      return false, "contract.screens, contract.extensions, or contract.surfaces is required"
     end
     if contract.themes ~= nil and type(contract.themes) ~= "table" then
       return false, "contract.themes must be a table"
     end
     if contract.frames ~= nil and type(contract.frames) ~= "table" then
       return false, "contract.frames must be a table"
+    end
+    if contract.battle ~= nil and type(contract.battle) ~= "table" then
+      return false, "contract.battle must be a table"
+    end
+    if contract.battle ~= nil and contract.battle.native3d ~= nil
+        and type(contract.battle.native3d) ~= "function" then
+      return false, "contract.battle.native3d must be a function"
     end
     if self:containsFunction(contract.themes)
         or self:containsFunction(contract.frames) then
@@ -1247,7 +1397,7 @@ return function(mod)
         return false, "theme IDs and specs must be strings and tables"
       end
     end
-    for screenId, screen in pairs(contract.screens) do
+    for screenId, screen in pairs(contract.screens or {}) do
       if type(screenId) ~= "string" or type(screen) ~= "table"
           or type(screen.match) ~= "function"
           or type(screen.model) ~= "function" then
@@ -1270,14 +1420,118 @@ return function(mod)
         return false, "themes and frames belong on the contract, not screens"
       end
       for action, callback in pairs(screen.actions or {}) do
-        if action ~= "up" and action ~= "down" and action ~= "left"
-            and action ~= "right" and action ~= "select" and action ~= "back"
+        if type(action) ~= "string" or action == "" then
+          return false, "screen actions must have non-empty string names"
+        end
+        if apiVersion == API_VERSION and action ~= "up" and action ~= "down"
+            and action ~= "left" and action ~= "right"
+            and action ~= "select" and action ~= "back"
             and action ~= "start" and action ~= "hover" then
           return false, "unsupported semantic action: " .. tostring(action)
         end
         if type(callback) ~= "function" then
           return false, "semantic actions must be functions"
         end
+      end
+    end
+    for extensionId, extension in pairs(contract.extensions or {}) do
+      if type(extensionId) ~= "string" or type(extension) ~= "table"
+          or type(extension.match) ~= "function"
+          or type(extension.model) ~= "function" then
+        return false, "extension descriptors require match and model functions"
+      end
+      if extension.menu ~= nil and type(extension.menu) ~= "function" then
+        return false, "extension.menu must be a function"
+      end
+      if extension.actions ~= nil and type(extension.actions) ~= "table" then
+        return false, "extension.actions must be a table"
+      end
+      for action, callback in pairs(extension.actions or {}) do
+        if type(action) ~= "string" or type(callback) ~= "function" then
+          return false, "extension actions must be named functions"
+        end
+      end
+      if extension.priority ~= nil and type(extension.priority) ~= "number" then
+        return false, "extension.priority must be a number"
+      end
+    end
+    for surfaceId, surface in pairs(contract.surfaces or {}) do
+      if type(surfaceId) ~= "string" or surfaceId == ""
+          or type(surface) ~= "table"
+          or type(surface.match) ~= "function"
+          or type(surface.model) ~= "function"
+          or type(surface.render) ~= "function" then
+        return false, "surface descriptors require named match, model, and render functions"
+      end
+      local layout = surface.layout
+      local defaultLayout = type(layout) == "table"
+        and (layout.default or layout) or nil
+      local virtualWidth = defaultLayout
+        and tonumber(defaultLayout.virtualWidth or defaultLayout.width)
+      local virtualHeight = defaultLayout
+        and tonumber(defaultLayout.virtualHeight or defaultLayout.height)
+      if not virtualWidth or not virtualHeight or virtualWidth < 1
+          or virtualHeight < 1 or virtualWidth > 2048
+          or virtualHeight > 2048 or virtualWidth * virtualHeight > 4000000 then
+        return false, "surface layout requires a virtual canvas within 2048x2048 and four million pixels"
+      end
+      for _, orientationLayout in pairs({ defaultLayout,
+          layout and layout.landscape, layout and layout.portrait }) do
+        if orientationLayout ~= nil then
+          if type(orientationLayout) ~= "table" then
+            return false, "surface orientation layouts must be tables"
+          end
+          local vw = tonumber(orientationLayout.virtualWidth
+            or orientationLayout.width or virtualWidth)
+          local vh = tonumber(orientationLayout.virtualHeight
+            or orientationLayout.height or virtualHeight)
+          if not vw or not vh or vw < 1 or vh < 1 or vw > 2048
+              or vh > 2048 or vw * vh > 4000000 then
+            return false, "surface orientation canvas exceeds the safe limit"
+          end
+          local preset = safeText(orientationLayout.preset
+            or defaultLayout.preset or "VIEWPORT"):upper()
+          if preset ~= "VIEWPORT" and not RESPONSIVE_LAYOUT_PRESETS[preset] then
+            return false, "unknown surface layout preset: " .. preset
+          end
+        end
+      end
+      local fit = safeText(layout.fit or "contain"):lower()
+      local scaleMode = safeText(layout.scaleMode or "integer-fit"):lower()
+      if fit ~= "contain" then
+        return false, "surface layout.fit currently supports only contain"
+      end
+      if scaleMode ~= "integer-fit" and scaleMode ~= "smooth-fit" then
+        return false, "surface scaleMode must be integer-fit or smooth-fit"
+      end
+      if self:containsFunction(layout) then
+        return false, "surface layout must be data-only"
+      end
+      local native = surface.native
+      local policy = type(native) == "table" and native.policy or nil
+      if policy ~= "replace" and policy ~= "preserve" then
+        return false, "surface native.policy must explicitly be replace or preserve"
+      end
+      if native.scope ~= nil and native.scope ~= "uiCanvas" then
+        return false, "surface native.scope must be uiCanvas"
+      end
+      if surface.actions ~= nil and type(surface.actions) ~= "table" then
+        return false, "surface.actions must be a table"
+      end
+      for action, callback in pairs(surface.actions or {}) do
+        if type(action) ~= "string" or action == ""
+            or type(callback) ~= "function" then
+          return false, "surface actions must be named functions"
+        end
+      end
+      if surface.input ~= nil and (type(surface.input) ~= "table"
+          or (surface.input.pointer ~= nil
+            and type(surface.input.pointer) ~= "function")) then
+        return false, "surface.input.pointer must be a function"
+      end
+      if surface.gallery ~= nil and (type(surface.gallery) ~= "table"
+          or self:containsFunction(surface.gallery)) then
+        return false, "surface.gallery must be data-only"
       end
     end
     return true
@@ -1312,6 +1566,51 @@ return function(mod)
     self.assetOwners[owner] = nil
   end
 
+  function mod._gen1ModernCompatibility:clearSurfaceGallery(owner)
+    local ids = self.surfaceGalleryOwners[owner]
+    for id in pairs(type(ids) == "table" and ids or {}) do
+      self.surfaceGalleryContexts[id] = nil
+    end
+    self.surfaceGalleryOwners[owner] = nil
+    if runtime.uiGalleryCatalog then
+      for index = #runtime.uiGalleryCatalog, 1, -1 do
+        if runtime.uiGalleryCatalog[index]._surfaceOwner == owner then
+          table.remove(runtime.uiGalleryCatalog, index)
+        end
+      end
+    end
+  end
+
+  function mod._gen1ModernCompatibility:syncSurfaceGallery(owner, entry)
+    self:clearSurfaceGallery(owner)
+    local surfaces = entry and entry.contract and entry.contract.surfaces
+    if type(surfaces) ~= "table" then return end
+    local owned = {}
+    for surfaceId, surface in pairs(surfaces) do
+      local gallery = type(surface.gallery) == "table" and surface.gallery or nil
+      if gallery then
+        local id = "surface:" .. owner .. ":" .. surfaceId
+        owned[id] = true
+        self.surfaceGalleryContexts[id] = {
+          owner = owner, id = surfaceId, surface = surface, entry = entry,
+        }
+        if runtime.uiGalleryCatalog then
+          runtime.uiGalleryCatalog[#runtime.uiGalleryCatalog + 1] = {
+            id = id,
+            name = safeText(gallery.name or surfaceId),
+            kind = "custom_surface",
+            screenId = safeText(gallery.screenId or surfaceId),
+            category = safeText(gallery.category or "Integration"),
+            variant = gallery.variant and safeText(gallery.variant) or nil,
+            _surfaceOwner = owner,
+            _surfaceId = surfaceId,
+          }
+        end
+      end
+    end
+    if next(owned) then self.surfaceGalleryOwners[owner] = owned end
+  end
+
   function mod._gen1ModernCompatibility:register(spec)
     if type(spec) ~= "table" then
       return false, "adapter registration must be a table"
@@ -1336,6 +1635,7 @@ return function(mod)
       version = spec.version,
       contract = contract,
     }
+    local registeredEntry = self.adapters[owner]
     -- Themes and frames are optional data extensions of the same public
     -- contract. They are registered only through the Gen1 Modern UI export;
     -- the source mod still owns the image/path and must use a namespaced ID.
@@ -1377,6 +1677,10 @@ return function(mod)
       end
     end
     self.active = setmetatable({}, { __mode = "k" })
+    self.activeSurfaces = setmetatable({}, { __mode = "k" })
+    self.declarativeModals = setmetatable({}, { __mode = "k" })
+    self.summaryPages = setmetatable({}, { __mode = "k" })
+    self:syncSurfaceGallery(owner, registeredEntry)
     return true
   end
 
@@ -1384,7 +1688,11 @@ return function(mod)
     if type(owner) ~= "string" then return false end
     self.adapters[owner] = nil
     self:clearOwnerAssets(owner)
+    self:clearSurfaceGallery(owner)
     self.active = setmetatable({}, { __mode = "k" })
+    self.activeSurfaces = setmetatable({}, { __mode = "k" })
+    self.declarativeModals = setmetatable({}, { __mode = "k" })
+    self.summaryPages = setmetatable({}, { __mode = "k" })
     return true
   end
 
@@ -1445,10 +1753,11 @@ return function(mod)
 
   function mod._gen1ModernCompatibility:adapterFor(game, state)
     if type(state) ~= "table" then return nil end
+    if state._gen1UiGalleryPreview then return nil end
     self:discover()
     for owner, entry in pairs(self.adapters) do
       if self:ownerActive(owner) then
-        for screenId, screen in pairs(entry.contract.screens) do
+        for screenId, screen in pairs(entry.contract.screens or {}) do
           local ok, matched = pcall(screen.match, state)
           if not ok then
             self:recordError(owner, "screen match failed: " .. tostring(screenId))
@@ -1466,6 +1775,266 @@ return function(mod)
     end
     self.active[state] = nil
     return nil
+  end
+
+  function mod._gen1ModernCompatibility:surfaceFor(game, state)
+    if type(state) ~= "table" then return nil end
+    if state._gen1UiGallerySurfaceContext then
+      return state._gen1UiGallerySurfaceContext
+    end
+    if state._gen1UiGalleryPreview then return nil end
+    self:discover()
+    for owner, entry in pairs(self.adapters) do
+      if self:ownerActive(owner) then
+        for surfaceId, surface in pairs(entry.contract.surfaces or {}) do
+          local ok, matched = pcall(surface.match, state)
+          if not ok then
+            self:recordError(owner, "surface match failed: " .. tostring(surfaceId))
+          elseif matched == true then
+            local context = { owner = owner, id = surfaceId,
+              surface = surface, entry = entry }
+            self.activeSurfaces[state] = context
+            return context
+          end
+        end
+      else
+        self:unregister(owner)
+        self.errors[owner] = nil
+      end
+    end
+    self.activeSurfaces[state] = nil
+    return nil
+  end
+
+  function mod._gen1ModernCompatibility:surfaceModelFor(game, state, context)
+    context = context or self.activeSurfaces[state] or self:surfaceFor(game, state)
+    if not context then return nil end
+    local model
+    if state and state._gen1UiGallerySurfaceModel ~= nil then
+      model = state._gen1UiGallerySurfaceModel
+    else
+      local ok, result = pcall(context.surface.model, game, state)
+      if not ok then
+        self:recordError(context.owner, "surface model failed: " .. context.id)
+        self.activeSurfaces[state] = nil
+        return nil
+      end
+      model = result
+    end
+    if type(model) ~= "table" or self:containsFunction(model) then
+      self:recordError(context.owner,
+        "surface model must be a cycle-free, function-free table: " .. context.id)
+      self.activeSurfaces[state] = nil
+      return nil
+    end
+    local ok, snapshot = pcall(copy, model)
+    if not ok then
+      self:recordError(context.owner,
+        "surface model normalization failed: " .. context.id)
+      self.activeSurfaces[state] = nil
+      return nil
+    end
+    context.model = snapshot
+    return snapshot
+  end
+
+  function mod._gen1ModernCompatibility:surfaceInStack(game)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" then return false end
+    for _, state in ipairs(states) do
+      if state and self:surfaceFor(game, state) then return true end
+    end
+    return false
+  end
+
+  function mod._gen1ModernCompatibility:extensionsFor(game, state, kind)
+    if type(state) ~= "table" then return {} end
+    if state._gen1UiGalleryPreview
+        and not state._gen1UiGalleryAllowExtensions then return {} end
+    self:discover()
+    local found = {}
+    for owner, entry in pairs(self.adapters) do
+      if self:ownerActive(owner) then
+        for extensionId, extension in pairs(entry.contract.extensions or {}) do
+          local ok, matched = pcall(extension.match, state, kind)
+          if not ok then
+            self:recordError(owner, "extension match failed: " .. tostring(extensionId))
+          elseif matched == true then
+            found[#found + 1] = {
+              owner = owner, id = extensionId, extension = extension,
+              entry = entry,
+            }
+          end
+        end
+      else
+        self:unregister(owner)
+        self.errors[owner] = nil
+      end
+    end
+    table.sort(found, function(a, b)
+      local ap = tonumber(a.extension.priority) or 0
+      local bp = tonumber(b.extension.priority) or 0
+      if ap ~= bp then return ap < bp end
+      if a.owner ~= b.owner then return a.owner < b.owner end
+      return a.id < b.id
+    end)
+    return found
+  end
+
+  function mod._gen1ModernCompatibility:extensionModels(game, state, kind)
+    local models = {}
+    for _, context in ipairs(self:extensionsFor(game, state, kind)) do
+      local ok, model = pcall(context.extension.model, game, state, kind)
+      if not ok or (model ~= nil and type(model) ~= "table")
+          or self:containsFunction(model) then
+        self:recordError(context.owner,
+          "extension model failed: " .. tostring(context.id))
+      elseif model then
+        models[#models + 1] = { context = context, data = copy(model) }
+      end
+    end
+    return models
+  end
+
+  -- Battle extensions are presentation-only refinements.  They do not
+  -- replace a battle adapter or take ownership of BattleState; they simply
+  -- contribute data that the built-in battle presenter may consume.
+  function mod._gen1ModernCompatibility:battleOptions(game, state)
+    local options = {}
+    for _, model in ipairs(self:extensionModels(game, state, "battle")) do
+      local battle = model.data.battle
+      if type(battle) == "table" then
+        for key, value in pairs(battle) do
+          options[key] = copy(value)
+        end
+      end
+    end
+    return options
+  end
+
+  function mod._gen1ModernCompatibility:augmentRows(game, state, kind, rows)
+    if type(rows) ~= "table" then return rows end
+    for _, model in ipairs(self:extensionModels(game, state, kind)) do
+      local data = model.data
+      local assets = type(data.assets) == "table" and data.assets or nil
+      local patches = type(data.rows) == "table" and data.rows or {}
+      for key, patch in pairs(patches) do
+        if type(patch) == "table" then
+          local index = tonumber(patch.index) or tonumber(key)
+          local row = index and rows[index] or nil
+          if row then
+            for field, value in pairs(patch) do
+              if field ~= "index" then row[field] = copy(value) end
+            end
+            if assets then
+              row.assetCatalog = merge(row.assetCatalog or {}, assets)
+            end
+          end
+        end
+      end
+    end
+    return rows
+  end
+
+  function mod._gen1ModernCompatibility:pagesFor(game, state, kind)
+    local pages = {}
+    for _, model in ipairs(self:extensionModels(game, state, kind)) do
+      local sourcePages = type(model.data.pages) == "table"
+        and model.data.pages or {}
+      for pageIndex, page in ipairs(sourcePages) do
+        if type(page) == "table" then
+          pages[#pages + 1] = {
+            owner = model.context.owner,
+            extensionId = model.context.id,
+            pageIndex = pageIndex,
+            page = page,
+          }
+        end
+      end
+    end
+    return pages
+  end
+
+  function mod._gen1ModernCompatibility:activePageFor(game, state, kind)
+    local active = self.summaryPages[state]
+    if not active then return nil end
+    for _, candidate in ipairs(self:pagesFor(game, state, kind)) do
+      if candidate.owner == active.owner
+          and candidate.extensionId == active.extensionId
+          and candidate.pageIndex == active.pageIndex then
+        return candidate
+      end
+    end
+    self.summaryPages[state] = nil
+    return nil
+  end
+
+  function mod._gen1ModernCompatibility:setPage(state, page)
+    if not page then
+      self.summaryPages[state] = nil
+    else
+      self.summaryPages[state] = {
+        owner = page.owner, extensionId = page.extensionId,
+        pageIndex = page.pageIndex,
+      }
+    end
+  end
+
+  function mod._gen1ModernCompatibility:augmentPartySubmenu(game, items,
+      mon, menuContext)
+    if type(items) ~= "table" then return items end
+    local pseudo = {
+      screenId = "PartyMenu", party = game and game.save and game.save.party,
+      mon = mon, context = menuContext,
+    }
+    local result = {}
+    for _, item in ipairs(items) do result[#result + 1] = item end
+    for _, context in ipairs(self:extensionsFor(game, pseudo, "party")) do
+      local menu = context.extension.menu
+      if type(menu) == "function" then
+        local ok, additions = pcall(menu, game, mon, menuContext)
+        if not ok or (additions ~= nil and type(additions) ~= "table")
+            or self:containsFunction(additions) then
+          self:recordError(context.owner,
+            "extension menu failed: " .. tostring(context.id))
+        elseif additions then
+          for _, addition in ipairs(additions) do
+            if type(addition) == "table" then
+              local actionId = addition.action or addition.id
+              local callback = context.extension.actions
+                and context.extension.actions[actionId]
+              if type(actionId) == "string" and type(callback) == "function"
+                  and addition.label ~= nil then
+                local publicItem = copy(addition)
+                local selectedContext = context
+                local selectedAction = actionId
+                local selectedCallback = callback
+                local selectedMenuContext = menuContext
+                local selectedItem = copy(addition)
+                publicItem.action = nil
+                publicItem.onSelect = function(selectedMon, selectedGame)
+                  local state
+                  local stack = selectedGame and selectedGame.stack
+                  if stack and type(stack.top) == "function" then
+                    state = stack:top()
+                  end
+                  local called, result = pcall(selectedCallback, selectedGame,
+                    state, { id = selectedAction, item = copy(selectedItem),
+                      mon = selectedMon, context = selectedMenuContext })
+                  if not called then
+                    self:recordError(selectedContext.owner,
+                      "extension menu action failed: " .. selectedAction)
+                  end
+                  return called and result
+                end
+                result[#result + 1] = publicItem
+              end
+            end
+          end
+        end
+      end
+    end
+    return result
   end
 
   function mod._gen1ModernCompatibility:discover()
@@ -1524,6 +2093,7 @@ return function(mod)
         footer = copy(model.footer),
         details = copy(model.details),
         assets = copy(model.assets),
+        layoutOptions = copy(model.layout_options or model.layoutOptions),
         -- Battle adapters use the same read-only model contract, with a
         -- small set of semantic fields that the built-in presenter already
         -- understands. No callbacks or drawing functions cross this seam.
@@ -1562,7 +2132,157 @@ return function(mod)
     return normalized
   end
 
+  -- A voxel battle mod may own the complete battle scene, including the
+  -- menus and child screens pushed above BattleState.  This is deliberately a
+  -- small, read-only detector: Modern UI never loads a sibling file or
+  -- reaches into a private class. Source mods can publish the contract-level
+  -- `battle.native3d` callback; DramaticShape's released public `lib` export
+  -- is also recognized through its OverworldBattle.enabled() module.
+  function mod._gen1ModernCompatibility:isNative3dBattle(game, state)
+    if type(state) ~= "table" then return false end
+
+    local function marker(source)
+      if type(source) ~= "table" then return false end
+      if source.isVoxelBattle == true or source.voxel3d == true
+          or source.voxel == true or source.is3dBattle == true
+          or source.battleMode == "voxel" or source.battleMode == "3d"
+          or source.battleMode == "stadium"
+          or type(source.voxel3dBattleData) == "table"
+          or type(source.dramaticShapeShot) == "table" then
+        return true
+      end
+      return false
+    end
+
+    if marker(state) then return true end
+    -- Do not inspect adapter model layout hints here. `presentation = "hud"`
+    -- and `isVoxelBattle` are deliberately data-only requests for Modern UI's
+    -- compact presenter when the safety switch is off; treating them as
+    -- ownership would silently disable valid battle adapters.
+
+    -- Explicitly registered contracts are not necessarily in the built-in
+    -- discovery list (standalone add-ons commonly register at load time).
+    -- Check their ownership callbacks before falling back to known voxel
+    -- publisher IDs.
+    for owner, entry in pairs(self.adapters) do
+      if self:ownerActive(owner) then
+        local contract = entry and entry.contract
+        local battle = type(contract) == "table" and contract.battle or nil
+        local detector = type(battle) == "table" and battle.native3d or nil
+        if type(detector) == "function" then
+          local detected, active = pcall(detector, game, state)
+          if detected and active == true then return true end
+        end
+      end
+    end
+
+    if type(mod.find) ~= "function" then return false end
+    local owners = { "dramatic_shape", "dramatic_shape_voxel",
+      "dramatic_shape_voxel_mod", "dramaticshape_voxel" }
+    for _, owner in ipairs(owners) do
+      local ok, handle = pcall(mod.find, owner)
+      local exports = ok and type(handle) == "table" and handle.exports or nil
+      if type(exports) == "table" then
+        local contract = exports.gen1ModernUi
+        local battle = type(contract) == "table" and contract.battle or nil
+        local detector = type(battle) == "table" and battle.native3d or nil
+        if type(detector) == "function" then
+          local detected, active = pcall(detector, game, state)
+          if detected and active == true then return true end
+        end
+
+        -- DramaticShape 1.7.x publicly exports its V library. Keep the
+        -- require call protected because other voxel mods may expose a
+        -- different library shape or may be disabled during reload.
+        local library = exports.lib
+        local requireModule = type(library) == "table"
+          and library.require or nil
+        if type(requireModule) == "function" then
+          local loaded, overworldBattle = pcall(requireModule,
+            "OverworldBattle")
+          if not loaded or type(overworldBattle) ~= "table" then
+            loaded, overworldBattle = pcall(function()
+              return requireModule(library, "OverworldBattle")
+            end)
+          end
+          local enabled = loaded and type(overworldBattle) == "table"
+            and overworldBattle.enabled or nil
+          if type(enabled) == "function" then
+            local checked, active = pcall(enabled)
+            if checked and active == true then return true end
+            checked, active = pcall(enabled, overworldBattle)
+            if checked and active == true then return true end
+          end
+        end
+      end
+    end
+    return false
+  end
+
+  function mod._gen1ModernCompatibility:setDeclarativeModal(state, value)
+    if value == nil or value == false then
+      self.declarativeModals[state] = nil
+      return true
+    end
+    if type(value) ~= "table" or value.type ~= "modal_overlay"
+        or type(value.options) ~= "table" or self:containsFunction(value) then
+      return false
+    end
+    local normalized = copy(value)
+    normalized.dim_background = value.dim_background ~= false
+    normalized.dim_opacity = clamp(tonumber(value.dim_opacity) or 0.4, 0, 0.85)
+    normalized.index = clamp(math.floor(tonumber(value.index) or 1),
+      1, math.max(1, #normalized.options))
+    for _, option in ipairs(normalized.options) do
+      if type(option) ~= "table" or type(option.label) ~= "string"
+          or (option.action ~= nil and type(option.action) ~= "string") then
+        return false
+      end
+    end
+    self.declarativeModals[state] = normalized
+    return true
+  end
+
+  function mod._gen1ModernCompatibility:handleActionResult(state, result,
+      allowModal)
+    if allowModal and type(result) == "table" then
+      return self:setDeclarativeModal(state, result)
+    end
+    return result ~= false
+  end
+
+  function mod._gen1ModernCompatibility:routeDeclarativeModal(game, state,
+      action, lane)
+    local modal = self.declarativeModals[state]
+    if type(modal) ~= "table" then return nil end
+    local normalized = action == "a" and "select"
+      or action == "b" and "back" or action
+    local count = math.max(1, #modal.options)
+    if normalized == "up" or normalized == "left" then
+      modal.index = ((modal.index or 1) - 2) % count + 1
+      return true
+    elseif normalized == "down" or normalized == "right" then
+      modal.index = (modal.index or 1) % count + 1
+      return true
+    elseif normalized == "back" or normalized == "cancel" then
+      self.declarativeModals[state] = nil
+      return true
+    elseif normalized == "select" then
+      local option = modal.options[clamp(modal.index or 1, 1, count)]
+      self.declarativeModals[state] = nil
+      if not option or not option.action then return true end
+      if lane == "surface" then
+        return self:surfaceAction(game, state, option.action, option.payload)
+      end
+      return self:action(game, state, option.action, option.payload)
+    end
+    return true
+  end
+
   function mod._gen1ModernCompatibility:action(game, state, action, payload)
+    local modalResult = self:routeDeclarativeModal(game, state, action,
+      "screen")
+    if modalResult ~= nil then return modalResult end
     local context = self.active[state] or self:adapterFor(game, state)
     local callback = context and context.screen.actions
       and context.screen.actions[action]
@@ -1573,7 +2293,30 @@ return function(mod)
       self.active[state] = nil
       return false
     end
-    return result ~= false
+    return self:handleActionResult(state, result,
+      tonumber(context.entry.contract.apiVersion) == self.surfaceApiVersion)
+  end
+
+  function mod._gen1ModernCompatibility:surfaceAction(game, state, action,
+      payload)
+    if action == "__dismiss_modal" then
+      self.declarativeModals[state] = nil
+      return true
+    end
+    local modalResult = self:routeDeclarativeModal(game, state, action,
+      "surface")
+    if modalResult ~= nil then return modalResult end
+    local context = self.activeSurfaces[state] or self:surfaceFor(game, state)
+    local callback = context and context.surface.actions
+      and context.surface.actions[action]
+    if type(callback) ~= "function" then return false end
+    local ok, result = pcall(callback, game, state, copy(payload))
+    if not ok then
+      self:recordError(context.owner,
+        "surface action failed: " .. tostring(action))
+      return false
+    end
+    return self:handleActionResult(state, result, true)
   end
 
   -- These bridges are the compatibility-safe home for the currently shipped
@@ -1647,7 +2390,8 @@ return function(mod)
   end
 
   runtime.registerPointerRegion = function(x, y, w, h, metadata)
-    if not pointerDrawContext or type(x) ~= "number" or type(y) ~= "number"
+    if not pointerDrawContext or pointerDrawContext.suppressRegions
+        or type(x) ~= "number" or type(y) ~= "number"
         or type(w) ~= "number" or type(h) ~= "number" or w <= 0 or h <= 0 then
       return
     end
@@ -2040,8 +2784,24 @@ return function(mod)
   end
 
   runtime.option = function(key, default)
+    local overrides = runtime.optionOverrideScope
+    if type(overrides) == "table" and overrides[key] ~= nil then
+      return overrides[key]
+    end
     local value = mod.options:get(key)
     return value == nil and default or value
+  end
+
+  -- Gallery scale/font choices belong only to the nested preview. Keeping
+  -- the override scope explicit prevents background hooks and states below
+  -- the opaque gallery from observing temporary QA settings.
+  runtime.withOptionOverrides = function(overrides, callback)
+    local previous = runtime.optionOverrideScope
+    runtime.optionOverrideScope = overrides
+    local ok, result = pcall(callback)
+    runtime.optionOverrideScope = previous
+    if not ok then error(result, 0) end
+    return result
   end
 
   runtime.drawHint = function(theme, value, x, y, maxWidth)
@@ -2104,18 +2864,33 @@ return function(mod)
     local base = themes[runtime.option("theme", "gen1_modern_ui:classic_mono")]
       or themes["gen1_modern_ui:classic_mono"] or themes.default
     local uiPercent, uiAuto = resolvedScalePercent(runtime.option("uiScale", 100),
-      viewport, 75, 150)
+      viewport, UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT,
+      UI_AUTO_LEGACY_CEILING_PERCENT)
     local fontPercent, fontAuto
     if usePixelFont then
-      fontPercent = tonumber(normalizedPixelFontScale(
-        runtime.option("fontScale", 100), true)) or 100
-      fontAuto = false
+      fontPercent, fontAuto = resolvedPixelFontPercent(
+        runtime.option("fontScale", 100), uiPercent)
     else
       fontPercent, fontAuto = resolvedScalePercent(runtime.option("fontScale", 100),
-        viewport, 80, 200)
+        viewport, FONT_SCALE_MIN_PERCENT, FONT_SCALE_MAX_PERCENT,
+        FONT_AUTO_LEGACY_CEILING_PERCENT, FONT_AUTO_MAX_PERCENT, 2 / 3)
     end
     local uiScale = uiPercent / 100
     local fontScale = fontPercent / 100
+    local _, _, availableW, availableH = viewportRect(viewport)
+    local requestedPixelStep = usePixelFont
+      and math.max(1, math.floor(fontPercent / 100 + 0.5)) or nil
+    local effectivePixelStep = requestedPixelStep
+    if requestedPixelStep then
+      -- Preserve enough vertical room for a title, body row, caption/footer,
+      -- and chrome. Reflow and scrolling handle width; this cap is the final
+      -- small-viewport guard and always drops by complete raster steps.
+      local chromeBudget = math.max(32, 48 * uiScale)
+      local maximumStep = clamp(math.floor(math.max(0,
+        availableH - chromeBudget) / (PLAIN_PIXEL_RASTER_STEP * 4)), 1, 4)
+      effectivePixelStep = math.min(requestedPixelStep, maximumStep)
+      fontScale = effectivePixelStep
+    end
     local density = safeText(runtime.option("density", "auto"))
     local frameStyle = safeText(runtime.option("frameStyle", "pixel"))
     local frameAsset = safeText(runtime.option("frameAsset", "2"))
@@ -2131,6 +2906,8 @@ return function(mod)
       usePixelFont and "pixel" or "system",
       frameStyle .. ":" .. frameAsset .. ":" .. frameScale,
       panelOpacity, foregroundOpacity) .. (":%.4f:%.4f"):format(dpiX, dpiY)
+      .. (":%.1f:%.1f:%s"):format(availableW, availableH,
+        tostring(effectivePixelStep or "system"))
     local bucket = themePresentationCache[base]
     if not bucket then
       bucket = {}
@@ -2142,6 +2919,21 @@ return function(mod)
     theme = copy(theme)
     theme.scale = copy(theme.scale or {})
     theme.scale.auto = uiAuto or fontAuto
+    if usePixelFont then
+      -- Theme typography values are desired raster sizes, not OpenType line
+      -- boxes. Keep every role on an exact 15px multiple so no later layout
+      -- or responsive pass can request a fractionally resampled glyph atlas.
+      local pixelStep = effectivePixelStep
+      theme.typography = copy(theme.typography or {})
+      theme.typography.caption = PLAIN_PIXEL_RASTER_STEP * pixelStep
+      theme.typography.body = PLAIN_PIXEL_RASTER_STEP * pixelStep
+      theme.typography.title = PLAIN_PIXEL_RASTER_STEP * pixelStep * 2
+      theme.scale.pixelFontStep = pixelStep
+      theme.scale.font = pixelStep
+      theme.scale.requestedPixelFontStep = requestedPixelStep
+      theme.scale.effectivePixelFontStep = pixelStep
+      theme.scale.pixelFontConstrained = pixelStep < requestedPixelStep
+    end
     theme.frame = copy(theme.frame or {})
     if frameStyle ~= "theme" then theme.frame.asset = frameValue end
     theme.frame.pixelScale = frameScale
@@ -2191,11 +2983,66 @@ return function(mod)
     end
     if bucket[key] then return bucket[key] end
     local out = copy(theme)
-    out.typography = copy(theme.typography)
-    out.typography.body = (theme.typography.body or 17) * multiplier
-    out.typography.caption = (theme.typography.caption or 13) * multiplier
+    out.typography = copy(theme.typography or {})
+    out.spacing = copy(theme.spacing or {})
+    out.radii = copy(theme.radii or {})
+    out.frame = copy(theme.frame or {})
+    out.density = copy(theme.density or {})
+    out.metrics = copy(theme.metrics or {})
     out.scale = copy(theme.scale or {})
+    local geometryMultiplier = multiplier
+    if theme.scale and theme.scale.pixelFontStep then
+      local baseStep = clamp(math.floor(theme.scale.pixelFontStep + 0.5), 1, 4)
+      local requestedStep = clamp(math.floor(baseStep * multiplier + 0.5), 1, 4)
+      geometryMultiplier = requestedStep / baseStep
+      out.typography.body = PLAIN_PIXEL_RASTER_STEP * requestedStep
+      out.typography.caption = PLAIN_PIXEL_RASTER_STEP * requestedStep
+      out.typography.title = PLAIN_PIXEL_RASTER_STEP * requestedStep * 2
+      out.scale.pixelFontStep = requestedStep
+      out.scale.effectivePixelFontStep = requestedStep
+      out.scale.font = requestedStep
+      out.scale.dialoguePixelFontStep = requestedStep
+    else
+      for name, value in pairs(out.typography) do
+        if type(value) == "number" then
+          out.typography[name] = value * multiplier
+        end
+      end
+      out.scale.font = (tonumber(theme.scale and theme.scale.font) or 1)
+        * multiplier
+    end
+    for name, value in pairs(out.spacing) do
+      if type(value) == "number" then
+        out.spacing[name] = value * geometryMultiplier
+      end
+    end
+    for name, value in pairs(out.radii) do
+      if type(value) == "number" then
+        out.radii[name] = value * geometryMultiplier
+      end
+    end
+    for name, value in pairs(out.frame) do
+      if type(value) == "number" and name ~= "pixelScale"
+          and name ~= "pixelInset" and name ~= "pixelBorder"
+          and name ~= "slice" and name ~= "pixelDpiX"
+          and name ~= "pixelDpiY" then
+        out.frame[name] = value * geometryMultiplier
+      end
+    end
+    for name, value in pairs(out.density) do
+      if type(value) == "number" then
+        out.density[name] = value * geometryMultiplier
+      end
+    end
+    for name, value in pairs(out.metrics) do
+      if type(value) == "number" then
+        out.metrics[name] = value * geometryMultiplier
+      end
+    end
+    out.scale.ui = (tonumber(theme.scale and theme.scale.ui) or 1)
+      * geometryMultiplier
     out.scale.dialogue = multiplier
+    out.scale.dialogueGeometry = geometryMultiplier
     bucket[key] = out
     return out
   end
@@ -2241,6 +3088,24 @@ return function(mod)
   mod.exports = {
     version = API_VERSION,
     compatibilityApiVersion = API_VERSION,
+    surfaceApiVersion = SURFACE_API_VERSION,
+    supportedApiVersions = { API_VERSION, SURFACE_API_VERSION },
+    supports = function(capability, version)
+      version = tonumber(version)
+      if version and version ~= API_VERSION
+          and version ~= SURFACE_API_VERSION then return false end
+      local capabilities = {
+        data_screens = API_VERSION,
+        additive_extensions = API_VERSION,
+        custom_fields = SURFACE_API_VERSION,
+        footer_lists = SURFACE_API_VERSION,
+        modal_overlay = SURFACE_API_VERSION,
+        custom_surface = SURFACE_API_VERSION,
+        isolated_shader = SURFACE_API_VERSION,
+      }
+      local introduced = capabilities[safeText(capability):lower()]
+      return introduced ~= nil and (version == nil or version >= introduced)
+    end,
     registerTheme = runtime.registerTheme,
     themes = themes,
     -- Source mods should pass their own public `mod.exports.gen1ModernUi`
@@ -2250,6 +3115,13 @@ return function(mod)
     end,
     unregisterAdapter = function(owner)
       return mod._gen1ModernCompatibility:unregister(owner)
+    end,
+    dispatchScreenAction = function(game, state, action, payload)
+      return mod._gen1ModernCompatibility:action(game, state, action, payload)
+    end,
+    dispatchSurfaceAction = function(game, state, action, payload)
+      return mod._gen1ModernCompatibility:surfaceAction(
+        game, state, action, payload)
     end,
     registerFrame = function(spec)
       return mod._gen1ModernCompatibility:registerFrame(spec)
@@ -2262,20 +3134,36 @@ return function(mod)
       coordinateStep = 1,
     },
     scaleTokens = {
-      uiMin = 0.75, uiMax = 1.50, uiStep = 0.05,
-      fontMin = 0.80, fontMax = 2.00, fontStep = 0.05,
+      uiMin = UI_SCALE_MIN_PERCENT / 100,
+      uiMax = UI_SCALE_MAX_PERCENT / 100, uiStep = 0.05,
+      fontMin = FONT_SCALE_MIN_PERCENT / 100,
+      fontMax = FONT_SCALE_MAX_PERCENT / 100, fontStep = 0.05,
+      fontAutoMax = FONT_AUTO_MAX_PERCENT / 100,
       dialogueMin = 1.10, dialogueMax = 2.00, dialogueStep = 0.05,
     },
+    layoutPresets = copy(RESPONSIVE_LAYOUT_PRESETS),
+    getLayoutDiagnostics = function()
+      return runtime.layoutDiagnostics
+    end,
     getScaleTokens = function(viewport)
       local uiPercent = resolvedScalePercent(runtime.option("uiScale", 100),
-        viewport, 75, 150)
+        viewport, UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT,
+        UI_AUTO_LEGACY_CEILING_PERCENT)
       local pixelFont = runtime.option("pixelFont", false) == true
-      local fontPercent = pixelFont
-        and tonumber(normalizedPixelFontScale(runtime.option("fontScale", 100), true))
-        or resolvedScalePercent(runtime.option("fontScale", 100), viewport, 80, 200)
+      local requestedFontPercent = pixelFont
+        and resolvedPixelFontPercent(runtime.option("fontScale", 100), uiPercent)
+        or resolvedScalePercent(runtime.option("fontScale", 100), viewport,
+          FONT_SCALE_MIN_PERCENT, FONT_SCALE_MAX_PERCENT,
+          FONT_AUTO_LEGACY_CEILING_PERCENT, FONT_AUTO_MAX_PERCENT, 2 / 3)
+      local resolvedTheme = runtime.currentTheme(viewport)
+      local effectiveFontScale = resolvedTheme.scale
+        and resolvedTheme.scale.font or requestedFontPercent / 100
       return {
         uiScale = uiPercent / 100,
-        fontScale = fontPercent / 100,
+        fontScale = effectiveFontScale,
+        requestedFontScale = requestedFontPercent / 100,
+        fontScaleConstrained = resolvedTheme.scale
+          and resolvedTheme.scale.pixelFontConstrained == true or false,
         dialogueTextScale = runtime.dialogueMultiplier(),
       }
     end,
@@ -2285,6 +3173,15 @@ return function(mod)
     local choices = {}
     if includeAuto then choices[#choices + 1] = { "AUTO", "auto" } end
     for percent = minimum, maximum, 5 do
+      choices[#choices + 1] = { percent .. "%", tostring(percent) }
+    end
+    return choices
+  end
+
+  runtime.extendedPercentChoices = function(minimum, legacyMaximum, maximum,
+      includeAuto)
+    local choices = runtime.percentChoices(minimum, legacyMaximum, includeAuto)
+    for percent = legacyMaximum + 25, maximum, 25 do
       choices[#choices + 1] = { percent .. "%", tostring(percent) }
     end
     return choices
@@ -2310,15 +3207,17 @@ return function(mod)
       choices = { { "AUTO", "auto" }, { "COMPACT", "compact" },
                   { "COMFORTABLE", "comfortable" } }, default = "auto" },
     { key = "uiScale", label = "UI SCALE", type = "choice",
-      description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 150%, or choose AUTO for responsive window sizing.",
-      choices = runtime.percentChoices(75, 150, true), default = "100" },
+      description = "Scale panel chrome, row rhythm, icons, and control spacing from 75% to 400%, or choose AUTO for responsive 4K/5K sizing.",
+      choices = runtime.extendedPercentChoices(UI_SCALE_MIN_PERCENT,
+        UI_AUTO_LEGACY_CEILING_PERCENT, UI_SCALE_MAX_PERCENT, true),
+      default = "100" },
     { key = "fontScale", label = "FONT SCALE", type = "choice",
-      description = "Scale title, body, caption, value, and hint text from 80% to 200%, or choose AUTO for responsive window sizing.",
+      description = "Scale title, body, caption, value, and hint text manually from 80% to 400%, or choose AUTO for ratio-preserving 4K/5K sizing up to 500%.",
       choices = FONT_SCALE_CHOICES, default = "100" },
     { key = "pixelFont", label = "PIXEL ART FONT", type = "toggle", default = false,
       description = "Enable the experimental multilingual Plain Pixel font. Its 11-row artwork uses the author's crisp 15-point raster steps, and fractional text origins snap to whole pixels. Older builds and missing glyphs fall back safely to the system font.", },
     { key = "dialogueTextScale", label = "DIALOGUE TEXT SCALE", type = "choice",
-      description = "Boost dialogue, choices, quantities, and confirmation prompts for readability.",
+      description = "Boost dialogue, choices, quantities, and confirmation prompts while scaling their padding and chrome proportionally.",
       choices = { { "INHERIT", "inherit" }, { "110%", "110" },
                   { "125%", "125" }, { "150%", "150" },
                   { "175%", "175" }, { "200%", "200" } }, default = "inherit" },
@@ -2328,11 +3227,13 @@ return function(mod)
     -- its responsive layout is finished.  Keeping the option visible makes
     -- the WIP status explicit without disrupting the game's native battle UI.
     { key = "battleUiWip", label = "BATTLE UI (WIP)", type = "toggle", default = false,
-      description = "Show the experimental battle presenter. It is unfinished and off by default.", },
+      description = "Show the experimental 2D battle presenter. It is unfinished and off by default.", },
     { key = "battleUiMode", label = "BATTLE UI MODE", type = "choice",
-      description = "AUTO frames ordinary 2D battles and uses compact scene-safe placement for voxel/3D battles. Both keep native battle animations running.",
+      description = "Choose the experimental 2D WIDE layout. The old SCENE HUD value remains a save-compatible alias for the same fixed WIDE shell.",
       choices = { { "AUTO", "auto" }, { "2D FRAMED", "full" },
                   { "SCENE HUD", "hud" } }, default = "auto" },
+    { key = "battle3dBypass", label = "LEAVE 3D BATTLES ALONE", type = "toggle", default = true,
+      description = "When a voxel battle owner reports 3D-BTL ON, keep its battle field, HUD, menus, dialogue, party, bag, choice, and level-up interfaces native.", },
     { key = "layoutStyle", label = "LAYOUT STYLE", type = "choice",
       description = "Choose adaptive floating panels or a full-screen themed presentation.",
       choices = { { "ADAPTIVE", "auto" }, { "FLOATING", "floating" },
@@ -2506,6 +3407,17 @@ return function(mod)
       if states[index] == state then return true end
     end
     return false
+  end
+
+  -- Visibility suppression is only safe when the state belongs to the Game
+  -- whose stack we are currently inspecting.  A few host transitions expose
+  -- a freshly-created/proxy state before StateStack:push has settled it; a
+  -- stale render cache must never let that object borrow another stack's
+  -- battle ownership or make its native draw disappear.
+  runtime.stateBelongsToGame = function(game, state)
+    if not (game and state) then return false end
+    if state.game ~= nil and state.game ~= game then return false end
+    return runtime.stackContainsState(game, state)
   end
 
   -- StateStack lifecycle payloads contain only the state. Cache ownership as
@@ -2865,6 +3777,16 @@ return function(mod)
     return out
   end, 90)
 
+  -- PartyMenu publishes a source-owned submenu hook. Additive extensions use
+  -- that seam to append action rows with source callbacks, so PartyMenu still
+  -- owns its cursor, stack transitions, and battle/field validation.
+  mod.hooks:wrap("ui.party.submenu", function(next, game, items, mon, ctx)
+    local result = next(game, items, mon, ctx)
+    if type(result) ~= "table" then return result end
+    return mod._gen1ModernCompatibility:augmentPartySubmenu(
+      game, result, mon, ctx)
+  end, 90)
+
   -- TouchControls intentionally exposes the same directional button queue as
   -- a keyboard/controller, rather than a mod-specific pointer API.  The
   -- released StartMenu ignores left/right, so consuming a pending horizontal
@@ -2892,13 +3814,66 @@ return function(mod)
     return consumed
   end
 
+  -- SummaryMenu, DexEntryMenu, and TrainerCard keep ownership of their source
+  -- transitions.  Additive pages borrow their next A/B press to enter the
+  -- first extension page, while A/B from an extension page still closes
+  -- through the native update. Left on the first extension page returns to
+  -- the built-in page; left/right switch between multiple extension pages.
+  runtime.updateExtensionPages = function(game)
+    local stack = game and game.stack
+    local state = stack and type(stack.top) == "function" and stack:top() or nil
+    local kind = state and runtime.kindFor(state, game) or nil
+    if kind ~= "summary" and kind ~= "dex_entry"
+        and kind ~= "trainer_card" then return end
+    local compatibility = mod._gen1ModernCompatibility
+    local pages = compatibility:pagesFor(game, state, kind)
+    local active = compatibility.summaryPages[state]
+    local input = game.input
+    if active then
+      local current
+      for index, page in ipairs(pages) do
+        if page.owner == active.owner
+            and page.extensionId == active.extensionId
+            and page.pageIndex == active.pageIndex then
+          current = index
+          break
+        end
+      end
+      if not current then
+        compatibility:setPage(state, nil)
+        return
+      end
+      if runtime.pendingPress(input, "left") then
+        runtime.consumePending(input, { left = true })
+        if current == 1 then
+          compatibility:setPage(state, nil)
+        else
+          compatibility:setPage(state, pages[current - 1])
+        end
+      elseif runtime.pendingPress(input, "right") and current < #pages then
+        runtime.consumePending(input, { right = true })
+        compatibility:setPage(state, pages[current + 1])
+      end
+      return
+    end
+    local canEnter = kind == "dex_entry" or kind == "trainer_card"
+      or state.page == 2
+    if canEnter and #pages > 0
+        and (runtime.pendingPress(input, "a")
+          or runtime.pendingPress(input, "b")) then
+      runtime.consumePending(input, { a = true, b = true })
+      compatibility:setPage(state, pages[1])
+    end
+  end
+
   runtime.optionDescription = function(id)
     if id == "__reset" then
       return "Restore every Gen1 Modern UI setting to its default value."
     end
     if id == "uiScale" then
       local percent, auto = resolvedScalePercent(runtime.option("uiScale", 100),
-        nil, 75, 150)
+        nil, UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT,
+        UI_AUTO_LEGACY_CEILING_PERCENT)
       local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
       return ("Scale panel chrome, rows, icons, borders, and control spacing. Current effective size: %s."):format(
         label)
@@ -2919,13 +3894,19 @@ return function(mod)
     end
     if id == "fontScale" then
       if runtime.option("pixelFont", false) == true then
-        local scale = (tonumber(normalizedPixelFontScale(
-          runtime.option("fontScale", 100), true)) or 100) / 100
-        return ("Scale Plain Pixel glyphs by %dX. Integer steps keep its authored raster crisp."):format(
-          scale)
+        local uiPercent = resolvedScalePercent(runtime.option("uiScale", 100),
+          nil, UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT,
+          UI_AUTO_LEGACY_CEILING_PERCENT)
+        local percent, auto = resolvedPixelFontPercent(
+          runtime.option("fontScale", 100), uiPercent)
+        local scale = percent / 100
+        local label = auto and ("AUTO (" .. scale .. "X)") or (scale .. "X")
+        return ("Scale Plain Pixel glyphs by %s. AUTO selects a whole step from the responsive UI size; integer steps keep its authored raster crisp."):format(
+          label)
       end
       local percent, auto = resolvedScalePercent(runtime.option("fontScale", 100),
-        nil, 80, 200)
+        nil, FONT_SCALE_MIN_PERCENT, FONT_SCALE_MAX_PERCENT,
+        FONT_AUTO_LEGACY_CEILING_PERCENT, FONT_AUTO_MAX_PERCENT, 2 / 3)
       local label = auto and ("AUTO (" .. percent .. "%)") or (percent .. "%")
       return ("Scale readable interface text before measuring and laying out content. Current effective size: %s."):format(
         label)
@@ -2940,6 +3921,236 @@ return function(mod)
       if row.key == id then return row.description end
     end
     return nil
+  end
+
+  -- In-game visual QA catalog. Every entry has a stable public id, a
+  -- presenter kind, and a source-style screen id so screenshots and bug
+  -- reports can name the exact surface without relying on its list position.
+  runtime.uiGalleryCatalog = {
+    { id = "core.dialogue", name = "Dialogue", kind = "text",
+      screenId = "TextBox", category = "Core" },
+    { id = "core.choice", name = "Choice Prompt", kind = "choice",
+      screenId = "ChoiceBox", category = "Core" },
+    { id = "battle.catch.nickname_prompt", name = "Catch - Nickname Prompt",
+      kind = "choice", screenId = "TextBox + ChoiceBox", category = "Battle",
+      variant = "catch_nickname" },
+    { id = "core.quantity", name = "Quantity Prompt", kind = "quantity",
+      screenId = "QuantityBox", category = "Core" },
+    { id = "core.start_menu", name = "Start Menu", kind = "menu",
+      screenId = "StartMenu", category = "Core" },
+    { id = "core.list_menu", name = "Generic List", kind = "list",
+      screenId = "ListMenu", category = "Core" },
+    { id = "core.options_menu", name = "Game Options", kind = "options",
+      screenId = "OptionsMenu", category = "Core" },
+    { id = "manager.mod_list", name = "Mod Manager", kind = "mod_manager",
+      screenId = "ManagerState", category = "Manager", variant = "list" },
+    { id = "manager.detail", name = "Mod Manager - Detail", kind = "mod_manager",
+      screenId = "ManagerState", category = "Manager", variant = "detail" },
+    { id = "manager.options", name = "Mod Manager - Options", kind = "mod_manager",
+      screenId = "ManagerState", category = "Manager", variant = "options" },
+    { id = "manager.permissions", name = "Mod Manager - Permissions",
+      kind = "mod_manager", screenId = "ManagerState", category = "Manager",
+      variant = "permissions" },
+    { id = "manager.errors", name = "Mod Manager - Errors", kind = "mod_manager",
+      screenId = "ManagerState", category = "Manager", variant = "errors" },
+    { id = "manager.apply", name = "Mod Manager - Apply", kind = "mod_manager",
+      screenId = "ManagerState", category = "Manager", variant = "apply" },
+    { id = "manager.confirm", name = "Mod Manager - Confirmation",
+      kind = "mod_manager", screenId = "ManagerState", category = "Manager",
+      variant = "confirm" },
+    { id = "manager.help", name = "Mod Manager - Option Help",
+      kind = "mod_manager", screenId = "ManagerState", category = "Manager",
+      variant = "help" },
+    { id = "manager.option_rows", name = "Mod Option Rows", kind = "mod_options",
+      screenId = "OptionRows", category = "Manager" },
+    { id = "pokemon.party", name = "Party", kind = "party",
+      screenId = "PartyMenu", category = "Pokemon" },
+    { id = "pokemon.party.actions", name = "Party - Actions", kind = "party",
+      screenId = "PartyMenu", category = "Pokemon", variant = "actions" },
+    { id = "pokemon.summary.status", name = "Summary - Status", kind = "summary",
+      screenId = "SummaryMenu", category = "Pokemon", variant = "status" },
+    { id = "pokemon.summary.moves", name = "Summary - Moves", kind = "summary",
+      screenId = "SummaryMenu", category = "Pokemon", variant = "moves" },
+    { id = "pokemon.summary.dvs", name = "Summary - DVs / Stat Exp",
+      kind = "summary", screenId = "SummaryMenu", category = "Pokemon",
+      variant = "dvs" },
+    { id = "pokemon.summary.extension", name = "Summary - Additive Page",
+      kind = "summary", screenId = "SummaryMenu", category = "Integration",
+      variant = "extension" },
+    { id = "pokemon.trainer_card", name = "Trainer Card", kind = "trainer_card",
+      screenId = "TrainerCard", category = "Pokemon" },
+    { id = "pokemon.pokedex", name = "Pokedex", kind = "pokedex",
+      screenId = "PokedexMenu", category = "Pokemon" },
+    { id = "pokemon.dex_entry.data", name = "Dex Entry - Data", kind = "dex_entry",
+      screenId = "DexEntryMenu", category = "Pokemon", variant = "data" },
+    { id = "pokemon.dex_entry.stats", name = "Dex Entry - Stats", kind = "dex_entry",
+      screenId = "DexEntryMenu", category = "Pokemon", variant = "stats" },
+    { id = "pokemon.dex_entry.moves", name = "Dex Entry - Moves", kind = "dex_entry",
+      screenId = "DexEntryMenu", category = "Pokemon", variant = "moves" },
+    { id = "inventory.bag", name = "Bag", kind = "bag",
+      screenId = "BagMenu", category = "Inventory" },
+    { id = "inventory.shop", name = "Shop", kind = "shop_list",
+      screenId = "ShopList", category = "Inventory" },
+    { id = "inventory.pc_list", name = "Player PC", kind = "pc_list",
+      screenId = "PlayerPcList", category = "Inventory" },
+    { id = "pokemon.pc_root", name = "Pokemon PC Actions", kind = "box_root",
+      screenId = "BoxMenu", category = "Pokemon" },
+    { id = "pokemon.pc_list", name = "Pokemon PC List", kind = "box_mon_list",
+      screenId = "BoxPokemonList", category = "Pokemon" },
+    { id = "pokemon.gen3_box", name = "Gen 3 Box Grid", kind = "gen3_box",
+      screenId = "Gen3Box", category = "Pokemon" },
+    { id = "pokemon.gen3_box.party", name = "Gen 3 Box - Party Grid",
+      kind = "gen3_box", screenId = "Gen3Box", category = "Pokemon",
+      variant = "party" },
+    { id = "pokemon.move_learn", name = "Move Learn", kind = "move_learn",
+      screenId = "MoveLearnMenu", category = "Pokemon" },
+    { id = "utility.picture_box", name = "Picture Box", kind = "pic_box",
+      screenId = "PicBox", category = "Utility" },
+    { id = "utility.naming", name = "Naming", kind = "naming",
+      screenId = "NamingScreen", category = "Utility" },
+    { id = "battle.catch.nickname_entry", name = "Catch - Nickname Entry",
+      kind = "naming", screenId = "NamingScreen", category = "Battle",
+      variant = "catch_nickname" },
+    { id = "utility.town_map", name = "Town Map - Grid", kind = "town_map",
+      screenId = "TownMap", category = "Utility", variant = "grid" },
+    { id = "utility.town_map.list", name = "Town Map - List", kind = "town_map",
+      screenId = "TownMap", category = "Utility", variant = "list" },
+    { id = "utility.town_map.fly", name = "Town Map - Fly", kind = "town_map",
+      screenId = "TownMap", category = "Utility", variant = "fly" },
+    { id = "utility.town_map.area", name = "Town Map - Area", kind = "town_map",
+      screenId = "TownMap", category = "Utility", variant = "area" },
+    { id = "utility.quarantine_report", name = "Load Report", kind = "quarantine_report",
+      screenId = "QuarantineReport", category = "Utility" },
+    { id = "utility.link", name = "Link - Menu", kind = "link",
+      screenId = "LinkState", category = "Utility", variant = "menu" },
+    { id = "utility.link.code", name = "Link - Code Entry", kind = "link",
+      screenId = "LinkState", category = "Utility", variant = "codeEntry" },
+    { id = "utility.link.address", name = "Link - Address Entry", kind = "link",
+      screenId = "LinkState", category = "Utility", variant = "addrEntry" },
+    { id = "utility.link.notice", name = "Link - Compatibility Notice",
+      kind = "link", screenId = "LinkState", category = "Utility",
+      variant = "notice" },
+    { id = "utility.link.trade", name = "Link - Trade Party", kind = "link",
+      screenId = "LinkState", category = "Utility", variant = "trade" },
+    { id = "utility.link.battle_options", name = "Link - Battle Options",
+      kind = "link", screenId = "LinkState", category = "Utility",
+      variant = "battleOptions" },
+    { id = "integration.dex_radar", name = "Dex Radar", kind = "dex_radar",
+      screenId = "DexRadar", category = "Integration" },
+    { id = "integration.rby_mmo_profile", name = "RBY MMO Profile",
+      kind = "rby_mmo_profile", screenId = "RbyMmoProfile",
+      category = "Integration" },
+    { id = "integration.rby_mmo_rank", name = "RBY MMO Ranking",
+      kind = "rby_mmo_rank", screenId = "RbyMmoRank",
+      category = "Integration" },
+    { id = "integration.rby_mmo_character", name = "RBY MMO Character",
+      kind = "rby_mmo_char_pick", screenId = "RbyMmoCharPick",
+      category = "Integration" },
+    { id = "integration.external_adapter", name = "Registered Adapter Rows",
+      kind = "external", screenId = "RegisteredAdapterModel",
+      category = "Integration", variant = "rows" },
+    { id = "integration.external_details", name = "Structured Adapter Details",
+      kind = "external", screenId = "RegisteredAdapterDetails",
+      category = "Integration", variant = "details" },
+    { id = "battle.wide.commands", name = "WIDE Battle - Commands",
+      kind = "battle", screenId = "BattleState", category = "Battle",
+      variant = "commands" },
+    { id = "battle.wide.moves", name = "WIDE Battle - Moves",
+      kind = "battle", screenId = "BattleState", category = "Battle",
+      variant = "moves" },
+    { id = "battle.wide.message", name = "WIDE Battle - Message",
+      kind = "battle", screenId = "BattleState", category = "Battle",
+      variant = "message" },
+    { id = "battle.wide.level_up", name = "WIDE Battle - Level Up",
+      kind = "battle", screenId = "BattleState", category = "Battle",
+      variant = "level_up" },
+  }
+  -- Explicit registrations can occur before the Gallery catalog is built.
+  -- Reconcile those deferred v2 specimens now that the destination exists.
+  for owner, entry in pairs(mod._gen1ModernCompatibility.adapters) do
+    mod._gen1ModernCompatibility:syncSurfaceGallery(owner, entry)
+  end
+  runtime.uiGalleryUiScales = {
+    { "75%", "75" }, { "100%", "100" }, { "125%", "125" },
+    { "150%", "150" }, { "200%", "200" }, { "300%", "300" },
+    { "400%", "400" }, { "AUTO", "auto" },
+  }
+  runtime.uiGallerySystemFontScales = {
+    { "80%", "80" }, { "100%", "100" }, { "125%", "125" },
+    { "150%", "150" }, { "200%", "200" }, { "300%", "300" },
+    { "400%", "400" }, { "AUTO", "auto" },
+  }
+  runtime.uiGalleryPixelFontScales = {
+    { "AUTO", "auto" }, { "1X", "100" }, { "2X", "200" },
+    { "3X", "300" }, { "4X", "400" },
+  }
+  runtime.uiGalleryContentLevels = {
+    { id = "empty", label = "EMPTY", count = 0 },
+    { id = "sparse", label = "SPARSE", count = 1 },
+    { id = "normal", label = "NORMAL", count = 6 },
+    { id = "full", label = "FULL", count = 16 },
+    { id = "overflow", label = "OVERFLOW", count = 32 },
+  }
+
+  runtime.uiGalleryChoiceIndex = function(choices, value)
+    for index, choice in ipairs(choices or {}) do
+      if tostring(choice[2]) == tostring(value) then return index end
+    end
+    return 1
+  end
+
+  runtime.openUiGallery = function(game, optionsState)
+    if not (game and game.stack and type(game.stack.push) == "function") then
+      return nil
+    end
+    local gallery = {
+      game = game, screenId = "Gen1ModernUiGallery",
+      galleryId = "gen1_modern_ui.ui_gallery", galleryType = "ui_gallery",
+      title = "MODERN UI GALLERY", _gen1UiGallery = true,
+      isOpaque = true, entryIndex = 1, contentIndex = 3,
+      optionsState = optionsState, draw = function() end,
+      update = function() end,
+      optionOverrides = {
+        uiScale = runtime.option("uiScale", "auto"),
+        fontScale = runtime.option("fontScale", "auto"),
+        pixelFont = runtime.option("pixelFont", false) == true,
+      },
+    }
+    gallery.uiScaleIndex = runtime.uiGalleryChoiceIndex(
+      runtime.uiGalleryUiScales, gallery.optionOverrides.uiScale)
+    local fontChoices = gallery.optionOverrides.pixelFont
+      and runtime.uiGalleryPixelFontScales
+      or runtime.uiGallerySystemFontScales
+    gallery.fontScaleIndex = runtime.uiGalleryChoiceIndex(
+      fontChoices, gallery.optionOverrides.fontScale)
+    gallery.systemFontScaleIndex = runtime.uiGalleryChoiceIndex(
+      runtime.uiGallerySystemFontScales,
+      gallery.optionOverrides.pixelFont and "100"
+        or gallery.optionOverrides.fontScale)
+    gallery.pixelFontScaleIndex = runtime.uiGalleryChoiceIndex(
+      runtime.uiGalleryPixelFontScales,
+      gallery.optionOverrides.pixelFont and gallery.optionOverrides.fontScale
+        or "100")
+    gallery.exit = function(self)
+      if runtime.activeUiGallery == self then runtime.activeUiGallery = nil end
+    end
+    runtime.activeUiGallery = gallery
+    game.stack:push(gallery)
+    return gallery
+  end
+
+  mod.exports.uiGalleryCatalog = function()
+    local out = {}
+    for index, spec in ipairs(runtime.uiGalleryCatalog) do
+      out[index] = copy(spec)
+      out[index]._surfaceOwner = nil
+      out[index]._surfaceId = nil
+      out[index].qualifiedId = "gen1_modern_ui.gallery." .. spec.id
+    end
+    return out
+  end
+  mod.exports.openUiGallery = function(game)
+    return runtime.openUiGallery(game)
   end
 
   -- The UI settings schema is intentionally kept flat for the engine's
@@ -2971,6 +4182,7 @@ return function(mod)
     dialogueUi = "presenters", menuUi = "presenters", pokemonUi = "presenters",
     managerUi = "presenters", spriteAnimation = "presenters",
     battleUiWip = "presenters", battleUiMode = "presenters",
+    battle3dBypass = "presenters",
     desktopFloating = "advanced", __reset = "advanced",
   }
 
@@ -3024,6 +4236,14 @@ return function(mod)
         groups[category].rows[#groups[category].rows + 1] = row
       end
     end
+    table.insert(groups.advanced.rows, 1, {
+      id = "gen1_modern_ui.gallery.open", label = "UI GALLERY",
+      value = function() return "OPEN" end,
+      activate = function()
+        runtime.openUiGallery(runtime.ownerGame(state, currentGame), state)
+      end,
+      description = "Open the in-game presenter catalog and cycle scale, font, and content stress levels without saving those temporary values.",
+    })
     state._gen1OptionRowsSource = source
     state._gen1OptionGroups = groups
     state._gen1OptionExpanded = state._gen1OptionExpanded or {
@@ -3120,6 +4340,70 @@ return function(mod)
     runtime.consumePending(input, { select = true })
   end
 
+  runtime.updateUiGallery = function(game, input)
+    local stack = game and game.stack
+    local state = stack and type(stack.top) == "function" and stack:top() or nil
+    if not (state and state._gen1UiGallery) then return false end
+    local function advance(index, count, delta)
+      return ((math.max(1, tonumber(index) or 1) - 1 + delta) % count) + 1
+    end
+    if runtime.pendingPress(input, "b") then
+      runtime.consumePending(input, { b = true })
+      if type(stack.pop) == "function" then stack:pop() end
+      if runtime.activeUiGallery == state then runtime.activeUiGallery = nil end
+      return true
+    elseif runtime.pendingPress(input, "left")
+        or runtime.pendingPress(input, "right") then
+      local delta = runtime.pendingPress(input, "right") and 1 or -1
+      state.entryIndex = advance(state.entryIndex,
+        #runtime.uiGalleryCatalog, delta)
+      state.preview, state.previewKey = nil, nil
+      runtime.consumePending(input, { left = true, right = true })
+    elseif runtime.pendingPress(input, "up")
+        or runtime.pendingPress(input, "down") then
+      local delta = runtime.pendingPress(input, "down") and 1 or -1
+      state.contentIndex = advance(state.contentIndex,
+        #runtime.uiGalleryContentLevels, delta)
+      state.preview, state.previewKey = nil, nil
+      runtime.consumePending(input, { up = true, down = true })
+    elseif runtime.pendingPress(input, "a") then
+      state.uiScaleIndex = advance(state.uiScaleIndex,
+        #runtime.uiGalleryUiScales, 1)
+      state.optionOverrides.uiScale =
+        runtime.uiGalleryUiScales[state.uiScaleIndex][2]
+      runtime.consumePending(input, { a = true })
+    elseif runtime.pendingPress(input, "select") then
+      local choices = state.optionOverrides.pixelFont
+        and runtime.uiGalleryPixelFontScales
+        or runtime.uiGallerySystemFontScales
+      state.fontScaleIndex = advance(state.fontScaleIndex, #choices, 1)
+      state.optionOverrides.fontScale = choices[state.fontScaleIndex][2]
+      if state.optionOverrides.pixelFont then
+        state.pixelFontScaleIndex = state.fontScaleIndex
+      else
+        state.systemFontScaleIndex = state.fontScaleIndex
+      end
+      runtime.consumePending(input, { select = true })
+    elseif runtime.pendingPress(input, "start") then
+      if state.optionOverrides.pixelFont then
+        state.pixelFontScaleIndex = state.fontScaleIndex
+      else
+        state.systemFontScaleIndex = state.fontScaleIndex
+      end
+      state.optionOverrides.pixelFont = not state.optionOverrides.pixelFont
+      local choices = state.optionOverrides.pixelFont
+        and runtime.uiGalleryPixelFontScales
+        or runtime.uiGallerySystemFontScales
+      state.fontScaleIndex = state.optionOverrides.pixelFont
+        and (state.pixelFontScaleIndex or 1)
+        or (state.systemFontScaleIndex or 1)
+      state.fontScaleIndex = clamp(state.fontScaleIndex, 1, #choices)
+      state.optionOverrides.fontScale = choices[state.fontScaleIndex][2]
+      runtime.consumePending(input, { start = true })
+    end
+    return true
+  end
+
   runtime.remapChoiceDirections = function(game)
     local top = game and game.stack and game.stack.top and game.stack:top()
     local input = game and game.input
@@ -3161,10 +4445,12 @@ return function(mod)
   mod.hooks:wrap("input.step", function(next, game, dt)
     runtime.remapBattleMoveGrid(game)
     runtime.remapChoiceDirections(game)
+    runtime.updateExtensionPages(game)
     local result = next(game, dt)
     if not game then
       return result
     end
+    if runtime.updateUiGallery(game, game.input) then return result end
     if syncWorldVisibility then syncWorldVisibility(game) end
     local topAfter = game.stack and game.stack.top and game.stack:top()
     runtime.ensureOptionCategories(topAfter)
@@ -3192,6 +4478,10 @@ return function(mod)
 
   local isBoxRoot
   runtime.boxPokemonList = function(state)
+    if state and state._gen1UiGalleryBoxPokemon then
+      return state._gen1UiGalleryBoxPokemon,
+        state._gen1UiGalleryBoxAction or "WITHDRAW"
+    end
     if not (state and inherits(classOf(state), listClass)
         and type(state.items) == "table") then return nil end
     local game = state.game
@@ -3301,6 +4591,9 @@ return function(mod)
 
   runtime.kindFor = function(state, game)
     if not state then return nil end
+    if state._gen1UiGallery then return "ui_gallery" end
+    local sourceSurface = mod._gen1ModernCompatibility:surfaceFor(game, state)
+    if sourceSurface then return "custom_surface" end
     -- An explicitly registered source-mod contract always wins over a
     -- legacy bridge. This lets RBYMMO/Dex Radar ship richer public models
     -- without requiring a new hardcoded presenter in every UI release.
@@ -3384,14 +4677,23 @@ return function(mod)
   -- particular, the unfinished battle presenter remains opt-in and never
   -- blanks the stable native battle UI by default.
   runtime.presenterEnabled = function(kind, state)
+    if kind == "ui_gallery" or state and state._gen1UiGalleryPreview then
+      return true
+    end
     -- MOD MENUS is a Modern UI-owned utility surface. It remains available
     -- when ordinary Menu/Dialogue presenters are disabled and follows the
     -- dedicated Mod Manager UI toggle instead.
     if state and state._gen1ModMenus then
       return runtime.option("managerUi", true) ~= false
     end
-    if kind == "external" then return runtime.option("menuUi", true) ~= false end
-    if kind == "battle" then return runtime.option("battleUiWip", false) == true end
+    if kind == "external" or kind == "custom_surface" then
+      return runtime.option("menuUi", true) ~= false
+    end
+    if kind == "battle" then
+      local activeGame = state and runtime.ownerGame(state, currentGame)
+        or currentGame
+      return runtime.battlePresenterActive(activeGame, state)
+    end
     if kind == "link" then return runtime.option("menuUi", true) ~= false end
     if kind == "text" or kind == "choice" or kind == "quantity" then
       return runtime.option("dialogueUi", true) ~= false
@@ -3426,6 +4728,547 @@ return function(mod)
   -- 200 local slots. Table-backed helpers keep future battle integrations
   -- from pushing the factory over that limit.
   local battleRuntime = {}
+  battleRuntime.seenStates = setmetatable({}, { __mode = "k" })
+  battleRuntime.sourceCapture = nil
+  battleRuntime.sourceCanvas = nil
+
+  -- API v2 custom surfaces use a deliberately separate rendering lane from
+  -- the data-first v1 presenters.  A source callback paints a private virtual
+  -- canvas during render.compose; that canvas is committed for render.hud only
+  -- after the callback returns true and leaves the expected canvas selected.
+  -- Native UI therefore remains the fail-open result for model errors,
+  -- renderer errors, unsupported stack mixtures, and interrupted frames.
+  -- Keep this implementation table-backed to avoid LuaJIT's factory-local
+  -- limit in this already broad module.
+  mod._gen1ModernSurfaceRuntime = {
+    frameId = 0,
+    commits = nil,
+    failed = false,
+    canvases = setmetatable({}, { __mode = "k" }),
+    clocks = setmetatable({}, { __mode = "k" }),
+    silhouetteShader = false,
+  }
+
+  function mod._gen1ModernSurfaceRuntime:resetFrame()
+    self.frameId = self.frameId + 1
+    self.commits = nil
+    self.failed = false
+  end
+
+  function mod._gen1ModernSurfaceRuntime:viewportForCompose(game, ctx)
+    local width = math.max(1, tonumber(ctx and (ctx.ww or ctx.pw))
+      or (love.graphics.getWidth and love.graphics.getWidth()) or 1)
+    local height = math.max(1, tonumber(ctx and (ctx.wh or ctx.ph))
+      or (love.graphics.getHeight and love.graphics.getHeight()) or 1)
+    local viewport = {
+      width = width,
+      height = height,
+      dpiX = math.max(0.01, tonumber(ctx and ctx.dpiX) or 1),
+      dpiY = math.max(0.01, tonumber(ctx and ctx.dpiY) or 1),
+      safe = { x = 0, y = 0, width = width, height = height },
+      game = {
+        x = tonumber(ctx and (ctx.ox or ctx.vpx)) or 0,
+        y = tonumber(ctx and (ctx.oy or ctx.vpy)) or 0,
+        width = tonumber(ctx and (ctx.vpw or ctx.uiw)) or 0,
+        height = tonumber(ctx and (ctx.vph or ctx.uih)) or 0,
+      },
+    }
+    return viewportForTouchControls(game, viewport)
+  end
+
+  function mod._gen1ModernSurfaceRuntime:layoutFor(context, viewport, theme)
+    local declared = context and context.surface and context.surface.layout or {}
+    local base = type(declared.default) == "table" and declared.default
+      or declared
+    local x, y, safeW, safeH = presenterRect(viewport)
+    local orientation = safeH > safeW and "portrait" or "landscape"
+    local variant = type(declared[orientation]) == "table"
+      and declared[orientation] or {}
+    local resolved = {}
+    for key, value in pairs(declared) do
+      if key ~= "default" and key ~= "portrait" and key ~= "landscape" then
+        resolved[key] = value
+      end
+    end
+    for key, value in pairs(base) do resolved[key] = value end
+    for key, value in pairs(variant) do resolved[key] = value end
+
+    local virtualW = clamp(math.floor(tonumber(resolved.virtualWidth
+      or resolved.width) or 1), 1, 2048)
+    local virtualH = clamp(math.floor(tonumber(resolved.virtualHeight
+      or resolved.height) or 1), 1, 2048)
+    local presetName = safeText(resolved.preset or "VIEWPORT"):upper()
+    local maxW, maxH = safeW, safeH
+    local preset = RESPONSIVE_LAYOUT_PRESETS[presetName]
+    if preset then
+      local uiScale = clamp(tonumber(theme and theme.scale
+        and theme.scale.ui) or 1, 0.50, UI_SCALE_MAX_PERCENT / 100)
+      maxW = math.min(maxW, preset.width * uiScale)
+      maxH = math.min(maxH, preset.height * uiScale)
+    end
+    local margin = math.max(0, tonumber(resolved.margin) or 0)
+    maxW, maxH = math.max(1, maxW - margin * 2),
+      math.max(1, maxH - margin * 2)
+    local scale = math.min(maxW / virtualW, maxH / virtualH)
+    local scaleMode = safeText(resolved.scaleMode
+      or declared.scaleMode or "integer-fit"):lower()
+    if theme and theme.scale and theme.scale.pixelFontStep then
+      scaleMode = "integer-fit"
+    end
+    if scaleMode == "integer-fit" and scale >= 1 then
+      scale = math.max(1, math.floor(scale + 0.00001))
+    end
+    local outputW, outputH = math.max(1, virtualW * scale),
+      math.max(1, virtualH * scale)
+    local dpiX = math.max(0.01, tonumber(viewport and viewport.dpiX) or 1)
+    local dpiY = math.max(0.01, tonumber(viewport and viewport.dpiY) or 1)
+    local outputX = x + (safeW - outputW) * 0.5
+    local outputY = y + (safeH - outputH) * 0.5
+    outputX = math.floor(outputX * dpiX + 0.5) / dpiX
+    outputY = math.floor(outputY * dpiY + 0.5) / dpiY
+    return {
+      virtual = { width = virtualW, height = virtualH },
+      output = {
+        x = outputX, y = outputY, width = outputW, height = outputH,
+        scaleX = outputW / virtualW, scaleY = outputH / virtualH,
+      },
+      safe = { x = x, y = y, width = safeW, height = safeH },
+      orientation = orientation,
+      scaleMode = scaleMode,
+      filter = scaleMode == "smooth-fit" and "linear" or "nearest",
+      declared = resolved,
+    }
+  end
+
+  function mod._gen1ModernSurfaceRuntime:canvasFor(state, width, height,
+      filter)
+    local cached = self.canvases[state]
+    if cached and cached.width == width and cached.height == height
+        and cached.canvas then
+      return cached.canvas
+    end
+    local ok, canvas = pcall(love.graphics.newCanvas, width, height)
+    if not ok or not canvas then return nil, tostring(canvas) end
+    if type(canvas.setFilter) == "function" then
+      pcall(canvas.setFilter, canvas, filter, filter, 0)
+    end
+    self.canvases[state] = { canvas = canvas, width = width, height = height }
+    return canvas
+  end
+
+  function mod._gen1ModernSurfaceRuntime:now()
+    if love.timer and type(love.timer.getTime) == "function" then
+      local ok, value = pcall(love.timer.getTime)
+      if ok and tonumber(value) then return tonumber(value) end
+    end
+    return os.clock()
+  end
+
+  function mod._gen1ModernSurfaceRuntime:withShader(shader, callback, ...)
+    if type(callback) ~= "function" then return false end
+    local previous = type(love.graphics.getShader) == "function"
+      and love.graphics.getShader() or nil
+    local setOk = pcall(love.graphics.setShader, shader)
+    if not setOk then return false end
+    local results = { pcall(callback, ...) }
+    pcall(love.graphics.setShader, previous)
+    if not results[1] then error(results[2], 0) end
+    return unpack(results, 2)
+  end
+
+  function mod._gen1ModernSurfaceRuntime:withPalette(colors, callback, ...)
+    local fx = paletteRuntime.fx
+    if type(colors) ~= "table" or not fx
+        or type(fx.shader) ~= "function"
+        or type(fx.sendColors) ~= "function" then
+      return type(callback) == "function" and callback(...) or false
+    end
+    local ok, shader = pcall(fx.shader)
+    if not ok or not shader or not pcall(fx.sendColors, shader, colors) then
+      return type(callback) == "function" and callback(...) or false
+    end
+    return self:withShader(shader, callback, ...)
+  end
+
+  function mod._gen1ModernSurfaceRuntime:withSilhouette(color, callback, ...)
+    if self.silhouetteShader == false then
+      local source = [[
+        extern vec4 silhouetteColor;
+        vec4 effect(vec4 color, Image texture, vec2 textureCoords,
+            vec2 screenCoords) {
+          vec4 pixel = Texel(texture, textureCoords);
+          return vec4(silhouetteColor.rgb,
+            silhouetteColor.a * pixel.a) * color;
+        }
+      ]]
+      local ok, shader = pcall(love.graphics.newShader, source)
+      self.silhouetteShader = ok and shader or nil
+    end
+    local shader = self.silhouetteShader
+    if not shader then
+      return type(callback) == "function" and callback(...) or false
+    end
+    local value = type(color) == "table" and color or { 0, 0, 0, 1 }
+    pcall(shader.send, shader, "silhouetteColor", value)
+    return self:withShader(shader, callback, ...)
+  end
+
+  function mod._gen1ModernSurfaceRuntime:drawContext(game, state, context,
+      model, layout, theme)
+    local now = self:now()
+    local previous = self.clocks[state]
+    self.clocks[state] = now
+    local dt = previous and clamp(now - previous, 0, 0.10) or 0
+    local drawContext = {
+      frame = { id = self.frameId, time = now, dt = dt },
+      virtual = copy(layout.virtual),
+      output = copy(layout.output),
+      safe = copy(layout.safe),
+      orientation = layout.orientation,
+      scale = copy(theme.scale or {}),
+      theme = copy(theme),
+      graphics = love.graphics,
+      fonts = {
+        title = font(fontCache, theme.typography.title),
+        body = font(fontCache, theme.typography.body),
+        caption = font(fontCache, theme.typography.caption),
+      },
+      assets = {}, effects = {}, input = {}, debug = {},
+      preview = state and state._gen1UiGalleryPreview == true,
+      _regions = {}, _bounds = {},
+    }
+    drawContext.fonts.get = function(role)
+      return drawContext.fonts[role] or drawContext.fonts.body
+    end
+    drawContext.assets.image = function(value, options)
+      if type(value) == "string" and type(model.assets) == "table"
+          and model.assets[value] ~= nil then
+        value = model.assets[value]
+      end
+      return runtime.imageFor(value, options)
+    end
+    drawContext.effects.withShader = function(shader, callback, ...)
+      return self:withShader(shader, callback, ...)
+    end
+    drawContext.effects.withPalette = function(colors, callback, ...)
+      return self:withPalette(colors, callback, ...)
+    end
+    drawContext.effects.withSilhouette = function(color, callback, ...)
+      return self:withSilhouette(color, callback, ...)
+    end
+    drawContext.input.region = function(spec)
+      if type(spec) ~= "table" or type(spec.action) ~= "string"
+          or type(spec.x) ~= "number" or type(spec.y) ~= "number"
+          or type(spec.w) ~= "number" or type(spec.h) ~= "number"
+          or spec.w <= 0 or spec.h <= 0
+          or mod._gen1ModernCompatibility:containsFunction(spec.payload) then
+        return false
+      end
+      drawContext._regions[#drawContext._regions + 1] = {
+        id = safeText(spec.id or spec.action),
+        x = spec.x, y = spec.y, w = spec.w, h = spec.h,
+        action = spec.action, payload = copy(spec.payload),
+      }
+      return true
+    end
+    drawContext.debug.bounds = function(id, x, y, w, h)
+      if type(id) == "table" then
+        local spec = id
+        id, x, y, w, h = spec.id, spec.x, spec.y, spec.w, spec.h
+      end
+      if type(x) ~= "number" or type(y) ~= "number"
+          or type(w) ~= "number" or type(h) ~= "number" then return false end
+      drawContext._bounds[#drawContext._bounds + 1] = {
+        id = safeText(id or "bounds"), x = x, y = y, w = w, h = h,
+        outside = x < 0 or y < 0
+          or x + w > layout.virtual.width
+          or y + h > layout.virtual.height,
+      }
+      return true
+    end
+    return drawContext
+  end
+
+  function mod._gen1ModernSurfaceRuntime:renderSurface(game, state,
+      context, model, viewport, theme)
+    local layout = self:layoutFor(context, viewport, theme)
+    local canvas, canvasError = self:canvasFor(state,
+      layout.virtual.width, layout.virtual.height, layout.filter)
+    if not canvas then return nil, "surface canvas failed: " .. safeText(canvasError) end
+    local drawContext = self:drawContext(game, state, context, model,
+      layout, theme)
+    local pushed = pcall(love.graphics.push, "all")
+    if not pushed then return nil, "surface graphics state could not be saved" end
+    local ok, result = pcall(function()
+      love.graphics.setCanvas(canvas)
+      love.graphics.origin()
+      love.graphics.clear(0, 0, 0, 0)
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.setBlendMode("alpha")
+      love.graphics.setScissor(0, 0, layout.virtual.width,
+        layout.virtual.height)
+      local rendered = context.surface.render(model, drawContext)
+      if rendered ~= true then
+        error("surface renderer must explicitly return true", 0)
+      end
+      if type(love.graphics.getCanvas) == "function"
+          and love.graphics.getCanvas() ~= canvas then
+        error("surface renderer changed the private canvas", 0)
+      end
+      return true
+    end)
+    pcall(love.graphics.pop)
+    if not ok or result ~= true then
+      return nil, safeText(result)
+    end
+    return {
+      state = state, context = context, model = model,
+      canvas = canvas, layout = layout,
+      regions = drawContext._regions, bounds = drawContext._bounds,
+    }
+  end
+
+  function mod._gen1ModernSurfaceRuntime:stackHasSharedCanvasOwner(game,
+      surfaces)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" then return false end
+    local surfaceStates = {}
+    for _, item in ipairs(surfaces or {}) do surfaceStates[item.state] = true end
+    for _, state in ipairs(states) do
+      if runtime.isTitleState(state) then return true end
+      -- BattleState's scene, transitions, and HUD commonly share uiCanvas.
+      -- A v2 battle overlay must use native.policy="preserve" until its
+      -- source mod publishes a scene-only canvas contract.
+      if state and (state.phase ~= nil and state.queue ~= nil)
+          and surfaceStates[state] then
+        return true
+      end
+    end
+    return false
+  end
+
+  function mod._gen1ModernSurfaceRuntime:prepare(game, layers, ctx, hide)
+    local surfaces, policy = {}, nil
+    for _, layer in ipairs(layers or {}) do
+      if layer.kind == "custom_surface" then
+        local context = mod._gen1ModernCompatibility.activeSurfaces[layer.state]
+          or mod._gen1ModernCompatibility:surfaceFor(game, layer.state)
+        if not context then
+          self.failed = true
+          return false, false
+        end
+        local currentPolicy = context.surface.native.policy
+        if policy and policy ~= currentPolicy then
+          mod._gen1ModernCompatibility:recordError(context.owner,
+            "surface stack mixes preserve and replace policies")
+          self.failed = true
+          return false, false
+        end
+        policy = currentPolicy
+        surfaces[#surfaces + 1] = { state = layer.state, context = context }
+      end
+    end
+    if #surfaces == 0 then return false, false end
+    if policy == "replace" and #surfaces ~= #layers then
+      mod._gen1ModernCompatibility:recordError(surfaces[#surfaces].context.owner,
+        "replace surface cannot erase unrelated visible UI layers")
+      self.failed = true
+      return false, false
+    end
+    if policy == "replace" and self:stackHasSharedCanvasOwner(game, surfaces) then
+      mod._gen1ModernCompatibility:recordError(surfaces[#surfaces].context.owner,
+        "replace surface cannot erase a shared title or battle canvas")
+      self.failed = true
+      return false, false
+    end
+
+    local viewport = self:viewportForCompose(game, ctx)
+    local topState = surfaces[#surfaces].state
+    local theme = responsiveTheme(runtime.currentTheme(viewport, topState),
+      viewport, responsiveThemeCache)
+    local commits = {}
+    for _, item in ipairs(surfaces) do
+      local model = mod._gen1ModernCompatibility:surfaceModelFor(
+        game, item.state, item.context)
+      if not model then
+        self.failed = true
+        return false, false
+      end
+      local commit, reason = self:renderSurface(game, item.state,
+        item.context, model, viewport, theme)
+      if not commit then
+        mod._gen1ModernCompatibility:recordError(item.context.owner,
+          "surface render failed: " .. item.context.id .. ": "
+            .. safeText(reason))
+        self.failed = true
+        return false, false
+      end
+      commits[#commits + 1] = commit
+    end
+    self.commits = commits
+    return true, policy == "replace" and hide == true
+  end
+
+  function mod._gen1ModernSurfaceRuntime:hasCommittedSurface()
+    return type(self.commits) == "table" and #self.commits > 0
+  end
+
+  function mod._gen1ModernSurfaceRuntime:hasPointerSupport()
+    if not self:hasCommittedSurface() then return false end
+    for _, commit in ipairs(self.commits) do
+      if type(commit.regions) == "table" and #commit.regions > 0 then
+        return true
+      end
+      local input = commit.context and commit.context.surface.input
+      if type(input) == "table" and type(input.pointer) == "function" then
+        return true
+      end
+    end
+    return false
+  end
+
+  function mod._gen1ModernSurfaceRuntime:dispatchPointer(game, pointer)
+    if not self:hasCommittedSurface() or type(pointer) ~= "table" then
+      return false
+    end
+    local commit = self.commits[#self.commits]
+    local input = commit.context and commit.context.surface.input
+    local callback = type(input) == "table" and input.pointer or nil
+    if type(callback) ~= "function" then return false end
+    local output = commit.layout.output
+    local x, y = tonumber(pointer.x), tonumber(pointer.y)
+    local event = {
+      phase = safeText(pointer.phase), source = safeText(pointer.source),
+      id = pointer.id, button = tonumber(pointer.button),
+      x = x and ((x - output.x) / output.scaleX) or nil,
+      y = y and ((y - output.y) / output.scaleY) or nil,
+      dx = tonumber(pointer.dx) and tonumber(pointer.dx) / output.scaleX or nil,
+      dy = tonumber(pointer.dy) and tonumber(pointer.dy) / output.scaleY or nil,
+      inside = x ~= nil and y ~= nil and x >= output.x and y >= output.y
+        and x <= output.x + output.width and y <= output.y + output.height,
+    }
+    local ok, handled = pcall(callback, game, commit.state, event,
+      copy(commit.model))
+    if not ok then
+      mod._gen1ModernCompatibility:recordError(commit.context.owner,
+        "surface pointer handler failed: " .. commit.context.id)
+      return false
+    end
+    return handled == true
+  end
+
+  function mod._gen1ModernSurfaceRuntime:draw(game)
+    if not self:hasCommittedSurface() then return false end
+    local commits = self.commits
+    pointerRuntime.generation = pointerRuntime.generation + 1
+    runtime.layoutDiagnostics.generation = runtime.layoutDiagnostics.generation + 1
+    runtime.layoutDiagnostics.layers = {}
+    runtime.layoutDiagnostics.current = nil
+    pointerRegions = {}
+    pointerRuntime.topOrder = #commits
+    local topState = commits[#commits].state
+    if pointerRuntime.topState ~= topState then
+      hoveredPointer = nil
+      for _, capture in pairs(pointerCaptures) do capture.invalid = true end
+    end
+    pointerRuntime.topState = topState
+    love.graphics.push("all")
+    love.graphics.origin()
+    for index, commit in ipairs(commits) do
+      local output = commit.layout.output
+      pointerDrawContext = {
+        kind = "custom_surface", state = commit.state,
+        layerKey = "custom_surface:" .. safeText(commit.context.id),
+        viewport = { width = commit.layout.safe.width,
+          height = commit.layout.safe.height, safe = copy(commit.layout.safe) },
+        baseViewport = { width = commit.layout.safe.width,
+          height = commit.layout.safe.height, safe = copy(commit.layout.safe) },
+        order = index,
+      }
+      runtime.beginLayoutLayer("custom_surface", commit.state,
+        pointerDrawContext.viewport)
+      love.graphics.setScissor(output.x, output.y, output.width, output.height)
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(commit.canvas, output.x, output.y, 0,
+        output.scaleX, output.scaleY)
+      love.graphics.setScissor()
+      runtime.registerPointerRegion(output.x, output.y,
+        output.width, output.height, { role = "panel", interactive = false })
+      for _, region in ipairs(commit.regions or {}) do
+        runtime.registerPointerRegion(
+          output.x + region.x * output.scaleX,
+          output.y + region.y * output.scaleY,
+          region.w * output.scaleX, region.h * output.scaleY, {
+            surfaceAction = region.action,
+            surfacePayload = copy(region.payload),
+            controlKey = "surface:" .. safeText(region.id),
+            activate = true, interactive = true, role = "control",
+          })
+      end
+      for _, bounds in ipairs(commit.bounds or {}) do
+        runtime.recordLayoutRect("surface:" .. safeText(bounds.id), {
+          x = output.x + bounds.x * output.scaleX,
+          y = output.y + bounds.y * output.scaleY,
+          w = bounds.w * output.scaleX,
+          h = bounds.h * output.scaleY,
+        })
+      end
+      pointerDrawContext = nil
+      runtime.layoutDiagnostics.current = nil
+    end
+    if type(runtime.drawDeclarativeModal) == "function" then
+      local top = commits[#commits]
+      runtime.drawDeclarativeModal(game, top.state,
+        { width = top.layout.safe.width, height = top.layout.safe.height,
+          safe = copy(top.layout.safe) },
+        responsiveTheme(runtime.currentTheme({
+          width = top.layout.safe.width, height = top.layout.safe.height,
+          safe = copy(top.layout.safe),
+        }, top.state), {
+          width = top.layout.safe.width, height = top.layout.safe.height,
+          safe = copy(top.layout.safe),
+        }, responsiveThemeCache), "surface")
+    end
+    pointerDrawContext = nil
+    love.graphics.pop()
+    return true
+  end
+
+  function mod._gen1ModernSurfaceRuntime:drawPreview(game, state, context,
+      model, viewport, theme)
+    local commit, reason = self:renderSurface(game, state, context,
+      model, viewport, theme)
+    if not commit then
+      local x, y, w, h = presenterRect(viewport)
+      setColor(theme.colors.surface)
+      love.graphics.rectangle("fill", x, y, w, h, theme.radii.md)
+      love.graphics.setFont(font(fontCache, theme.typography.body))
+      setColor(theme.colors.text)
+      drawFittedText("CUSTOM SURFACE PREVIEW FAILED", x + theme.spacing.lg,
+        y + theme.spacing.lg, w - theme.spacing.lg * 2,
+        love.graphics.getFont())
+      setColor(theme.colors.textMuted)
+      drawFittedText(safeText(reason), x + theme.spacing.lg,
+        y + theme.spacing.xl + textHeight(love.graphics.getFont()),
+        w - theme.spacing.lg * 2, love.graphics.getFont())
+      return false
+    end
+    local output = commit.layout.output
+    love.graphics.setScissor(output.x, output.y, output.width, output.height)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(commit.canvas, output.x, output.y, 0,
+      output.scaleX, output.scaleY)
+    love.graphics.setScissor()
+    for _, bounds in ipairs(commit.bounds or {}) do
+      runtime.recordLayoutRect("surface:" .. safeText(bounds.id), {
+        x = output.x + bounds.x * output.scaleX,
+        y = output.y + bounds.y * output.scaleY,
+        w = bounds.w * output.scaleX,
+        h = bounds.h * output.scaleY,
+      })
+    end
+    return true
+  end
 
   function battleRuntime.nativeSceneRequested(state)
     local configured = safeText(runtime.option("battleUiMode", "auto")):lower()
@@ -3471,9 +5314,9 @@ return function(mod)
   -- continue through BattleState unchanged. AUTO scene/voxel battles keep
   -- every direction source-owned along with the compact HUD presentation.
   runtime.remapBattleMoveGrid = function(game)
-    if runtime.option("battleUiWip", false) ~= true then return end
     local stack = game and game.stack
     local state = stack and type(stack.top) == "function" and stack:top() or nil
+    if not runtime.battlePresenterActive(game, state) then return end
     local phase = state and state.phase
     if phase ~= "moveSelect" and phase ~= "mimicSelect"
         or battleRuntime.nativeSceneRequested(state) then return end
@@ -3506,12 +5349,17 @@ return function(mod)
   -- Modern Bag delegates to live ListMenu rows, Useful Dex exposes its vanilla
   -- entry plus public page model, and Gen 3 Box exposes its complete grid model.
   runtime.customDrawModeled = function(state, kind)
-    if runtime.option("battleUiWip", false) == true
+    if kind == "ui_gallery" or state and state._gen1UiGalleryPreview then
+      return true
+    end
+    if runtime.battlePresenterActiveForState(currentGame, state, kind)
         and state._gen1ModernBattleChildNativeDraw then
       return true
     end
     if kind == "external"
         and mod._gen1ModernCompatibility.active[state] then return true end
+    if kind == "custom_surface"
+        and mod._gen1ModernCompatibility.activeSurfaces[state] then return true end
     if kind == "link" and runtime.isLinkState(state) then return true end
     if kind == "mod_options" and runtime.isOptionRowsScreen(state) then return true end
     if kind == "bag"
@@ -3639,7 +5487,13 @@ return function(mod)
   end
 
   runtime.presenterReady = function(game, state, kind)
-    if kind == "external" then
+    if kind == "custom_surface" then
+      local context = mod._gen1ModernCompatibility.activeSurfaces[state]
+        or mod._gen1ModernCompatibility:surfaceFor(game, state)
+      return context ~= nil
+        and mod._gen1ModernCompatibility:surfaceModelFor(
+          game, state, context) ~= nil
+    elseif kind == "external" then
       local context = mod._gen1ModernCompatibility.active[state]
         or mod._gen1ModernCompatibility:adapterFor(game, state)
       return context and context.screen.canSuppressNative == true
@@ -3687,7 +5541,21 @@ return function(mod)
         break
       end
     end
-    if not targetIndex then return nil end
+    if not targetIndex then
+      -- A few hosts pass a short-lived/proxy child to render_visible while
+      -- the authoritative state remains elsewhere in the stack. Prefer an
+      -- explicit public linkage when available, but only when that linked
+      -- BattleState is actually on this Game's stack. An arbitrary off-stack
+      -- child must not inherit the current top state's battle ownership.
+      for _, candidate in ipairs({ target.battleState, target.battle,
+          target.baseState, target.underlying, target.parentState }) do
+        if candidate and runtime.stackContainsState(game, candidate)
+            and runtime.kindFor(candidate, game) == "battle" then
+          return candidate
+        end
+      end
+      return nil
+    end
     for index = targetIndex - 1, 1, -1 do
       local candidate = states[index]
       if candidate and runtime.kindFor(candidate, game) == "battle" then
@@ -3697,21 +5565,59 @@ return function(mod)
     return nil
   end
 
+  -- This is the single ownership decision used by battle rendering,
+  -- visibility suppression, child-screen decoration, and input remapping.
+  -- Keeping it centralized prevents a 3D battle from looking native in one
+  -- path while a Modern UI cleanup pass still erases part of it elsewhere.
+  runtime.battlePresenterActive = function(game, state)
+    game = runtime.ownerGame(state, game or currentGame)
+    if state and state._gen1UiGalleryPreview then
+      return state.wideLayout == true
+    end
+    if runtime.option("battleUiWip", false) ~= true then return false end
+    if runtime.option("battle3dBypass", true) == true
+        and mod._gen1ModernCompatibility:isNative3dBattle(game, state) then
+      return false
+    end
+    -- The modern 2D composition owns only an explicitly identified WIDE
+    -- source. Unknown, missing, or false layout metadata stays wholly native;
+    -- this guard protects drawing, source scrubbing, child decoration, and
+    -- pointer input through the single ownership decision.
+    return type(runtime.battleUsesWideLayout) == "function"
+      and runtime.battleUsesWideLayout(state, game) == true
+  end
+
+  runtime.battlePresenterActiveForState = function(game, state, kind)
+    game = runtime.ownerGame(state, game or currentGame)
+    if runtime.option("battleUiWip", false) ~= true then return false end
+    if kind == "battle" then
+      return runtime.battlePresenterActive(game, state)
+    end
+    local battle = runtime.battleStateBelow(game, state)
+    if battle then return runtime.battlePresenterActive(game, battle) end
+    return false
+  end
+
   -- The new host hook asks about one state at a time while StateStack is
   -- choosing its visible base. This predicate deliberately does not call
   -- `visibleBase` or `presentationStack`, so it is safe inside that query.
   runtime.canSuppressState = function(game, state)
     if not (game and state and state ~= game.overworld)
+        or not runtime.stateBelongsToGame(game, state)
         or runtime.isTitleState(state)
         or runtime.hasNativeNewGameFlow(game) or state.capture
         or runtime.option("hideOriginalUi", true) == false then
       return false
     end
+    -- A v2 surface commits only after its renderer succeeds in compose.
+    -- Keep every native layer alive until that transaction has completed;
+    -- screen.render_visible runs too early to make that proof.
+    if mod._gen1ModernCompatibility:surfaceInStack(game) then return false end
     -- Battle child screens share source-owned battle canvases and transitions.
-    -- If the WIP battle presenter is disabled, Bag/Party/choice children must
-    -- remain wholly native instead of being suppressed as standalone menus.
-    if runtime.option("battleUiWip", false) ~= true
-        and runtime.battleStateBelow(game, state) then
+    -- If the battle presenter is disabled, including when a voxel owner has
+    -- claimed 3D battle presentation, every child must remain wholly native.
+    local battleBelow = runtime.battleStateBelow(game, state)
+    if battleBelow and not runtime.battlePresenterActive(game, battleBelow) then
       return false
     end
     if type(battleRuntime) == "table"
@@ -3720,7 +5626,8 @@ return function(mod)
       -- The native StatBox is another battle child.  Its values are read from
       -- the source state and presented by the modern battle layer below, so
       -- leave only its semantic update/input ownership with the host.
-      return runtime.option("battleUiWip", false) == true
+      return runtime.battlePresenterActive(game, runtime.battleStateBelow(game, state)
+        or state)
     end
     local kind = runtime.kindFor(state, game)
     if kind == "battle" then return false end
@@ -3777,15 +5684,19 @@ return function(mod)
   end
 
   runtime.syncStateVisibility = function(game, state)
-    if not (game and state and state ~= game.overworld) then return end
+    if not (game and state and state ~= game.overworld)
+        or not runtime.stateBelongsToGame(game, state) then
+      return
+    end
     local kind = runtime.kindFor(state, game)
     local revealWorld = runtime.worldVisibleLayout(nil)
       and runtime.option("hideOriginalUi", true) ~= false
-    local disabledBattleChild = runtime.option("battleUiWip", false) ~= true
-      and runtime.battleStateBelow(game, state) ~= nil
+    local battleBelow = runtime.battleStateBelow(game, state)
+    local disabledBattleChild = battleBelow ~= nil
+      and not runtime.battlePresenterActive(game, battleBelow)
     local nativeNewGame = runtime.hasNativeNewGameFlow(game)
     local eligible = revealWorld and kind and runtime.presenterEnabled(kind, state)
-      and kind ~= "battle" and not state.capture
+      and kind ~= "battle" and kind ~= "ui_gallery" and not state.capture
       and not disabledBattleChild and not nativeNewGame
       and not runtime.hasUnknownDrawOverride(state, kind)
       and runtime.presenterReady(game, state, kind)
@@ -3909,12 +5820,12 @@ return function(mod)
     end, -10)
   end
 
-  -- `input.step` runs before the active state's update.  Screens pushed by a
-  -- button press therefore used to remain opaque until the *next* fixed step,
-  -- which is exactly the frame where Summary/DexEntry could be composited
-  -- without their world pass.  The screen lifecycle event fires immediately
-  -- after StateStack:push and is safe to use when the host exposes events;
-  -- the per-step sweep remains the compatibility fallback for older clients.
+  -- `input.step` runs before the active state's update.  The per-step sweep
+  -- is the authoritative visibility handoff: it runs after a push made by
+  -- the overworld and before the following render.  The lifecycle event is
+  -- still useful for title palette/battle decoration, but deliberately does
+  -- not mutate opacity because older hosts can emit it before StateStack has
+  -- settled the new state into its visible list.
   if mod.events and type(mod.events.on) == "function" then
     -- Refresh public adapter exports after a mod reload or enable/disable
     -- change. `discover` also removes adapters whose source mod vanished.
@@ -3928,20 +5839,8 @@ return function(mod)
       if runtime.isOakSpeechState(state) then
         runtime.markNativeNewGame(game)
       end
-      if runtime.option("battleUiWip", false) == true then
-        if type(battleRuntime.decorateClassicScene) == "function" then
-          battleRuntime.decorateClassicScene(game, state)
-        end
-        if type(battleRuntime.decorateWorldSurface) == "function"
-            and runtime.kindFor(state, game) == "battle" then
-          battleRuntime.decorateWideScenePlacement(state)
-          battleRuntime.decorateWorldSurface(state)
-        end
-      elseif type(battleRuntime.restoreDecoratedState) == "function" then
-        battleRuntime.restoreDecoratedState(state)
-      end
+      battleRuntime.ensureDecoratedState(game, state)
       runtime.syncTitleMenuPalette(game, state)
-      runtime.syncStateVisibility(game, state)
     end, 90)
     mod.events:on("screen.popped", function(payload)
       local state = payload and payload.state
@@ -3977,11 +5876,11 @@ return function(mod)
     if runtime.hasNativeNewGameFlow(game) then
       return {}, false
     end
-    if runtime.option("battleUiWip", false) ~= true
-        and runtime.battleStateBelow(game, topState) then
+    local battleBelowTop = runtime.battleStateBelow(game, topState)
+    if battleBelowTop and not runtime.battlePresenterActive(game, battleBelowTop) then
       return {}, false
     end
-    local levelUpTop = runtime.option("battleUiWip", false) == true
+    local levelUpTop = runtime.battlePresenterActiveForState(game, topState)
       and type(battleRuntime) == "table"
       and type(battleRuntime.isLevelUpState) == "function"
       and battleRuntime.isLevelUpState(game, topState) or false
@@ -4030,6 +5929,15 @@ return function(mod)
             -- covers only the legacy HUD/menu rectangles after composition.
             preserveUiCanvas = true
           end
+          if kind == "custom_surface" then
+            local surfaceContext = mod._gen1ModernCompatibility
+              .activeSurfaces[visible]
+              or mod._gen1ModernCompatibility:surfaceFor(game, visible)
+            if surfaceContext
+                and surfaceContext.surface.native.policy == "preserve" then
+              preserveUiCanvas = true
+            end
+          end
           -- A registered OptionRows screen is pushed above the manager state
           -- that opened it. The custom screen is the complete visible surface;
           -- retaining the manager beneath it would duplicate panels in floating
@@ -4055,9 +5963,10 @@ return function(mod)
       for index = base - 1, 1, -1 do
         local hidden = states[index]
         if hidden and runtime.kindFor(hidden, game) == "battle"
+            and runtime.battlePresenterActive(game, hidden)
             and (battleRuntime.presentationMode(hidden) == "full"
               or levelUpTop)
-            and runtime.presenterEnabled("battle")
+            and runtime.presenterEnabled("battle", hidden)
             and runtime.presenterReady(game, hidden, "battle") then
           local alreadyVisible = false
           for _, layer in ipairs(layers) do
@@ -4085,6 +5994,7 @@ return function(mod)
         and runtime.option("menuUi", true) ~= false) then
       return false
     end
+    if mod._gen1ModernCompatibility:surfaceInStack(game) then return false end
     local layers, complete = runtime.presentationStack(game)
     if not complete then return false end
     for _, layer in ipairs(layers) do
@@ -4107,7 +6017,8 @@ return function(mod)
       runtime.syncTitleMenuPalette(game, self)
       if type(self.titleUiBox) == "table"
           and runtime.option("hideOriginalUi", true) ~= false
-          and runtime.option("menuUi", true) ~= false then
+          and runtime.option("menuUi", true) ~= false
+          and not mod._gen1ModernCompatibility:surfaceInStack(game) then
         local stack = game and game.stack and game.stack.states
         local titleOnStack = false
         for _, visible in ipairs(type(stack) == "table" and stack or {}) do
@@ -4143,6 +6054,17 @@ return function(mod)
   local spriteFor
   local spriteResolver
 
+  runtime.externalModelFor = function(game, state)
+    if state and state._gen1UiGalleryPreview then
+      return state._gen1UiGalleryExternalModel
+    end
+    local context = mod._gen1ModernCompatibility.active[state]
+      or mod._gen1ModernCompatibility:adapterFor(game, state)
+    if not context then return nil end
+    return type(context.model) == "table" and context.model
+      or mod._gen1ModernCompatibility:modelFor(game, state, context)
+  end
+
   runtime.rowsFor = function(game, state, kind)
     local rows = {}
     local selected = state.index or 1
@@ -4151,9 +6073,7 @@ return function(mod)
     local footer
 
     if kind == "external" then
-      local context = mod._gen1ModernCompatibility.active[state]
-        or mod._gen1ModernCompatibility:adapterFor(game, state)
-      local model = mod._gen1ModernCompatibility:modelFor(game, state, context)
+      local model = runtime.externalModelFor(game, state)
       if not model then return nil end
       title = safeText(model.title or "")
       selected, scroll = model.index, model.scroll
@@ -4171,6 +6091,10 @@ return function(mod)
           assetCatalog = model.assets,
           source = row,
         }
+      end
+      if not state._gen1UiGalleryPreview then
+        rows = mod._gen1ModernCompatibility:augmentRows(
+          game, state, kind, rows)
       end
       if #rows == 0 then rows[1] = { label = "Nothing here.", enabled = false } end
       footer = model.footer
@@ -4295,6 +6219,9 @@ return function(mod)
       local ok, message = pcall(function() return state:bottomMessage() end)
       if ok then footer = message end
     end
+    if not state._gen1UiGalleryPreview then
+      rows = mod._gen1ModernCompatibility:augmentRows(game, state, kind, rows)
+    end
     return rows, selected, scroll, title, footer
   end
 
@@ -4381,6 +6308,138 @@ return function(mod)
     return rows, selected, scroll, title
   end
 
+  runtime.frameOutset = function(theme)
+    local frame = theme.frame or {}
+    local style = frame.style or "pixel"
+    if style == "none" then return 0, 0 end
+    if style == "pixel" and frame.asset then
+      local scale = clamp(math.floor(tonumber(frame.pixelScale) or 1), 1, 4)
+      local inset = math.max(0, tonumber(frame.pixelInset)
+        or tonumber(frame.pixelBorder) or 7)
+      local dpiX = math.max(1, tonumber(frame.pixelDpiX) or 1)
+      local dpiY = math.max(1, tonumber(frame.pixelDpiY) or 1)
+      -- One physical-pixel guard absorbs the final whole-block size snap in
+      -- drawPanelFrame, so a centred/clamped panel can never round its frame
+      -- ornament outside the monitor edge.
+      return inset * scale / dpiX + 1 / dpiX,
+        inset * scale / dpiY + 1 / dpiY
+    end
+    local margin = math.max(0, tonumber(frame.margin) or 0)
+    local inset = math.max(0, tonumber(frame.inset) or 0)
+    local shadow = math.max(0, tonumber(frame.shadow) or 0)
+    local width = math.max(1, tonumber(frame.width) or
+      runtime.themeMetric(theme, "border", 3))
+    local outside = math.max(0, margin - inset) + width * 0.5
+    return outside + shadow, outside + shadow
+  end
+
+  runtime.frameVisibleRect = function(theme, x, y, w, h)
+    local outsetX, outsetY = runtime.frameOutset(theme)
+    return {
+      x = x - outsetX, y = y - outsetY,
+      w = w + outsetX * 2, h = h + outsetY * 2,
+    }
+  end
+
+  runtime.layoutPresetName = function(kind, rows)
+    if (kind == "menu" or kind == "box_root") and #(rows or {}) > 7 then
+      return "M"
+    end
+    if kind == "choice" and #(rows or {}) > 4 then return "S" end
+    return RESPONSIVE_KIND_PRESET[kind] or "M"
+  end
+
+  runtime.stableEnvelope = function(viewport, theme, kind, state, rows,
+      forcedPreset)
+    local safeX, safeY, safeW, safeH = presenterRect(viewport)
+    state = state or (pointerDrawContext and pointerDrawContext.state)
+    local existing = type(state) == "table"
+      and runtime.layoutEnvelopeCache[state] or nil
+    local presetName = forcedPreset
+      or (type(state) == "table" and state._gen1UiGalleryPreset)
+      or (existing and existing.preset)
+      or runtime.layoutPresetName(kind, rows)
+    local preset = RESPONSIVE_LAYOUT_PRESETS[presetName]
+      or RESPONSIVE_LAYOUT_PRESETS.M
+    local uiScale = math.max(0.01,
+      tonumber(theme.scale and theme.scale.ui) or 1)
+    local outsetX, outsetY = runtime.frameOutset(theme)
+    local cacheKey = table.concat({
+      presetName, viewportClass(viewport),
+      ("%.3f"):format(safeX), ("%.3f"):format(safeY),
+      ("%.3f"):format(safeW), ("%.3f"):format(safeH),
+      ("%.3f"):format(uiScale),
+      tostring(theme.scale and theme.scale.font or 1),
+      tostring(theme.scale and theme.scale.pixelFontStep or "system"),
+      tostring(theme.frame and theme.frame.style or "pixel"),
+      tostring(theme.frame and theme.frame.asset or ""),
+      tostring(theme.frame and theme.frame.pixelScale or 1),
+      tostring(runtime.option("density", "auto")),
+    }, ":")
+    if existing and existing.key == cacheKey then return existing.envelope end
+
+    local outerW = math.min(safeW, preset.width * uiScale)
+    local outerH = math.min(safeH, preset.height * uiScale)
+    outerW = math.max(math.min(safeW, outsetX * 2 + 1), outerW)
+    outerH = math.max(math.min(safeH, outsetY * 2 + 1), outerH)
+    local outerX = safeX + (safeW - outerW) * 0.5
+    local outerY = safeY + (safeH - outerH) * 0.5
+    local envelope = {
+      preset = presetName,
+      outerX = outerX, outerY = outerY, outerW = outerW, outerH = outerH,
+      x = outerX + outsetX, y = outerY + outsetY,
+      w = math.max(1, outerW - outsetX * 2),
+      h = math.max(1, outerH - outsetY * 2),
+      outsetX = outsetX, outsetY = outsetY,
+      safeX = safeX, safeY = safeY, safeW = safeW, safeH = safeH,
+      viewportClass = viewportClass(viewport),
+    }
+    if type(state) == "table" then
+      runtime.layoutEnvelopeCache[state] = {
+        preset = presetName, key = cacheKey, envelope = envelope,
+      }
+    end
+    return envelope
+  end
+
+  runtime.rectInside = function(child, parent, epsilon)
+    epsilon = epsilon or 0.51
+    return child.x >= parent.x - epsilon and child.y >= parent.y - epsilon
+      and child.x + child.w <= parent.x + parent.w + epsilon
+      and child.y + child.h <= parent.y + parent.h + epsilon
+  end
+
+  runtime.beginLayoutLayer = function(kind, state, viewport)
+    local x, y, w, h = presenterRect(viewport)
+    local layer = {
+      kind = kind, state = state,
+      safe = { x = x, y = y, w = w, h = h },
+      rects = {}, overflows = {},
+    }
+    runtime.layoutDiagnostics.current = layer
+    runtime.layoutDiagnostics.layers[#runtime.layoutDiagnostics.layers + 1] = layer
+    return layer
+  end
+
+  runtime.recordLayoutRect = function(role, rect, parent, policy)
+    local layer = runtime.layoutDiagnostics.current
+    if not layer or type(rect) ~= "table" then return rect end
+    local recorded = {
+      role = role, x = tonumber(rect.x) or 0, y = tonumber(rect.y) or 0,
+      w = math.max(0, tonumber(rect.w or rect.width) or 0),
+      h = math.max(0, tonumber(rect.h or rect.height) or 0),
+      policy = policy,
+    }
+    layer.rects[#layer.rects + 1] = recorded
+    parent = parent or layer.container or layer.safe
+    if policy ~= "clip" and not runtime.rectInside(recorded, parent) then
+      layer.overflows[#layer.overflows + 1] = {
+        role = role, rect = recorded, parent = parent,
+      }
+    end
+    return rect
+  end
+
   runtime.contentWidthFor = function(theme, rows, title, footer, minWidth, maxWidth)
     -- Detect translated labels before constructing the fonts used for the
     -- measurement pass; otherwise the first width calculation could still
@@ -4425,6 +6484,72 @@ return function(mod)
     return math.max(theme.density.rowHeight * runtime.densityFactor(), textMinimum)
   end
 
+  -- Shared title chrome for rich presenters. drawHeader places the title at
+  -- spacing.md, so the first content row must begin after that top inset,
+  -- the measured font cell, and a real bottom gap. The older
+  -- `title height + spacing.lg` shortcut happened to work with the system
+  -- font at 1X, but let 2X-4X raster text and the first selected row collide.
+  runtime.titleHeaderHeight = function(theme, titleFont)
+    local spacing = theme.spacing or {}
+    titleFont = titleFont or font(fontCache, theme.typography.title)
+    return (spacing.md or 13) + textHeight(titleFont) + (spacing.sm or 9)
+  end
+
+  -- Font scale is a preference; the stable preset envelope remains the hard
+  -- boundary.  A 4X raster font cannot physically fit every presenter at
+  -- 100% UI scale, so choose the largest complete Plain Pixel step supported
+  -- by the panel that will actually be drawn.  This happens per presenter
+  -- (rather than once for the monitor) because an L party screen and an XS
+  -- choice box have very different content budgets on the same display.
+  runtime.constrainPresenterTheme = function(theme, kind, state, viewport, game)
+    if kind == "battle" or kind == "custom_surface" or kind == "ui_gallery"
+        or not (theme.scale and theme.scale.pixelFontStep) then
+      return theme
+    end
+    local presetName = type(state) == "table" and state._gen1UiGalleryPreset
+      or RESPONSIVE_KIND_PRESET[kind] or "M"
+    if kind == "external" then
+      local model = runtime.externalModelFor(game, state)
+      local requested = safeText(model and model.layoutOptions
+        and model.layoutOptions.preset):upper()
+      if RESPONSIVE_LAYOUT_PRESETS[requested] then presetName = requested end
+    end
+    local preset = RESPONSIVE_LAYOUT_PRESETS[presetName]
+      or RESPONSIVE_LAYOUT_PRESETS.M
+    local _, _, safeW, safeH = presenterRect(viewport)
+    local uiScale = math.max(0.01, tonumber(theme.scale.ui) or 1)
+    local outsetX, outsetY = runtime.frameOutset(theme)
+    local panelW = math.max(1,
+      math.min(safeW, preset.width * uiScale) - outsetX * 2)
+    local panelH = math.max(1,
+      math.min(safeH, preset.height * uiScale) - outsetY * 2)
+    local maximumStep = clamp(math.min(
+      math.floor(panelW / 250), math.floor(panelH / 200)), 1, 4)
+    local requestedStep = clamp(math.floor(theme.scale.pixelFontStep), 1, 4)
+    local step = math.min(requestedStep, maximumStep)
+    if step >= requestedStep then return theme end
+
+    local cacheKey = table.concat({ presetName, kind or "screen", step,
+      ("%.2f"):format(panelW), ("%.2f"):format(panelH) }, ":")
+    local bucket = runtime.presenterThemeCache[theme]
+    if bucket and bucket[cacheKey] then return bucket[cacheKey] end
+    local out = copy(theme)
+    out.typography = copy(theme.typography or {})
+    out.scale = copy(theme.scale or {})
+    out.typography.caption = PLAIN_PIXEL_RASTER_STEP * step
+    out.typography.body = PLAIN_PIXEL_RASTER_STEP * step
+    out.typography.title = PLAIN_PIXEL_RASTER_STEP * step * 2
+    out.scale.pixelFontStep = step
+    out.scale.effectivePixelFontStep = step
+    out.scale.font = step
+    out.scale.pixelFontConstrained = true
+    out.scale.presenterContentConstrained = true
+    bucket = bucket or {}
+    runtime.presenterThemeCache[theme] = bucket
+    bucket[cacheKey] = out
+    return out
+  end
+
   runtime.themeMetric = function(theme, name, fallback)
     local metrics = theme.metrics or {}
     return metrics[name] or fallback
@@ -4456,122 +6581,137 @@ return function(mod)
     return base * runtime.readabilityScale(theme)
   end
 
-  runtime.layoutFor = function(viewport, theme, kind, rows, title, footerText)
+  runtime.measureRows = function(theme, panelWidth, rows)
+    local spacing = theme.spacing or {}
+    local body = font(fontCache, theme.typography.body)
+    local caption = font(fontCache, theme.typography.caption)
+    local innerWidth = math.max(1, panelWidth - (spacing.lg or 18) * 2)
+    local baseHeight = math.max(textHeight(body) + (spacing.sm or 9) * 1.5,
+      (theme.density.rowHeight or 54) * runtime.densityFactor() * 0.78)
+    local metrics = {}
+    for index, row in ipairs(rows or {}) do
+      row = type(row) == "table" and row or { label = row }
+      local rowFont = row.header and caption or body
+      local iconReserve = row.image and math.min(46, innerWidth * 0.22) or 0
+      local available = math.max(1, innerWidth - iconReserve
+        - (iconReserve > 0 and (spacing.sm or 9) or 0))
+      local value = safeText(row.value)
+      local status = safeText(row.status)
+      local valueWidth = value ~= "" and math.min(rowFont:getWidth(value),
+        available * 0.46) or 0
+      local statusWidth = status ~= "" and math.min(rowFont:getWidth(status),
+        available * 0.24) or 0
+      local columnGap = (valueWidth > 0 and (spacing.md or 13) or 0)
+        + (statusWidth > 0 and (spacing.md or 13) or 0)
+      local labelWidth = math.max(20,
+        available - valueWidth - statusWidth - columnGap)
+      local labelBlock = measureTextBlock(row.label, labelWidth, rowFont,
+        textHeight(rowFont) + (spacing.xs or 5))
+      local valueBlock = value ~= "" and measureTextBlock(value,
+        math.max(1, valueWidth), rowFont,
+        textHeight(rowFont) + (spacing.xs or 5)) or nil
+      local blockHeight = math.max(labelBlock.height,
+        valueBlock and valueBlock.height or 0, textHeight(rowFont))
+      local minimum = row.header
+        and textHeight(caption) + (spacing.sm or 9) * 1.25
+        or baseHeight
+      metrics[index] = {
+        h = math.max(minimum, blockHeight + (spacing.sm or 9) * 2),
+        label = labelBlock, value = valueBlock,
+      }
+    end
+    return metrics
+  end
+
+  runtime.visibleRowCount = function(layout, scroll)
+    local bodyHeight = math.max(1, layout.h - layout.header - layout.footer)
+    local used, count = 0, 0
+    for index = math.max(0, scroll or 0) + 1, #(layout.rowMetrics or {}) do
+      local height = math.max(1, layout.rowMetrics[index].h or layout.rowHeight)
+      if count > 0 and used + height > bodyHeight + 0.01 then break end
+      used = used + math.min(height, bodyHeight)
+      count = count + 1
+      if used >= bodyHeight - 0.01 then break end
+    end
+    return math.max(1, count)
+  end
+
+  runtime.scrollForSelection = function(layout, scroll, selected, rowCount)
+    rowCount = math.max(1, tonumber(rowCount) or 1)
+    selected = clamp(tonumber(selected) or 1, 1, rowCount)
+    scroll = clamp(tonumber(scroll) or 0, 0, math.max(0, rowCount - 1))
+    if selected <= scroll then scroll = selected - 1 end
+    local guard = rowCount + 1
+    while selected > scroll + runtime.visibleRowCount(layout, scroll)
+        and scroll < rowCount - 1 and guard > 0 do
+      scroll = scroll + 1
+      guard = guard - 1
+    end
+    layout.visible = runtime.visibleRowCount(layout, scroll)
+    return scroll
+  end
+
+  runtime.layoutFor = function(viewport, theme, kind, rows, title, footerText,
+      forcedPreset)
     rows = rows or {}
     local rowCount = #rows
-    local x, y, w, h = presenterRect(viewport)
+    local envelope = runtime.stableEnvelope(viewport, theme, kind, nil, rows,
+      forcedPreset)
     local spacing = theme.spacing or {}
-    local scale = runtime.densityFactor()
-    local landscape = w > h * 1.2
-    local desktopFloat = runtime.worldVisibleLayout(viewport)
-    -- Touch controls can consume a large fraction of a phone's short
-    -- landscape height. Use a denser outer rhythm there, then fit rows to the
-    -- available presenter height before falling back to scrolling.
-    local gutter = (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale
-    local titleHeight = textHeight(font(fontCache, theme.typography.title))
-    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
-    local header = safeText(title) ~= "" and (titleHeight +
-      (landscape and (spacing.md or 13) or (spacing.lg or 18)) * scale)
-      or (spacing.md or 13) * scale
-    local footer = (landscape and (spacing.sm or 9) or (spacing.lg or 18)) * scale
-      + captionHeight
-    local rowHeight = runtime.minimumRowHeight(theme)
-    local panelMax = runtime.panelMaxWidth(theme, 780)
-    if landscape then
-      -- Keep content-sized panels compact, but leave enough room for long
-      -- localized labels and option values before truncating them.
-      panelMax = math.min(panelMax, w * 0.72)
+    local titleFont = font(fontCache, theme.typography.title)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local titleBlock = safeText(title) ~= "" and measureTextBlock(title,
+      math.max(1, envelope.w - (spacing.lg or 18) * 2), titleFont) or nil
+    local footerBlock = safeText(footerText) ~= "" and measureTextBlock(
+      footerText, math.max(1, envelope.w - (spacing.lg or 18) * 2),
+      captionFont) or nil
+    local header = titleBlock and (titleBlock.height + (spacing.md or 13) * 2)
+      or (spacing.md or 13)
+    local footer = footerBlock and (footerBlock.height + (spacing.sm or 9) * 2)
+      or (textHeight(captionFont) + (spacing.sm or 9) * 2)
+    local maximumChrome = math.max(0, envelope.h - 1)
+    if header + footer > maximumChrome then
+      local ratio = maximumChrome / math.max(1, header + footer)
+      header = math.max(1, header * ratio)
+      footer = math.max(0, maximumChrome - header)
     end
-    if landscape and rowCount > 0 then
-      local fitHeight = (h - gutter * 2 - header - footer) / rowCount
-      -- Keep text comfortably legible, but do not reserve desktop-sized rows
-      -- when the touch-safe landscape viewport is short.
-      local minLandscapeRow = textHeight(font(fontCache, theme.typography.body))
-        + (spacing.sm or 9) * 1.6
-      rowHeight = math.min(rowHeight, math.max(minLandscapeRow, fitHeight))
-    end
-    local minPanelW = landscape and 220 or 250
-    local measuredW = runtime.contentWidthFor(theme, rows, title, footerText,
-      minPanelW, panelMax)
-    local panelW = math.min(w - gutter * 2, measuredW)
-    local bodyFont = font(fontCache, theme.typography.body)
-    local rowTextWidth = math.max(1, panelW - spacing.lg * 2)
-    local wrapRows = false
-    for _, row in ipairs(rows) do
-      if type(row) == "table" and not row.header and not row.category then
-        local labelWidth = bodyFont:getWidth(safeText(row.label))
-        local valueWidth = bodyFont:getWidth(safeText(row.value))
-        local valueColumn = valueWidth > 0 and math.min(valueWidth,
-          math.max(1, rowTextWidth * 0.52)) or 0
-        if labelWidth + valueColumn + (valueColumn > 0 and spacing.md or 0)
-            > rowTextWidth then
-          wrapRows = true
-          break
-        end
-      end
-    end
-    if wrapRows then
-      rowHeight = math.max(rowHeight,
-        textHeight(bodyFont) * 2 + spacing.sm * 2)
-    end
+
     local navigationMenu = kind == "menu" or kind == "box_root"
-    -- The title screen is a composed artwork canvas rather than ordinary
-    -- in-game navigation. Keep its modern menu centered in both axes so it
-    -- does not inherit the wide-window side-dock used by the overworld menu.
     local titleMenu = kind == "menu" and pointerDrawContext
       and pointerDrawContext.state
       and type(pointerDrawContext.state.titleUiBox) == "table"
-    local sidePanel = desktopFloat and landscape and navigationMenu
+    local sidePanel = runtime.worldVisibleLayout(viewport)
+      and envelope.safeW > envelope.safeH * 1.2 and navigationMenu
       and rowCount > 0 and not titleMenu
-    if navigationMenu or kind == "choice" or kind == "quantity" then
-      -- Short action/confirmation menus should read as focused cards in
-      -- landscape, not as banners stretched across the whole phone. Longer
-      -- list/options screens keep the wider panel calculated from the theme
-      -- max.
-      panelW = math.min(panelW, (w > h * 1.2) and w * 0.70
-        or runtime.scaledPanelWidth(theme, 560))
-    end
+    local panelX = envelope.x
     if sidePanel then
-      -- The ordinary in-game menu is navigational chrome, not a modal data
-      -- screen. On wide windows keep it narrow and dock it to the edge so the
-      -- world remains visible instead of dimming behind a centered card.
-      local preferredSideW = clamp(w * 0.30, 220, 460)
-      panelW = math.min(w - gutter * 2, math.max(panelW, preferredSideW))
-      gutter = spacing.lg or 18
-      header = safeText(title) ~= "" and (titleHeight
-        + (spacing.md or 13)) or (spacing.md or 13)
-      footer = (spacing.sm or 9) + captionHeight
-      rowHeight = math.min(rowHeight, math.max(
-        textHeight(font(fontCache, theme.typography.body)) + (spacing.sm or 9) * 1.6,
-        (h - gutter * 2 - header - footer) / math.max(1, rowCount)))
+      local edgeX = envelope.safeX + envelope.safeW
+        - envelope.outsetX - envelope.w
+      local centeredX = envelope.safeX + (envelope.safeW - envelope.w) * 0.5
+      local inset = clamp(tonumber(runtime.option("startMenuInset", 0)) or 0,
+        0, 50) / 50
+      panelX = edgeX + (centeredX - edgeX) * inset
     end
-    panelW = math.max(1, panelW)
-    local visible = math.max(1, math.floor((h - gutter * 2 - header - footer) / rowHeight))
-    visible = math.min(visible, math.max(1, rowCount))
-    local contentH = header + footer + visible * rowHeight
-    local panelH = math.min(h - gutter * 2, contentH)
-    panelH = math.max(1, panelH)
-    local sidePanelInset = clamp(tonumber(runtime.option("startMenuInset", 0)) or 0,
-      0, 50) / 50
-    local sidePanelX = x + w - panelW - gutter
-    if sidePanel then
-      -- At 0% retain the established edge dock. At 50% use the available
-      -- horizontal travel to place the side menu at the viewport center;
-      -- intermediate 10% steps are useful on ultrawide displays without
-      -- changing the layout contract for ordinary windows.
-      local centerTravel = math.max(0, (w - panelW) / 2 - gutter)
-      sidePanelX = sidePanelX - centerTravel * sidePanelInset
-    end
-    return {
-      x = sidePanel and sidePanelX or x + (w - panelW) / 2,
-      y = y + (h - panelH) / 2,
-      w = panelW, h = panelH, rowHeight = rowHeight,
-      header = header, footer = footer, visible = visible,
-      wrapRows = wrapRows,
-      safeX = x, safeY = y, safeW = w, safeH = h,
+    local layout = {
+      preset = envelope.preset,
+      x = panelX, y = envelope.y, w = envelope.w, h = envelope.h,
+      outerX = panelX - envelope.outsetX,
+      outerY = envelope.outerY, outerW = envelope.outerW,
+      outerH = envelope.outerH,
+      header = header, footer = footer,
+      rowHeight = runtime.minimumRowHeight(theme),
+      safeX = envelope.safeX, safeY = envelope.safeY,
+      safeW = envelope.safeW, safeH = envelope.safeH,
       radius = theme.radii and theme.radii.md or 16,
-      sidePanel = sidePanel,
+      sidePanel = sidePanel, wrapRows = true,
     }
+    layout.body = {
+      x = layout.x, y = layout.y + layout.header,
+      w = layout.w, h = math.max(1, layout.h - layout.header - layout.footer),
+    }
+    layout.rowMetrics = runtime.measureRows(theme, layout.w, rows)
+    layout.visible = runtime.visibleRowCount(layout, 0)
+    return layout
   end
 
   runtime.drawPanelFrame = function(theme, x, y, w, h, radius, fillColor)
@@ -4586,6 +6726,9 @@ return function(mod)
     runtime.registerPointerRegion(x, y, w, h, {
       role = "panel", dragHandle = true, action = panelAction,
     })
+    runtime.recordLayoutRect("panel", { x = x, y = y, w = w, h = h })
+    runtime.recordLayoutRect("frame", runtime.frameVisibleRect(
+      theme, x, y, w, h))
     local frame = theme.frame or {}
     local style = frame.style or "pixel"
     if style == "none" then return end
@@ -4783,6 +6926,12 @@ return function(mod)
         layout.radius, fillColor)
     end
     if safeText(title) == "" then return end
+    local measuredHeader = layout.header
+      or runtime.titleHeaderHeight(theme)
+    runtime.recordLayoutRect("header", {
+      x = layout.x, y = layout.y, w = layout.w,
+      h = math.min(measuredHeader, layout.h),
+    }, { x = layout.x, y = layout.y, w = layout.w, h = layout.h })
     local colors = theme.colors
     runtime.drawPanelAccent(theme, layout.x, layout.y, layout.w, layout.radius)
     love.graphics.setFont(font(fontCache, theme.typography.title))
@@ -4794,6 +6943,34 @@ return function(mod)
 
   runtime.drawRows = function(theme, layout, rows, selected, scroll, game)
     local colors = theme.colors
+    local diagnosticsBody = layout.body or {
+      x = layout.x, y = layout.y + (layout.header or 0),
+      w = layout.w, h = math.max(1, layout.h
+        - (layout.header or 0) - (layout.footer or 0)),
+    }
+    runtime.recordLayoutRect("rows", {
+      x = diagnosticsBody.x, y = diagnosticsBody.y,
+      w = diagnosticsBody.w, h = diagnosticsBody.h,
+    }, { x = layout.x, y = layout.y, w = layout.w, h = layout.h })
+    if layout.rowMetrics then
+      layout.visible = runtime.visibleRowCount(layout, scroll)
+    end
+    local function rowFill(row, rowSelected, fallback, x, y, w, h)
+      local value
+      if rowSelected then
+        value = row and row.selectedBackground
+          or fallback
+      else
+        value = row and (row.backgroundColor or row.background) or fallback
+      end
+      if type(value) == "string" then value = colors[value] end
+      if type(value) ~= "table" then
+        return false
+      end
+      setColor(value)
+      love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm or 8)
+      return true
+    end
     local pointerState = pointerDrawContext and pointerDrawContext.state
     local pointerScrollable = pointerState and type(pointerState.scroll) == "number"
       and layout.visible < #rows
@@ -4824,9 +7001,15 @@ return function(mod)
           adapterAction = pointerDrawContext.kind == "external" and "select" or nil,
           adapterHover = pointerDrawContext.kind == "external" and "hover" or nil,
         })
-        setColor(rowSelected and colors.selected or colors.surfaceRaised)
-        love.graphics.rectangle("fill", rx, ry, width, layout.rowHeight - 4,
-          theme.radii.sm or 8)
+        rowFill(row, rowSelected, rowSelected and (colors.selected
+          or colors.surfaceRaised) or nil,
+          rx, ry, width, layout.rowHeight - 4)
+        if not rowSelected and not rowFill(row, false, nil, rx, ry, width,
+            layout.rowHeight - 4) then
+          setColor(colors.surfaceRaised)
+          love.graphics.rectangle("fill", rx, ry, width, layout.rowHeight - 4,
+            theme.radii.sm or 8)
+        end
         setColor(rowSelected and colors.text or colors.textMuted)
         love.graphics.setFont(bodyFont)
         local label = truncate(safeText(row.label), width)
@@ -4835,15 +7018,39 @@ return function(mod)
       end
       return
     end
+    local bodyClip = layout.body or {
+      x = layout.x, y = layout.y + layout.header, w = layout.w,
+      h = math.max(1, layout.h - layout.header - layout.footer),
+    }
+    runtime.recordLayoutRect("body", bodyClip,
+      { x = layout.x, y = layout.y, w = layout.w, h = layout.h })
+    love.graphics.push("all")
+    local clipX, clipY, clipW, clipH = bodyClip.x, bodyClip.y,
+      bodyClip.w, bodyClip.h
+    if type(love.graphics.getScissor) == "function" then
+      local sx, sy, sw, sh = love.graphics.getScissor()
+      if sx then
+        local right = math.min(clipX + clipW, sx + sw)
+        local bottom = math.min(clipY + clipH, sy + sh)
+        clipX, clipY = math.max(clipX, sx), math.max(clipY, sy)
+        clipW, clipH = math.max(0, right - clipX),
+          math.max(0, bottom - clipY)
+      end
+    end
+    love.graphics.setScissor(clipX, clipY, clipW, clipH)
     love.graphics.setFont(font(fontCache, theme.typography.body))
+    local ry = layout.y + layout.header
     for slot = 1, layout.visible do
       local index = scroll + slot
       local row = rows[index]
       if not row then break end
-      local ry = layout.y + layout.header + (slot - 1) * layout.rowHeight
+      local measured = layout.rowMetrics and layout.rowMetrics[index]
+      local rowHeight = measured and measured.h or layout.rowHeight
+      rowHeight = math.max(1, math.min(rowHeight,
+        bodyClip.y + bodyClip.h - ry))
       local rowSelected = index == selected and row.enabled ~= false
         runtime.registerPointerRegion(layout.x + theme.spacing.sm, ry,
-        layout.w - theme.spacing.sm * 2, layout.rowHeight - 4, {
+        layout.w - theme.spacing.sm * 2, math.max(1, rowHeight - 4), {
           rowIndex = index,
           interactive = not row.header and row.enabled ~= false,
           dragHandle = false,
@@ -4853,17 +7060,16 @@ return function(mod)
           scrollBias = pointerScrollBias,
           visibleCount = layout.visible,
           rowCount = #rows,
-          rowHeight = layout.rowHeight,
+          rowHeight = rowHeight,
           selectableIndices = selectableIndices,
           adapterIndex = pointerDrawContext.kind == "external" and index or nil,
           adapterAction = pointerDrawContext.kind == "external" and "select" or nil,
           adapterHover = pointerDrawContext.kind == "external" and "hover" or nil,
         })
       if row.category then
-        setColor(rowSelected and colors.selected or colors.surfaceRaised)
-        love.graphics.rectangle("fill", layout.x + theme.spacing.sm, ry,
-          layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
-          theme.radii.sm or 8)
+        rowFill(row, rowSelected, rowSelected and colors.selected
+          or colors.surfaceRaised, layout.x + theme.spacing.sm, ry,
+          layout.w - theme.spacing.sm * 2, math.max(1, rowHeight - 4))
         setColor(rowSelected and colors.text or colors.accent)
         local categoryFont = font(fontCache, theme.typography.body)
         local valueFont = font(fontCache, theme.typography.caption)
@@ -4874,27 +7080,28 @@ return function(mod)
         love.graphics.setFont(categoryFont)
         drawText(truncate(row.label, labelWidth, categoryFont),
           layout.x + theme.spacing.lg,
-          ry + (layout.rowHeight - textHeight(categoryFont)) / 2)
+          ry + (rowHeight - textHeight(categoryFont)) / 2)
         if value ~= "" then
           love.graphics.setFont(valueFont)
           setColor(rowSelected and colors.text or colors.textMuted)
           drawText(truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont),
             layout.x + layout.w - theme.spacing.lg - valueFont:getWidth(
               truncate(value, math.max(20, layout.w - theme.spacing.lg * 2), valueFont)),
-            ry + (layout.rowHeight - textHeight(valueFont)) / 2)
+            ry + (rowHeight - textHeight(valueFont)) / 2)
         end
       elseif row.header then
         setColor(colors.textMuted)
         love.graphics.setFont(font(fontCache, theme.typography.caption))
         drawText(safeText(row.label):upper(),
-          layout.x + theme.spacing.lg, ry + (layout.rowHeight -
+          layout.x + theme.spacing.lg, ry + (rowHeight -
             textHeight(love.graphics.getFont())) / 2)
         love.graphics.setFont(font(fontCache, theme.typography.body))
       elseif rowSelected then
-        setColor(colors.selected)
-        love.graphics.rectangle("fill", layout.x + theme.spacing.sm, ry,
-          layout.w - theme.spacing.sm * 2, layout.rowHeight - 4,
-          theme.radii.sm or 8)
+        rowFill(row, true, colors.selected, layout.x + theme.spacing.sm, ry,
+          layout.w - theme.spacing.sm * 2, math.max(1, rowHeight - 4))
+      elseif rowFill(row, false, nil, layout.x + theme.spacing.sm, ry,
+          layout.w - theme.spacing.sm * 2, math.max(1, rowHeight - 4)) then
+        -- The extension supplied a background for this otherwise empty row.
       end
       if row.category then
         -- Category rows are actionable (A expands/collapses), so their value
@@ -4905,7 +7112,7 @@ return function(mod)
         -- typography, not their position in the live row array.
         setColor(colors.divider)
         love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-          ry + layout.rowHeight - runtime.themeMetric(theme, "divider", 1),
+          ry + rowHeight - runtime.themeMetric(theme, "divider", 1),
           layout.w - theme.spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
       else
         setColor(row.enabled == false and colors.textMuted or colors.text)
@@ -4928,7 +7135,7 @@ return function(mod)
         local ok, resolved = pcall(iconFor, game, row.source)
         if ok then icon = resolved end
       end
-      local iconSize = icon and math.max(18, math.min(38, layout.rowHeight - 12)) or 0
+      local iconSize = icon and math.max(1, math.min(38, rowHeight - 12)) or 0
       local textX = layout.x + theme.spacing.lg +
         (icon and iconSize + theme.spacing.sm or 0)
       if icon then
@@ -4938,7 +7145,7 @@ return function(mod)
           setColor({ 1, 1, 1, 1 })
           runtime.drawImage(icon,
             layout.x + theme.spacing.lg + (iconSize - iw * scale) / 2,
-            ry + (layout.rowHeight - ih * scale) / 2, 0, scale, scale)
+            ry + (rowHeight - ih * scale) / 2, 0, scale, scale)
           setColor(row.enabled == false and colors.textMuted or colors.text)
         end
       end
@@ -4948,6 +7155,23 @@ return function(mod)
       local bodyFont = font(fontCache, theme.typography.body)
       local textAvail = math.max(1, layout.x + layout.w - theme.spacing.lg - textX)
       local gap = theme.spacing.md
+      local badge = row.badge
+      local badgeText = type(badge) == "string" and badge
+        or type(badge) == "table" and badge.text or nil
+      badgeText = badgeText and safeText(badgeText) or ""
+      local badgeImageValue = type(badge) == "table"
+        and (badge.image or badge.icon) or nil
+      if type(badgeImageValue) == "string" and type(row.assetCatalog) == "table"
+          and row.assetCatalog[badgeImageValue] ~= nil then
+        badgeImageValue = row.assetCatalog[badgeImageValue]
+      end
+      local badgeImage = runtime.imageFor(badgeImageValue)
+      local badgeImageSize = badgeImage
+        and math.max(1, math.min(24, rowHeight - 12)) or 0
+      local badgeTextWidth = badgeText ~= "" and bodyFont:getWidth(badgeText) or 0
+      local badgeInnerGap = badgeImage and badgeText ~= "" and theme.spacing.xs or 0
+      local badgeWidth = badgeImageSize + badgeTextWidth + badgeInnerGap
+      local badgeGap = badgeWidth > 0 and theme.spacing.xs or 0
       local labelWidth = bodyFont:getWidth(label)
       local valueWidth = value ~= "" and bodyFont:getWidth(value) or 0
       local statusWidth = status ~= "" and bodyFont:getWidth(status) or 0
@@ -4967,22 +7191,74 @@ return function(mod)
       local statusX = valueStart - (statusWidth > 0 and gap or 0) - statusWidth
       local leftWidth = (statusWidth > 0 and statusX or valueStart)
         - gap - textX
+      local labelTextWidth = math.max(20, leftWidth - badgeWidth - badgeGap)
       if not row.header and not row.category then
-        local labelLines = { truncate(label, math.max(20, leftWidth)) }
+        local labelLines = { truncate(label, labelTextWidth) }
         local valueLines = value ~= "" and { truncate(value, valueWidth) } or {}
         if layout.wrapRows then
-          labelLines = wrappedLines(label, math.max(1, leftWidth), bodyFont)
+          labelLines = wrappedLines(label, math.max(1, labelTextWidth), bodyFont)
           valueLines = value ~= "" and wrappedLines(value, math.max(1, valueWidth), bodyFont) or {}
         end
         local lineCount = math.max(#labelLines, #valueLines)
         local blockHeight = lineCount * textHeight(bodyFont)
           + math.max(0, lineCount - 1) * theme.spacing.xs
-        local textY = ry + (layout.rowHeight - blockHeight) / 2
+        local textY = ry + (rowHeight - blockHeight) / 2
         love.graphics.setFont(bodyFont)
         for lineIndex, line in ipairs(labelLines) do
           drawText(line, textX,
             textY + (lineIndex - 1) * (textHeight(bodyFont) + theme.spacing.xs))
         end
+        if badgeText ~= "" or badgeImage then
+          local badgeColor = type(badge) == "table" and badge.color or nil
+          local badgeTextColor = type(badge) == "table" and badge.textColor or nil
+          if type(badgeColor) == "table" then
+            setColor(badgeColor)
+          elseif type(badgeColor) == "string" and colors[badgeColor] then
+            setColor(colors[badgeColor])
+          else
+            setColor(colors.accent)
+          end
+          local badgeX = textX + math.min(labelTextWidth,
+            bodyFont:getWidth(labelLines[1] or "")) + badgeGap
+          local badgeY = textY
+          local badgeBackground = type(badge) == "table" and badge.background
+          if badgeBackground then
+            if type(badgeBackground) == "table" then setColor(badgeBackground)
+            elseif type(badgeBackground) == "string" and colors[badgeBackground] then
+              setColor(colors[badgeBackground])
+            end
+            love.graphics.rectangle("fill", badgeX - theme.spacing.xs,
+              badgeY - 2, badgeWidth + theme.spacing.xs * 2,
+              textHeight(bodyFont) + 4, theme.radii.sm or 4)
+            if type(badgeTextColor) == "table" then setColor(badgeTextColor)
+            elseif type(badgeTextColor) == "string" and colors[badgeTextColor] then
+              setColor(colors[badgeTextColor])
+            else setColor(colors.text) end
+          end
+          if badgeImage then
+            local iw, ih = runtime.imageMetrics(badgeImage)
+            if iw and ih then
+              local scale = math.min(badgeImageSize / iw, badgeImageSize / ih)
+              setColor({ 1, 1, 1, 1 })
+              runtime.drawImage(badgeImage, badgeX,
+                ry + (rowHeight - ih * scale) / 2,
+                0, scale, scale)
+            end
+          end
+          if badgeText ~= "" then
+            if type(badgeTextColor) == "table" then setColor(badgeTextColor)
+            elseif type(badgeTextColor) == "string" and colors[badgeTextColor] then
+              setColor(colors[badgeTextColor])
+            elseif not badgeBackground then
+              if type(badgeColor) == "table" then setColor(badgeColor)
+              elseif type(badgeColor) == "string" and colors[badgeColor] then
+                setColor(colors[badgeColor])
+              else setColor(colors.accent) end
+            end
+            drawText(badgeText, badgeX + badgeImageSize + badgeInnerGap, badgeY)
+          end
+        end
+        setColor(row.enabled == false and colors.textMuted or colors.text)
         for lineIndex, line in ipairs(valueLines) do
           local lineWidth = bodyFont:getWidth(line)
           drawText(line,
@@ -4998,15 +7274,21 @@ return function(mod)
       if row.marker then
         setColor(colors.accent)
         love.graphics.circle("fill", layout.x + layout.w - theme.spacing.lg -
-          valueWidth - 10, ry + layout.rowHeight * 0.5, 4)
+          valueWidth - 10, ry + rowHeight * 0.5, 4)
       end
       if index < #rows then
         setColor(colors.divider)
         love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
-          ry + layout.rowHeight - runtime.themeMetric(theme, "divider", 1),
+          ry + rowHeight - runtime.themeMetric(theme, "divider", 1),
           layout.w - theme.spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
       end
+      runtime.recordLayoutRect("row", {
+        x = layout.x + theme.spacing.sm, y = ry,
+        w = layout.w - theme.spacing.sm * 2, h = rowHeight,
+      }, bodyClip)
+      ry = ry + rowHeight
     end
+    love.graphics.pop()
     if scroll > 0 then
       setColor(colors.accent)
       drawText("^", layout.x + layout.w - theme.spacing.lg - 8,
@@ -5114,14 +7396,120 @@ return function(mod)
     return lines
   end
 
-  runtime.wrappedDialogueLines = function(state, body, maxWidth)
-    local lines = {}
-    for _, source in ipairs(runtime.dialogueLines(state)) do
-      for _, line in ipairs(wrappedLines(source, maxWidth, body)) do
-        lines[#lines + 1] = line
+  -- TextBox has already separated \f pages and retained \v interaction in
+  -- pages.contBefore. The remaining line entries are presentation fragments:
+  -- authored \n/\v breaks and 18-column soft wraps for the original 160px
+  -- window. Join only the fragments that the current state says are visible,
+  -- then let the modern card wrap them against its real available width.
+  runtime.dialogueBoundaryCodepoint = function(value, fromEnd)
+    value = safeText(value)
+    if value == "" then return nil end
+    if utf8Library == nil then
+      local ok, lib = pcall(require, "utf8")
+      utf8Library = ok and lib or false
+    end
+    if not (utf8Library and type(utf8Library.codepoint) == "function") then
+      return nil
+    end
+    local position = 1
+    if fromEnd and type(utf8Library.offset) == "function" then
+      local okOffset, offset = pcall(utf8Library.offset, value, -1)
+      if okOffset and offset then position = offset end
+    end
+    local ok, codepoint = pcall(utf8Library.codepoint, value, position, position)
+    return ok and codepoint or nil
+  end
+
+  runtime.dialogueIsUnspacedCodepoint = function(codepoint)
+    codepoint = tonumber(codepoint)
+    if not codepoint then return false end
+    return (codepoint >= 0x3000 and codepoint <= 0x30FF)
+      or (codepoint >= 0x31F0 and codepoint <= 0x31FF)
+      or (codepoint >= 0x3400 and codepoint <= 0x9FFF)
+      or (codepoint >= 0xAC00 and codepoint <= 0xD7AF)
+      or (codepoint >= 0xF900 and codepoint <= 0xFAFF)
+      or (codepoint >= 0xFF00 and codepoint <= 0xFFEF)
+  end
+
+  runtime.dialogueHostWidth = function(value)
+    if glyphFont == nil then
+      local ok, library = pcall(require, "src.render.Font")
+      glyphFont = ok and library or false
+    end
+    if glyphFont and type(glyphFont.width) == "function" then
+      local ok, width = pcall(glyphFont.width, value)
+      if ok and type(width) == "number" then return width end
+    end
+    if glyphFont and type(glyphFont.split) == "function" then
+      local ok, spans = pcall(glyphFont.split, value)
+      if ok and type(spans) == "table" then return #spans * 8 end
+    end
+    return #safeText(value) * 8
+  end
+
+  runtime.dialogueFirstGlyph = function(value)
+    value = safeText(value):gsub("^%s+", "")
+    if value == "" then return "" end
+    -- dialogueHostWidth performs the same lazy Font lookup used here.
+    runtime.dialogueHostWidth("")
+    if glyphFont and type(glyphFont.split) == "function" then
+      local ok, spans = pcall(glyphFont.split, value)
+      local first = ok and type(spans) == "table" and spans[1]
+      if first and first.to then return value:sub(1, first.to) end
+    end
+    if utf8Library and type(utf8Library.offset) == "function" then
+      local ok, nextByte = pcall(utf8Library.offset, value, 2)
+      if ok then return nextByte and value:sub(1, nextByte - 1) or value end
+    end
+    return value:sub(1, 1)
+  end
+
+  runtime.dialogueSeparator = function(previous, following, state)
+    if previous:match("%s$") or following:match("^%s") then return "" end
+    local previousCodepoint = runtime.dialogueBoundaryCodepoint(previous, true)
+    local followingCodepoint = runtime.dialogueBoundaryCodepoint(following, false)
+    if previous:match("[-/]$")
+        or (previousCodepoint and previousCodepoint >= 0x2010
+          and previousCodepoint <= 0x2015)
+        or runtime.dialogueIsUnspacedCodepoint(previousCodepoint)
+        or runtime.dialogueIsUnspacedCodepoint(followingCodepoint) then
+      return ""
+    end
+    -- TextBox's automatic space wrap leaves that space on the previous line.
+    -- A hard wrap has no delimiter, but its previous fragment consumes almost
+    -- the complete classic text budget. Keep that token intact as well.
+    local budget = math.max(1, tonumber(state and state.maxCols) or 18) * 8
+    local previousWidth = runtime.dialogueHostWidth(previous)
+    local nextGlyphWidth = runtime.dialogueHostWidth(
+      runtime.dialogueFirstGlyph(following))
+    if previousWidth <= budget and previousWidth + nextGlyphWidth > budget then
+      return ""
+    end
+    return " "
+  end
+
+  runtime.dialogueText = function(lines, state)
+    local result = ""
+    local previousFragment
+    for _, source in ipairs(lines or {}) do
+      local fragment = safeText(source):gsub("[\r\n\v\f]+", " ")
+        :gsub("%s+", " ")
+      if fragment:match("%S") then
+        if result == "" then
+          result = fragment:gsub("^%s+", "")
+        else
+          result = result .. runtime.dialogueSeparator(
+            previousFragment or "", fragment, state) .. fragment
+        end
+        previousFragment = fragment
       end
     end
-    return lines
+    return result:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  end
+
+  runtime.wrappedDialogueLines = function(state, body, maxWidth)
+    return wrappedLines(runtime.dialogueText(runtime.dialogueLines(state), state),
+      maxWidth, body)
   end
 
   runtime.modalHint = function(kind, footerText)
@@ -5150,7 +7538,8 @@ return function(mod)
   runtime.dialogueRect = function(viewport, theme, state, game, reserveKind, reserveState)
     local x, y, w, h = presenterRect(viewport)
     local landscape = w > h * 1.2
-    local gutter = theme.spacing.lg
+    local frameOutsetX, frameOutsetY = runtime.frameOutset(theme)
+    local gutter = math.max(theme.spacing.lg, frameOutsetX, frameOutsetY)
     -- Dialogue is a reading surface, so give it a little more horizontal
     -- breathing room than the compact list cards.  Keep the padding here in
     -- lockstep with drawDialogue below so wrapping and the painted text use
@@ -5158,14 +7547,30 @@ return function(mod)
     local paddingX = theme.spacing.xl
     local paddingY = theme.spacing.lg
     local body = font(fontCache, theme.typography.body)
-    local widest = 0
-    for _, line in ipairs(runtime.completeDialogueLines(state) or {}) do
-      widest = math.max(widest, body:getWidth(line))
+    local cacheKey = table.concat({
+      viewportClass(viewport), ("%.2f"):format(x), ("%.2f"):format(y),
+      ("%.2f"):format(w), ("%.2f"):format(h),
+      tostring(theme.scale and theme.scale.ui or 1),
+      tostring(theme.scale and theme.scale.font or 1),
+      tostring(theme.scale and theme.scale.pixelFontStep or "system"),
+      tostring(theme.frame and theme.frame.style or "pixel"),
+      tostring(theme.frame and theme.frame.asset or ""),
+      tostring(theme.frame and theme.frame.pixelScale or 1),
+      tostring(reserveKind or "none"),
+    }, ":")
+    local cached = type(state) == "table" and runtime.dialogueRectCache[state]
+    if cached and cached.key == cacheKey then
+      return x + (w - cached.w) / 2,
+        y + h - cached.h - gutter, cached.w, cached.h
     end
+    local completeText = runtime.dialogueText(
+      runtime.completeDialogueLines(state), state)
+    local widest = body:getWidth(completeText)
     local uiScale = theme.scale and theme.scale.ui or 1
     local maxWidth = landscape and math.min(900 * uiScale, w * 0.84)
       or math.min(620 * uiScale, w - gutter * 2)
-    local minWidth = math.min(landscape and 400 or 340, maxWidth)
+    local minWidth = math.min((landscape and 400 or 340) * uiScale,
+      maxWidth)
     local width = clamp(widest + paddingX * 2, minWidth, maxWidth)
     -- TextBox pages in the released engine normally expose two visible lines.
     -- Size to the complete ordinary page instead of reserving a fixed number
@@ -5173,10 +7578,7 @@ return function(mod)
     -- engine-compatible two-line window.
     local lineGap = textHeight(body) + theme.spacing.xs
     local available = math.max(1, width - paddingX * 2)
-    local desiredLines = 0
-    for _, line in ipairs(runtime.completeDialogueLines(state)) do
-      desiredLines = desiredLines + #wrappedLines(line, available, body)
-    end
+    local desiredLines = #wrappedLines(completeText, available, body)
     -- Grow to the full current page whenever the viewport can hold it. The
     -- old five-line cap was still an arbitrary version of the vanilla
     -- two-line window and made four-line NPC/save messages race through a
@@ -5202,6 +7604,11 @@ return function(mod)
       height = math.min(height, math.max(1, availableHeight))
     end
     height = math.min(height, h - gutter * 2)
+    if type(state) == "table" then
+      runtime.dialogueRectCache[state] = {
+        key = cacheKey, w = width, h = height,
+      }
+    end
     return x + (w - width) / 2, y + h - height - gutter, width, height
   end
 
@@ -5245,67 +7652,70 @@ return function(mod)
       underState)
     local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
+    local hint = runtime.modalHint(kind, footerText)
+    local layout = runtime.layoutFor(viewport, theme, kind, rows, title,
+      runtime.shouldDrawHint(hint) and hint or "")
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
-    local landscape = w > h * 1.2
-    local rowHeight = runtime.minimumRowHeight(theme)
-    local titleHeight = textHeight(font(fontCache, theme.typography.title))
-    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
-    local header = safeText(title) ~= "" and (titleHeight + spacing.md)
-      or spacing.md
-    local hint = runtime.modalHint(kind, footerText)
-    local footer = runtime.shouldDrawHint(hint) and captionHeight + spacing.md or 0
-    local maxPanelW = landscape and math.min(w * 0.70, 520) or math.min(w - spacing.lg * 2, 520)
-    local panelW = math.min(w - spacing.lg * 2,
-      runtime.contentWidthFor(theme, rows, title, footerText, landscape and 220 or 250, maxPanelW))
-    local horizontalChoice = kind == "choice" and landscape
-    if horizontalChoice then
-      local choiceFont = font(fontCache, theme.typography.body)
-      local desiredWidth = spacing.lg * 2 + spacing.sm * math.max(0, #rows - 1)
-      for _, row in ipairs(rows) do
-        desiredWidth = desiredWidth + choiceFont:getWidth(safeText(row.label))
-          + spacing.sm * 2
-      end
-      panelW = math.min(w - spacing.lg * 2, math.max(panelW, desiredWidth))
-    end
-    local choiceRowCount = horizontalChoice and 1 or 2
-    local availableRows = math.max(1, math.floor(
-      (h - spacing.lg * 2 - header - footer) / rowHeight))
-    local visible = math.min(#rows, horizontalChoice and choiceRowCount
-      or (landscape and 7 or 6), availableRows)
-    visible = math.max(1, visible)
-    local panelH = header + footer + visible * rowHeight
-    panelH = math.min(panelH, h - spacing.lg * 2)
-    local px = x + (w - panelW) / 2
-    local py = y + (h - panelH) / 2
+    local horizontalChoice = kind == "choice" and w > h * 1.2
+      and #rows <= 4
     if underKind == "text" then
-      local dx, dy, dw = runtime.dialogueRect(viewport, theme, underState, game)
-      px = dx + dw - panelW
-      py = math.max(y + spacing.lg, dy - panelH - spacing.sm)
+      -- A YES/NO or quantity card riding a dialogue box should size to its
+      -- complete row set. Keeping the generic XS 320x200 envelope here made
+      -- two short choices consume most of a compact battle screen and could
+      -- overlap the question below it. The row count is fixed for the modal's
+      -- lifetime, so this remains a stable envelope while removing dead air.
+      local compactH = runtime.modalReserveHeight(game, theme, kind, state,
+        viewport)
+      compactH = clamp(compactH,
+        runtime.minimumRowHeight(theme) + spacing.md,
+        math.max(1, h - spacing.sm * 3))
+      if compactH < layout.h then
+        local outerTop = math.max(0, layout.y - layout.outerY)
+        layout.h = compactH
+        layout.outerH = compactH + outerTop * 2
+        if not runtime.shouldDrawHint(hint) then layout.footer = 0 end
+        layout.body.y = layout.y + layout.header
+        layout.body.h = math.max(1,
+          layout.h - layout.header - layout.footer)
+      end
     end
-    local layout = {
-      x = px, y = py, w = panelW, h = panelH,
-      rowHeight = rowHeight, header = header, footer = footer,
-      visible = visible, radius = theme.radii.md, sidePanel = false,
-      horizontalChoice = horizontalChoice,
-    }
-    scroll = clamp(scroll or 0, 0, math.max(0, #rows - visible))
+    layout.horizontalChoice = horizontalChoice
+    if horizontalChoice then
+      layout.visible = #rows
+      layout.rowHeight = math.max(1,
+        layout.h - layout.header - layout.footer)
+    end
+    local px, py, panelW, panelH = layout.x, layout.y, layout.w, layout.h
+    if underKind == "text" then
+      local outerLeft = layout.x - layout.outerX
+      local outerTop = layout.y - layout.outerY
+      local dx, dy, dw = runtime.dialogueRect(viewport, theme, underState, game)
+      px = clamp(dx + dw - panelW, x + outerLeft,
+        x + w - panelW - outerLeft)
+      py = clamp(dy - panelH - spacing.sm,
+        y + outerTop, y + h - panelH - outerTop)
+      layout.x, layout.y = px, py
+      layout.outerX = px - outerLeft
+      layout.outerY = py - outerTop
+      layout.body.x, layout.body.y = px, py + layout.header
+    end
     selected = clamp(selected or 1, 1, math.max(1, #rows))
-    if selected <= scroll then scroll = selected - 1 end
-    if selected > scroll + visible then scroll = selected - visible end
+    scroll = horizontalChoice and 0
+      or runtime.scrollForSelection(layout, scroll or 0, selected, #rows)
 
     setColor(theme.colors.surface)
     love.graphics.rectangle("fill", px, py, panelW, panelH, theme.radii.md)
     runtime.drawHeader(theme, layout, title)
     runtime.drawRows(theme, layout, rows, selected, scroll, game)
-    if footer > 0 then
+    if layout.footer > 0 and runtime.shouldDrawHint(hint) then
       setColor(theme.colors.divider)
       love.graphics.rectangle("fill", px + spacing.lg,
-        py + panelH - footer, panelW - spacing.lg * 2,
+        py + panelH - layout.footer, panelW - spacing.lg * 2,
         runtime.themeMetric(theme, "divider", 1))
       setColor(theme.colors.textMuted)
       runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
-        py + panelH - footer + spacing.xs, panelW - spacing.lg * 2)
+        py + panelH - layout.footer + spacing.xs, panelW - spacing.lg * 2)
     end
   end
 
@@ -5361,7 +7771,8 @@ return function(mod)
       setColor(theme.colors.textMuted)
       drawText(truncate(subtitle,
         layout.w - theme.spacing.lg * 2), layout.x + theme.spacing.lg,
-        layout.y + theme.spacing.md + theme.typography.title + 2)
+        layout.y + theme.spacing.md
+          + textHeight(font(fontCache, theme.typography.title)) + 2)
       love.graphics.setFont(font(fontCache, theme.typography.body))
     end
   end
@@ -5377,7 +7788,8 @@ return function(mod)
       dragHandle = false,
     })
     local lines = overlay.lines or {}
-    local lineHeight = theme.typography.body + theme.spacing.sm
+    local lineHeight = textHeight(font(fontCache, theme.typography.body))
+      + theme.spacing.sm
     local modalW = math.min(layout.w * 0.84, 620)
     local modalH = math.min(layout.h * 0.72,
       theme.spacing.lg * 2 + lineHeight * (#lines +
@@ -5501,14 +7913,12 @@ return function(mod)
       or state.screen == "apply" and (theme.spacing.md + theme.spacing.xs) or 0
     if headerExtra > 0 then
       layout.header = layout.header + headerExtra
-      layout.visible = math.max(1, math.floor((layout.h - layout.header -
-        layout.footer) / layout.rowHeight))
-      layout.visible = math.min(layout.visible, math.max(1, #rows))
+      layout.body.y = layout.y + layout.header
+      layout.body.h = math.max(1, layout.h - layout.header - layout.footer)
+      layout.visible = runtime.visibleRowCount(layout, scroll)
     end
-    scroll = clamp(scroll, 0, math.max(0, #rows - layout.visible))
     selected = clamp(selected, 1, math.max(1, #rows))
-    if selected <= scroll then scroll = selected - 1 end
-    if selected > scroll + layout.visible then scroll = selected - layout.visible end
+    scroll = runtime.scrollForSelection(layout, scroll, selected, #rows)
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -5553,14 +7963,85 @@ return function(mod)
     love.graphics.pop()
   end
 
+  -- Additive extension pages deliberately use the same shared row presenter
+  -- as ordinary lists. This gives a source mod a readable extra page without
+  -- requiring it to reproduce panel geometry, scaling, or pointer layout.
+  runtime.drawExtensionPage = function(game, state, viewport, theme, page,
+      hostKind)
+    local rawRows = type(page.page.rows) == "table" and page.page.rows or {}
+    local rows = {}
+    for index, raw in ipairs(rawRows) do
+      if type(raw) == "table" then
+        rows[index] = copy(raw)
+      else
+        rows[index] = { label = raw }
+      end
+      rows[index].assetCatalog = page.page.assets
+    end
+    if #rows == 0 then
+      rows[1] = { label = "Nothing here.", enabled = false }
+    end
+    local title = safeText(page.page.title or page.page.name or "DETAILS")
+    local footer = page.page.footer or "A / B  close   L / R  page"
+    if type(footer) == "table" then
+      local parts = {}
+      for _, part in ipairs(footer) do parts[#parts + 1] = safeText(part) end
+      footer = table.concat(parts, "   ")
+    else
+      footer = safeText(footer)
+    end
+    hostKind = hostKind or "list"
+    local layout = runtime.layoutFor(viewport, theme, hostKind, rows, title,
+      footer, (hostKind == "summary" or hostKind == "trainer_card"
+        or hostKind == "dex_entry") and "L" or nil)
+    local selected = clamp(tonumber(page.page.index) or 1, 1, #rows)
+    local scroll = runtime.scrollForSelection(layout,
+      tonumber(page.page.scroll) or 0, selected, #rows)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    runtime.drawPresenterBackdrop(theme, viewport)
+    setColor(theme.colors.surface)
+    love.graphics.rectangle("fill", layout.x, layout.y, layout.w, layout.h,
+      layout.radius)
+    runtime.drawHeader(theme, layout, title)
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
+    setColor(theme.colors.divider)
+    love.graphics.rectangle("fill", layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer, layout.w - theme.spacing.lg * 2,
+      runtime.themeMetric(theme, "divider", 1))
+    setColor(theme.colors.textMuted)
+    runtime.drawHintIfUseful(theme, Strings(footer),
+      layout.x + theme.spacing.lg,
+      layout.y + layout.h - layout.footer + 8,
+      layout.w - theme.spacing.lg * 2)
+    love.graphics.pop()
+  end
+
   runtime.drawSummary = function(game, state, viewport, theme)
+    if state._gen1UiGalleryPreview
+        and type(state._gen1UiGalleryExtensionPage) == "table" then
+      runtime.drawExtensionPage(game, state, viewport, theme, {
+        owner = "gen1_modern_ui_gallery", extensionId = "sample_page",
+        pageIndex = 1, page = state._gen1UiGalleryExtensionPage,
+      }, "summary")
+      return
+    end
+    local extensionPage = mod._gen1ModernCompatibility:activePageFor(
+      game, state, "summary")
+    if extensionPage then
+      runtime.drawExtensionPage(game, state, viewport, theme, extensionPage,
+        "summary")
+      return
+    end
     love.graphics.push("all")
     love.graphics.origin()
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 780))
+    local envelope = runtime.stableEnvelope(viewport, theme, "summary",
+      state, nil, "L")
+    local panelW = envelope.w
+
     -- Summary pages are data cards, not canvases. Keep their width near the
     -- amount of information they display so a large UI scale does not turn a
     -- six-row stat page into a huge empty rectangle.
@@ -5579,8 +8060,6 @@ return function(mod)
       and spriteFor(game, mon, nil, "summary") or nil
     local page = isDvPage and "DVs / STAT EXP"
       or isMovePage and "MOVES / EXPERIENCE" or "STATUS / TRAINER DATA"
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme,
-      isMovePage and 680 or 640))
     local compact = panelW < 620
     local titleFont = font(fontCache, compact and theme.typography.title * 0.86
       or theme.typography.title)
@@ -5612,9 +8091,8 @@ return function(mod)
       local statsBottom = pageOffset + statGap * 5 + textHeight(bodyFont)
       contentBottom = math.max(spriteBottom, statsBottom)
     end
-    local panelH = math.min(h - gutter * 2,
-      contentBottom + spacing.lg + textHeight(captionFont) + spacing.md)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local pageY = py + spacing.md + titleH + spacing.xs
     local levelY = pageY + textHeight(bodyFont) + spacing.xs
     local hpY = levelY + lineGap
@@ -5951,14 +8429,19 @@ return function(mod)
   end
 
   runtime.drawTrainerCard = function(game, state, viewport, theme)
+    local extensionPage = mod._gen1ModernCompatibility:activePageFor(
+      game, state, "trainer_card")
+    if extensionPage then
+      runtime.drawExtensionPage(game, state, viewport, theme, extensionPage,
+        "trainer_card")
+      return
+    end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 860))
-    local panelH = math.min(h - gutter * 2,
-      runtime.scaledPanelHeight(theme, w > h * 1.15, 500, 640))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local envelope = runtime.stableEnvelope(viewport, theme, "trainer_card",
+      state, nil, "L")
+    local panelW, panelH = envelope.w, envelope.h
+    local px, py = envelope.x, envelope.y
     local landscape = panelW > panelH * 1.15
 
     love.graphics.push("all")
@@ -5970,8 +8453,9 @@ return function(mod)
       radius = theme.radii.md }
     runtime.drawHeader(theme, headerLayout, Strings("TRAINER CARD"))
 
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = theme.typography.caption + spacing.lg
+    local headerH = runtime.titleHeaderHeight(theme)
+    local footerH = textHeight(font(fontCache, theme.typography.caption))
+      + spacing.lg
     local contentY = py + headerH
     local contentH = panelH - headerH - footerH
     local profileH = landscape and math.min(contentH * 0.38, 170)
@@ -6035,11 +8519,12 @@ return function(mod)
     end
     local gridY = contentY + profileH + spacing.sm
     local gridH = math.max(1, contentY + contentH - gridY - spacing.sm)
-    love.graphics.setFont(font(fontCache, theme.typography.caption))
+    local badgeCaptionFont = font(fontCache, theme.typography.caption)
+    love.graphics.setFont(badgeCaptionFont)
     setColor(colors.textMuted)
     drawText(Strings("BADGES  %d/%d", ownedCount, #badges),
       px + spacing.lg, gridY)
-    gridY = gridY + theme.typography.caption + spacing.sm
+    gridY = gridY + textHeight(badgeCaptionFont) + spacing.sm
     gridH = math.max(1, contentY + contentH - gridY)
     local baseCols = landscape and 4 or 2
     local maxRows = math.max(1, math.floor((gridH + spacing.sm) / 34))
@@ -6173,7 +8658,8 @@ return function(mod)
     if #rows == 0 then
       rows[1] = { label = Strings("No POKéMON!"), enabled = false }
     end
-    return rows
+    local kind = deriveStats and "box_mon_list" or "party"
+    return mod._gen1ModernCompatibility:augmentRows(game, state, kind, rows)
   end
 
   -- The Start menu remains the navigation owner, but an optional companion
@@ -6324,24 +8810,46 @@ return function(mod)
     local level = mon.level and ("Lv %d"):format(mon.level) or ""
     local types = {}
     for _, value in ipairs(def.types or {}) do types[#types + 1] = runtime.displayType(value) end
-    drawFittedText(table.concat({ level, speciesName or "",
-      table.concat(types, " / ") }, "  "):gsub("  +", "  "), infoX,
-      y + spacing.md + textHeight(titleFont) + spacing.xs, infoW, captionFont)
+    local metadata = {}
+    local identity = {}
+    if level ~= "" then identity[#identity + 1] = level end
+    if speciesName then identity[#identity + 1] = speciesName end
+    local function appendMetadata(value)
+      if value == nil or value == "" then return end
+      for _, line in ipairs(wrappedLines(value, infoW, captionFont)) do
+        metadata[#metadata + 1] = line
+      end
+    end
+    appendMetadata(table.concat(identity, "  "))
+    -- Types get their own measured row. Keeping identity and type metadata on
+    -- one fitted line hid the end of dual-type species at large pixel-font
+    -- steps (for example `Lv 32 GYARADOS WA...`).
+    appendMetadata(table.concat(types, " / "))
+    local metadataY = y + spacing.md + textHeight(titleFont) + spacing.xs
+    local metadataGap = spacing.xs
+    for index, line in ipairs(metadata) do
+      drawText(line, infoX,
+        metadataY + (index - 1) * (textHeight(captionFont) + metadataGap))
+    end
+    local metadataBottom = metadataY + math.max(1, #metadata)
+      * textHeight(captionFont) + math.max(0, #metadata - 1) * metadataGap
     local stats = runtime.displayStats(game, mon, context == "box")
     local maxHP = stats.hp
     local shownHP = math.min(tonumber(mon.hp) or maxHP or 0,
       maxHP or math.huge)
+    local infoBottom = metadataBottom
     if maxHP then
-      local barY = y + spacing.md + textHeight(titleFont)
-        + textHeight(captionFont) + spacing.md
+      local barY = metadataBottom + spacing.sm
       runtime.drawHPBar(theme, infoX, barY, infoW, shownHP, maxHP)
+      local hpY = barY + 8 + spacing.xs
       drawFittedText(("HP %d/%d%s"):format(shownHP, maxHP,
-        mon.status and ("  " .. safeText(mon.status)) or ""), infoX, barY + 12,
+        mon.status and ("  " .. safeText(mon.status)) or ""), infoX, hpY,
         infoW, captionFont)
+      infoBottom = hpY + textHeight(captionFont)
     end
 
     local lowerY = y + math.max(artSize + spacing.md * 2,
-      textHeight(titleFont) + textHeight(captionFont) * 2 + spacing.xl * 2)
+      infoBottom - y + spacing.md)
     local lowerH = math.max(1, y + h - spacing.md - lowerY)
     love.graphics.setFont(bodyFont)
     local statText = {
@@ -6398,18 +8906,13 @@ return function(mod)
     local minimal = runtime.option("minimalUi", false) == true
     local partyTitle = #party <= 6 and Strings("POKéMON  %d/6", #party)
       or Strings("POKéMON  %d", #party)
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 980))
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
-    if minimal then
-      local footer = Strings("A  choose   B  back")
-      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, partyTitle,
-        footer, math.min(250, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 680), w - gutter * 2)))
-    end
-    local landscape = w > h * 1.20
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = theme.typography.caption + spacing.lg
+    local envelope = runtime.stableEnvelope(viewport, theme, "party",
+      state, rows, "L")
+    local panelW = envelope.w
+    local landscape = panelW > envelope.h * 1.20
+    local headerH = runtime.titleHeaderHeight(theme)
+    local footerH = textHeight(font(fontCache, theme.typography.caption))
+      + spacing.lg
     local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 6))
     local desiredListH = desiredRows * rowHeight
@@ -6421,8 +8924,8 @@ return function(mod)
       or detailMinH + spacing.sm + desiredListH
     local compactH = headerH + footerH + desiredListH + spacing.lg * 2
     local richH = headerH + footerH + desiredContentH
-    local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local contentY = py + headerH
     local contentH = math.max(1, panelH - headerH - footerH)
     local detailW = not minimal and landscape and math.min(panelW * 0.48, 470) or 0
@@ -6451,6 +8954,9 @@ return function(mod)
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false,
       pointerSelectionField = "index", statusColumn = true }
+    listLayout.body = { x = listX, y = listY, w = listW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, listW, rows)
+    scroll = runtime.scrollForSelection(listLayout, scroll, selected, #rows)
     runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     if detailW > 0 then
       runtime.drawMonDetail(game, party[selected], px + panelW - detailW,
@@ -6484,7 +8990,7 @@ return function(mod)
       for _, item in ipairs(state.subItems) do
         actionRows[#actionRows + 1] = { label = item.label or "", source = item }
       end
-      local actionHeader = theme.typography.title + spacing.lg
+      local actionHeader = runtime.titleHeaderHeight(theme)
       local actionRowH = 44
       local actionH = math.min(panelH * 0.72,
         actionHeader + #actionRows * actionRowH + spacing.lg)
@@ -6514,33 +9020,28 @@ return function(mod)
   runtime.drawBoxPokemonList = function(game, state, viewport, theme)
     local mons, action = runtime.boxPokemonList(state)
     if not mons then return end
-    local rows = runtime.monDisplayRows(game, mons, nil, true)
+    local rows = runtime.monDisplayRows(game, mons, state, true)
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
     local gutter = spacing.lg
     local minimal = runtime.option("minimalUi", false) == true
     local boxTitle = state.title or Strings("PC BOX")
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 980))
-    if minimal then
-      local footer = action == "RELEASE" and "A  release    B  back"
-        or Strings("A  %s / stats    B  back", (action or "choose"):lower())
-      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, boxTitle,
-        footer, math.min(250, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
-    end
+    local envelope = runtime.stableEnvelope(viewport, theme, "box_mon_list",
+      state, rows, "L")
+    local panelW = envelope.w
     local compactH = theme.typography.title + theme.typography.caption
       + math.min(#rows, 6) * runtime.minimumRowHeight(theme)
       + spacing.lg * 3
     local richH = runtime.scaledPanelHeight(theme, w > h * 1.20, 520, 640)
-    local panelH = math.min(h - gutter * 2, minimal and compactH or richH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     if minimal then
       for _, row in ipairs(rows) do row.source = nil end
     end
     local landscape = panelW > panelH * 1.15
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = theme.typography.caption + spacing.lg
+    local headerH = runtime.titleHeaderHeight(theme)
+    local footerH = textHeight(font(fontCache, theme.typography.caption))
+      + spacing.lg
     local contentY, contentH = py + headerH, panelH - headerH - footerH
     local detailW = not minimal and landscape and math.min(panelW * 0.46, 450) or 0
     local detailH = not minimal and not landscape and math.min(contentH * 0.38, 280) or 0
@@ -6574,9 +9075,14 @@ return function(mod)
       drawText(context, px + panelW - spacing.lg - contextW,
         py + spacing.md + 5)
     end
-    runtime.drawRows(theme, { x = px, y = listY, w = listW, h = listH,
+    local boxListLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
-      radius = theme.radii.sm }, rows, selected, scroll, game)
+      radius = theme.radii.sm,
+      body = { x = px, y = listY, w = listW, h = listH },
+      rowMetrics = runtime.measureRows(theme, listW, rows),
+    }
+    scroll = runtime.scrollForSelection(boxListLayout, scroll, selected, #rows)
+    runtime.drawRows(theme, boxListLayout, rows, selected, scroll, game)
     if detailW > 0 then
       runtime.drawMonDetail(game, mons[selected], px + panelW - detailW,
         contentY, detailW, contentH, theme, "box")
@@ -6600,14 +9106,14 @@ return function(mod)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 920))
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
-    local landscape = w > h * 1.05
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = landscape and (theme.typography.caption + spacing.lg)
-      or (theme.typography.caption * 2 + spacing.lg + spacing.xs)
+    local envelope = runtime.stableEnvelope(viewport, theme, "pokedex",
+      state, rows, "L")
+    local panelW = envelope.w
+    local landscape = panelW > envelope.h * 1.05
+    local headerH = runtime.titleHeaderHeight(theme)
+    local captionHeight = textHeight(font(fontCache, theme.typography.caption))
+    local footerH = landscape and (captionHeight + spacing.lg)
+      or (captionHeight * 2 + spacing.lg + spacing.xs)
     local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 6))
     local desiredListH = desiredRows * rowHeight
@@ -6618,11 +9124,12 @@ return function(mod)
         + spacing.lg * 4 + 110)
     local desiredContentH = landscape and math.max(desiredListH, desiredPreviewH)
       or desiredPreviewH + spacing.sm + desiredListH
-    local panelH = math.min(h - gutter * 2,
-      headerH + footerH + desiredContentH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
+    local availableContentH = math.max(1, panelH - headerH - footerH)
     local previewW = landscape and math.min(panelW * 0.38, 330) or panelW
-    local previewH = landscape and desiredContentH or desiredPreviewH
+    local previewH = landscape and availableContentH
+      or math.min(desiredPreviewH, availableContentH * 0.46)
     local listW = landscape and (panelW - previewW - spacing.sm) or panelW
     local listY = landscape and (py + headerH) or (py + headerH + previewH + spacing.sm)
     local listH = math.max(1, py + panelH - footerH - listY)
@@ -6661,37 +9168,41 @@ return function(mod)
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.text)
       drawFittedText(def.name or species, infoX, infoY,
-        previewX + previewW - spacing.lg - infoX, bodyFont)
+        previewX + previewW - spacing.lg - infoX, previewBody)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(colors.textMuted)
       local digits = tonumber(game.data and game.data.constants
         and game.data.constants.dexDigits) or 3
       digits = clamp(math.floor(digits), 1, 8)
       local number = def.dex and ("No. %0" .. digits .. "d"):format(def.dex) or ""
-      drawFittedText(number, infoX, infoY + theme.typography.body + spacing.xs,
+      drawFittedText(number, infoX, infoY + textHeight(previewBody) + spacing.xs,
         previewX + previewW - spacing.lg - infoX, previewCaption)
       local types = def.types or {}
       local typeNames = {}
       for _, value in ipairs(types) do typeNames[#typeNames + 1] = runtime.displayType(value) end
       drawFittedText(table.concat(typeNames, " / "), infoX,
-        infoY + theme.typography.body + theme.typography.caption + spacing.sm,
+        infoY + textHeight(previewBody) + textHeight(previewCaption) + spacing.sm,
         previewX + previewW - spacing.lg - infoX, previewCaption)
       setColor(colors.accent)
       drawFittedText(source.ball and Strings("OWNED") or Strings("SEEN"),
-        infoX, infoY + theme.typography.body + theme.typography.caption * 2
+        infoX, infoY + textHeight(previewBody) + textHeight(previewCaption) * 2
           + spacing.md, previewX + previewW - spacing.lg - infoX,
         previewCaption)
     else
       love.graphics.setFont(font(fontCache, theme.typography.body))
       setColor(colors.textMuted)
       drawTextWrapped(Strings("No data for this entry."),
-        previewX + spacing.lg, previewY + previewH / 2 - theme.typography.body,
+        previewX + spacing.lg, previewY + previewH / 2
+          - textHeight(previewBody),
         previewW - spacing.lg * 2, "center")
     end
 
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
+    listLayout.body = { x = px, y = listY, w = listW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, listW, rows)
+    scroll = runtime.scrollForSelection(listLayout, scroll, selected, #rows)
     runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
@@ -6711,7 +9222,7 @@ return function(mod)
           py + panelH - footerH + spacing.xs, panelW - spacing.lg * 2)
       end
       runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
-        py + panelH - footerH + spacing.xs + theme.typography.caption + spacing.xs,
+        py + panelH - footerH + spacing.xs + captionHeight + spacing.xs,
         panelW - spacing.lg * 2)
     end
     love.graphics.pop()
@@ -6732,31 +9243,21 @@ return function(mod)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 900))
+    local envelope = runtime.stableEnvelope(viewport, theme, "bag",
+      state, rows, "L")
+    local panelW = envelope.w
     local minimalBag = runtime.option("minimalUi", false) == true
-    local landscape = w > h * 1.05
-    if minimalBag then
-      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, title,
-        footerText or "A  use   B  back", math.min(250, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
-    else
-      local listBudget = runtime.contentWidthFor(theme, rows, title,
-        footerText or "A  use   B  back", math.min(300, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 560), w - gutter * 2))
-      local detailBudget = landscape
-        and math.min(runtime.scaledPanelWidth(theme, 360), w - gutter * 2) or 0
-      panelW = math.min(panelW, listBudget + detailBudget
-        + (detailBudget > 0 and spacing.sm or 0))
-    end
-    local headerH = theme.typography.title + spacing.lg
-    local footerH = theme.typography.caption + spacing.lg
+    local landscape = panelW > envelope.h * 1.05
+    local headerH = runtime.titleHeaderHeight(theme)
+    local footerH = textHeight(font(fontCache, theme.typography.caption))
+      + spacing.lg
     local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 7))
     local desiredListH = desiredRows * rowHeight
     local detailMinH = math.max(160,
-      theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
+      textHeight(font(fontCache, theme.typography.body))
+        + textHeight(font(fontCache, theme.typography.caption)) * 4
+        + spacing.lg * 3)
     local detailW = minimalBag and 0
       or landscape and math.min(panelW * 0.44, runtime.scaledPanelWidth(theme, 360))
       or panelW
@@ -6820,9 +9321,8 @@ return function(mod)
       or landscape and math.max(desiredListH, detailMinH)
       or detailMinH + spacing.sm + desiredListH
     local compactBagH = headerH + footerH + desiredListH + spacing.lg * 2
-    local panelH = math.min(h - gutter * 2,
-      minimalBag and compactBagH or headerH + footerH + desiredContentH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local minimal = minimalBag
     local detailH = minimal and 0
       or landscape and (panelH - headerH - footerH)
@@ -6868,7 +9368,8 @@ return function(mod)
       setColor(colors.text)
       local titleBottom = drawWrappedText(itemName, infoX, detailY + spacing.md,
         detailX + detailW - spacing.lg - infoX,
-        font(fontCache, theme.typography.body), theme.typography.body + spacing.xs)
+        font(fontCache, theme.typography.body),
+        textHeight(font(fontCache, theme.typography.body)) + spacing.xs)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       local infoY = titleBottom + spacing.sm
       local detailFont = love.graphics.getFont()
@@ -6876,19 +9377,19 @@ return function(mod)
       setColor(colors.textMuted)
       if source and source.machineMoveName then
       infoY = drawWrappedText(source.machineMoveName, infoX, infoY, detailMax,
-        detailFont, theme.typography.caption + spacing.xs)
+        detailFont, textHeight(detailFont) + spacing.xs)
       if def and def.machine then
         local move = game.data.moves and game.data.moves[def.machine.move]
         if move then
           drawFittedText(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
-            infoX, infoY + theme.typography.caption + spacing.xs,
+            infoX, infoY + textHeight(detailFont) + spacing.xs,
             detailMax, detailFont)
         end
       end
       local value = runtime.itemValueText(itemId, def)
       if value then
         drawFittedText(value, infoX,
-          infoY + (theme.typography.caption + spacing.xs) * 2,
+          infoY + (textHeight(detailFont) + spacing.xs) * 2,
           detailMax, detailFont)
       end
     elseif def and def.machine then
@@ -6898,23 +9399,23 @@ return function(mod)
         detailFont)
       if move then
         drawFittedText(Strings("TYPE %s   PP %s", move.type or "—", move.pp or "—"),
-          infoX, infoY + theme.typography.caption + spacing.xs,
+          infoX, infoY + textHeight(detailFont) + spacing.xs,
           detailMax, detailFont)
       end
       local value = runtime.itemValueText(itemId, def)
       if value then
         drawFittedText(value, infoX,
-          infoY + (theme.typography.caption + spacing.xs) * 2,
+          infoY + (textHeight(detailFont) + spacing.xs) * 2,
           detailMax, detailFont)
       end
     elseif def then
-      local descriptionY = infoY + theme.typography.caption + spacing.xs
+      local descriptionY = infoY + textHeight(detailFont) + spacing.xs
       if def.keyItem then
         drawFittedText(Strings("KEY ITEM"), infoX, infoY, detailMax, detailFont)
         local value = runtime.itemValueText(itemId, def)
         if value then
           drawFittedText(value, infoX, descriptionY, detailMax, detailFont)
-          descriptionY = descriptionY + theme.typography.caption + spacing.xs
+          descriptionY = descriptionY + textHeight(detailFont) + spacing.xs
         end
       else
         drawFittedText(runtime.itemValueText(itemId, def) or Strings("ITEM"),
@@ -6933,6 +9434,9 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
+    listLayout.body = { x = px, y = listY, w = listW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, listW, rows)
+    scroll = runtime.scrollForSelection(listLayout, scroll, selected, #rows)
     runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
@@ -6953,31 +9457,20 @@ return function(mod)
     if not rows then return end
     local x, y, w, h = presenterRect(viewport)
     local spacing, colors = theme.spacing, theme.colors
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 900))
+    local envelope = runtime.stableEnvelope(viewport, theme, kind,
+      state, rows, "L")
+    local panelW = envelope.w
     local minimalContext = runtime.option("minimalUi", false) == true
-    local landscape = w > h * 1.10
-    if minimalContext then
-      panelW = math.min(panelW, runtime.contentWidthFor(theme, rows, title,
-        footerText or "A  choose   B  back", math.min(250, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 760), w - gutter * 2)))
-    else
-      local listBudget = runtime.contentWidthFor(theme, rows, title,
-        footerText or "A  choose   B  back", math.min(300, w - gutter * 2),
-        math.min(runtime.scaledPanelWidth(theme, 560), w - gutter * 2))
-      local detailBudget = landscape
-        and math.min(runtime.scaledPanelWidth(theme, 360), w - gutter * 2) or 0
-      panelW = math.min(panelW, listBudget + detailBudget
-        + (detailBudget > 0 and spacing.sm or 0))
-    end
-    local headerH = theme.typography.title + spacing.lg
-    local messageH = math.max(72, theme.typography.caption * 2 + spacing.lg * 2)
+    local landscape = panelW > envelope.h * 1.10
+    local bodyTextHeight = textHeight(font(fontCache, theme.typography.body))
+    local captionTextHeight = textHeight(font(fontCache, theme.typography.caption))
+    local headerH = runtime.titleHeaderHeight(theme)
+    local messageH = math.max(72, captionTextHeight * 2 + spacing.lg * 2)
     local rowHeight = runtime.minimumRowHeight(theme)
     local desiredRows = math.max(1, math.min(#rows, 8))
     local desiredListH = desiredRows * rowHeight
     local detailMinH = math.max(150,
-      theme.typography.body + theme.typography.caption * 4 + spacing.lg * 3)
+      bodyTextHeight + captionTextHeight * 4 + spacing.lg * 3)
     local detailW = not minimalContext and landscape
       and math.min(panelW * 0.44, runtime.scaledPanelWidth(theme, 360)) or 0
     local previewSelected = clamp(selected or 1, 1, math.max(1, #rows))
@@ -7034,10 +9527,8 @@ return function(mod)
       or landscape and math.max(desiredListH, detailMinH)
       or detailMinH + spacing.sm + desiredListH
     local compactContextH = headerH + messageH + desiredListH + spacing.lg * 2
-    local panelH = math.min(h - gutter * 2,
-      minimalContext and compactContextH
-        or headerH + messageH + desiredContentH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local minimal = minimalContext
     local detailH = not minimal and not landscape
       and math.min(detailMinH, math.max(1, panelH - headerH - messageH
@@ -7067,7 +9558,7 @@ return function(mod)
         setColor(colors.surfaceRaised)
         love.graphics.rectangle("fill", px + panelW - spacing.lg - amountW -
           spacing.md * 2, py + spacing.sm, amountW + spacing.md * 2,
-          theme.typography.body + spacing.sm * 2, theme.radii.sm)
+          bodyTextHeight + spacing.sm * 2, theme.radii.sm)
         setColor(colors.text)
         drawText(amount, px + panelW - spacing.lg - amountW - spacing.md,
           py + spacing.sm * 1.5)
@@ -7077,6 +9568,9 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowHeight, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
+    listLayout.body = { x = px, y = listY, w = listW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, listW, rows)
+    scroll = runtime.scrollForSelection(listLayout, scroll, selected, #rows)
     runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
 
     if detailW > 0 or detailH > 0 then
@@ -7104,7 +9598,7 @@ return function(mod)
       local titleBottom = drawWrappedText(row and row.label or Strings("ITEM"),
         infoX, detailY + spacing.md, infoW,
         font(fontCache, theme.typography.body),
-        theme.typography.body + spacing.xs)
+        bodyTextHeight + spacing.xs)
       love.graphics.setFont(font(fontCache, theme.typography.caption))
       setColor(colors.textMuted)
       local infoY = titleBottom + spacing.sm
@@ -7119,17 +9613,17 @@ return function(mod)
       end
       if source and source.right then
         infoY = drawWrappedText(source.right, infoX, infoY, detailMax,
-          detailFont, theme.typography.caption + spacing.xs)
+          detailFont, captionTextHeight + spacing.xs)
       end
       if ownedText then
         infoY = drawWrappedText(ownedText, infoX, infoY, detailMax,
-          detailFont, theme.typography.caption + spacing.xs)
+          detailFont, captionTextHeight + spacing.xs)
       end
       if def and def.machine then
         local move = game.data.moves and game.data.moves[def.machine.move]
         infoY = drawWrappedText(Strings("%s  %s", def.machine.kind or "TM",
           move and move.name or def.machine.move), infoX, infoY, detailMax,
-          detailFont, theme.typography.caption + spacing.xs)
+          detailFont, captionTextHeight + spacing.xs)
         if move then
           infoY = drawWrappedText(Strings("TYPE %s   PP %s",
             move.type or "—", move.pp or "—"), infoX, infoY, detailMax,
@@ -7137,12 +9631,12 @@ return function(mod)
         end
       elseif def and def.keyItem then
         infoY = drawWrappedText(Strings("KEY ITEM"), infoX, infoY, detailMax,
-          detailFont, theme.typography.caption + spacing.xs)
+          detailFont, captionTextHeight + spacing.xs)
       end
       local value = runtime.itemValueText(itemId, def)
       if value then
         drawWrappedText(value, infoX, infoY, detailMax, detailFont,
-          theme.typography.caption + spacing.xs)
+          captionTextHeight + spacing.xs)
       end
     end
 
@@ -7155,13 +9649,13 @@ return function(mod)
     local messageLines = wrappedLines(footerText or "", panelW - spacing.lg * 2)
     for index = 1, math.min(2, #messageLines) do
       drawText(messageLines[index], px + spacing.lg,
-        messageY + spacing.sm + (index - 1) * (theme.typography.caption + spacing.xs))
+        messageY + spacing.sm + (index - 1) * (captionTextHeight + spacing.xs))
     end
     setColor(colors.textMuted)
     local hint = kind == "shop_list" and "A  choose   B  back"
       or "A  choose   B  back"
     runtime.drawHintIfUseful(theme, Strings(hint), px + spacing.lg,
-      py + panelH - spacing.md - theme.typography.caption,
+      py + panelH - spacing.md - captionTextHeight,
       panelW - spacing.lg * 2)
     love.graphics.pop()
   end
@@ -7169,14 +9663,10 @@ return function(mod)
   runtime.drawGen3Box = function(game, state, viewport, theme)
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 780))
-    -- The grid itself is the content. Keep a compact square-cell frame
-    -- instead of reserving the entire viewport around a 5x4 or 3x2 grid.
-    local panelH = math.min(h - gutter * 2,
-      runtime.scaledPanelHeight(theme, w > h * 1.20, 470, 620))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local envelope = runtime.stableEnvelope(viewport, theme, "gen3_box",
+      state, nil, "XL")
+    local panelW, panelH = envelope.w, envelope.h
+    local px, py = envelope.x, envelope.y
     local mode = state.mode == "party" and "party" or "box"
     local cols, gridRows = mode == "box" and 5 or 3, mode == "box" and 4 or 2
     local list
@@ -7194,8 +9684,10 @@ return function(mod)
     else
       title = ("PARTY  %d/%d"):format(#list, 6)
     end
-    local header = theme.typography.title + spacing.xl + 18
-    local footer = theme.typography.caption + spacing.lg + 8
+    local header = textHeight(font(fontCache, theme.typography.title))
+      + spacing.xl + 18
+    local footer = textHeight(font(fontCache, theme.typography.caption))
+      + spacing.lg + 8
     local pad = spacing.md
     local availableW = math.max(1, panelW - pad * 2)
     local availableH = math.max(1, panelH - header - footer - pad * 2)
@@ -7316,11 +9808,18 @@ return function(mod)
   end
 
   runtime.drawDexEntry = function(game, state, viewport, theme)
+    local extensionPage = mod._gen1ModernCompatibility:activePageFor(
+      game, state, "dex_entry")
+    if extensionPage then
+      runtime.drawExtensionPage(game, state, viewport, theme, extensionPage,
+        "dex_entry")
+      return
+    end
     local x, y, w, h = presenterRect(viewport)
     local spacing = theme.spacing
-    local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 780))
+    local envelope = runtime.stableEnvelope(viewport, theme, "dex_entry",
+      state, nil, "L")
+    local panelW = envelope.w
     local def = runtime.dexDefinition(game, state) or {}
     local species = def.id or state.species or state.speciesId
     if type(species) == "table" then species = species.species or species.id end
@@ -7334,8 +9833,6 @@ return function(mod)
     -- Dex data and base-stat cards are content panels. A responsive scale may
     -- enlarge the type, but it should not make these two-column pages span
     -- most of an ultrawide window.
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme,
-      page == "moves" and 720 or 620))
     local lineGap = textHeight(bodyFont) + spacing.sm
     local desiredHeroH = math.max(190,
       math.min(250, textHeight(bodyFont) * 4 + spacing.lg * 3 + 70))
@@ -7372,12 +9869,17 @@ return function(mod)
     end
     local desiredContentH = page == "data"
       and desiredDetailH or math.max(desiredHeroH, desiredDetailH)
-    local panelH = math.min(h - gutter * 2,
-      textHeight(titleFont) + spacing.xl + 12 + desiredContentH
-        + spacing.lg + textHeight(captionFont))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
+    local titleY = py + spacing.md
+    local subtitle = page == "stats" and "BASE STATS"
+      or page == "moves" and "MOVES" or nil
+    local subtitleY = titleY + textHeight(titleFont) + spacing.xs
+    local headerBottom = subtitle
+      and (subtitleY + textHeight(captionFont))
+      or (titleY + textHeight(titleFont))
     local heroX = px + spacing.lg
-    local heroY = py + textHeight(titleFont) + spacing.xl + 12
+    local heroY = headerBottom + spacing.md
     local heroW = math.min(240, panelW * 0.34)
     local heroH = math.min(250, desiredHeroH)
     local detailX = heroX + heroW + spacing.xl
@@ -7393,12 +9895,13 @@ return function(mod)
     runtime.drawPanelAccent(theme, px, py, panelW, theme.radii.lg, 4)
     setColor(theme.colors.text)
     love.graphics.setFont(titleFont)
-    drawFittedText(title, px + spacing.lg, py + spacing.md,
+    drawFittedText(title, px + spacing.lg, titleY,
       panelW - spacing.lg * 2, titleFont)
-    setColor(theme.colors.textMuted)
-    love.graphics.setFont(captionFont)
-    drawText((page == "stats" and "BASE STATS" or page == "moves" and "MOVES" or
-      "DEX DATA"), px + spacing.lg, py + spacing.lg + 32)
+    if subtitle then
+      setColor(theme.colors.textMuted)
+      love.graphics.setFont(captionFont)
+      drawText(subtitle, px + spacing.lg, subtitleY)
+    end
     setColor(theme.colors.surfaceRaised or theme.colors.surface)
     love.graphics.rectangle("fill", heroX, heroY, heroW, heroH, theme.radii.md)
     if sprite then
@@ -7524,21 +10027,18 @@ return function(mod)
       local moveId = type(move) == "table" and move.id or move
       local def = moveDefs[moveId] or {}
       rows[#rows + 1] = { label = def.name or moveId or "MOVE",
-        value = def.type and safeText(def.type) or "" }
+        value = def.type and safeText(def.type) or "",
+        backgroundColor = colors.surfaceRaised }
     end
-    rows[#rows + 1] = { label = Strings("CANCEL"), value = "" }
-    local panelW = math.min(w - spacing.lg * 2,
-      math.max(320, runtime.contentWidthFor(theme, rows, "FORGET A MOVE", nil,
-        320, math.min(700, w - spacing.lg * 2))))
-    local rowH = math.max(textHeight(body) + spacing.md,
-      math.min(62, theme.density.rowHeight * 0.78))
+    rows[#rows + 1] = { label = Strings("CANCEL"), value = "",
+      backgroundColor = colors.surfaceRaised }
+    local envelope = runtime.stableEnvelope(viewport, theme, "move_learn",
+      state, rows, "M")
+    local panelW = envelope.w
     local headerH = textHeight(titleFont) + textHeight(body) + spacing.xl
     local footerH = textHeight(caption) + spacing.md
-    local panelH = math.min(h - spacing.lg * 2,
-      headerH + #rows * rowH + footerH + spacing.lg * 2)
-    rowH = math.max(textHeight(body) + spacing.sm,
-      (panelH - headerH - footerH - spacing.lg * 2) / math.max(1, #rows))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local selected = clamp(state.index or 1, 1, #rows)
 
     love.graphics.push("all")
@@ -7559,25 +10059,21 @@ return function(mod)
       panelW - spacing.lg * 2, body)
 
     local rowY = py + spacing.lg + headerH
-    for index, row in ipairs(rows) do
-      local ry = rowY + (index - 1) * rowH
-      runtime.registerPointerRegion(px + spacing.sm, ry, panelW - spacing.sm * 2,
-        rowH - 2, { rowIndex = index, selectionField = "index",
-          selectionState = state, rowCount = #rows, activate = true,
-          interactive = true, dragHandle = false })
-      setColor(index == selected and colors.selected or colors.surfaceRaised)
-      love.graphics.rectangle("fill", px + spacing.sm, ry,
-        panelW - spacing.sm * 2, rowH - 2, theme.radii.sm)
-      setColor(index == selected and colors.text or colors.textMuted)
-      love.graphics.setFont(body)
-      drawText(safeText(row.label), px + spacing.lg,
-        ry + (rowH - textHeight(body)) / 2 - 1)
-      if row.value ~= "" then
-        local valueW = body:getWidth(row.value)
-        drawText(row.value, px + panelW - spacing.lg - valueW,
-          ry + (rowH - textHeight(body)) / 2 - 1)
-      end
-    end
+    local listH = math.max(1,
+      py + panelH - footerH - spacing.md - rowY)
+    local listLayout = {
+      x = px, y = rowY, w = panelW, h = listH,
+      header = 0, footer = 0,
+      rowHeight = runtime.minimumRowHeight(theme),
+      radius = theme.radii.sm, sidePanel = false,
+      pointerSelectionField = "index", wrapRows = true,
+    }
+    listLayout.body = { x = px, y = rowY, w = panelW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, panelW, rows)
+    local scroll = runtime.scrollForSelection(listLayout,
+      state._gen1ModernMoveLearnScroll or 0, selected, #rows)
+    state._gen1ModernMoveLearnScroll = scroll
+    runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
     runtime.drawHintIfUseful(theme, "A  replace   B  cancel", px + spacing.lg,
@@ -7592,18 +10088,16 @@ return function(mod)
     local body = font(fontCache, theme.typography.body)
     local image = runtime.imageFor(state.image)
     local caption = safeText(state.text)
-    local maxW = math.min(w - spacing.lg * 2, 720)
-    local panelW = math.min(maxW, math.max(300,
-      body:getWidth(caption) + spacing.lg * 2))
+    local envelope = runtime.stableEnvelope(viewport, theme, "pic_box",
+      state, nil, "M")
+    local panelW = envelope.w
     local artSize = math.min(320, panelW - spacing.lg * 2,
-      h * 0.42)
+      envelope.h * 0.42)
     local captionLines = caption ~= "" and wrappedLines(caption,
       panelW - spacing.lg * 2, body) or {}
     local lineGap = textHeight(body) + spacing.xs
-    local panelH = math.min(h - spacing.lg * 2,
-      textHeight(titleFont) + artSize + #captionLines * lineGap
-        + spacing.lg * 4)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local cardH = math.max(1, panelH - textHeight(titleFont) -
       #captionLines * lineGap - spacing.lg * 3)
 
@@ -7657,19 +10151,17 @@ return function(mod)
     local card = type(player.profile) == "table" and player.profile or nil
     local own = player.money ~= nil
     local rows = card and (own and 4 or 3) or 1
-    local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
-      runtime.panelMaxWidth(theme, 760))
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 720))
-    local compact = w > h * 1.15
-    local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
+    local envelope = runtime.stableEnvelope(viewport, theme,
+      "rby_mmo_profile", state, nil, "XL")
+    local panelW = envelope.w
+    local compact = panelW > envelope.h * 1.15
+    local headerH = runtime.titleHeaderHeight(theme, titleFont)
     local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
     local heroH = compact and 76 or math.max(92, math.min(150, panelW * 0.25))
     local rowH = math.max(textHeight(bodyFont) + spacing.sm,
       compact and 32 or 42)
-    local panelH = math.min(h - spacing.lg * 2,
-      headerH + heroH + rows * rowH + footerH
-        + (compact and spacing.md * 2 or spacing.lg * 3))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local contentX = px + spacing.lg
     local contentW = panelW - spacing.lg * 2
 
@@ -7791,18 +10283,23 @@ return function(mod)
     local visible = 6
     local offset = clamp(math.floor(tonumber(state.offset) or 0), 0,
       math.max(0, #rows - visible))
-    local compact = w > h * 1.15
-    local panelW = panelWidthFor(viewport, w - spacing.lg * 2,
-      runtime.panelMaxWidth(theme, 720))
-    local headerH = textHeight(titleFont) + (compact and spacing.md or spacing.lg)
+    local envelope = runtime.stableEnvelope(viewport, theme,
+      "rby_mmo_rank", state, rows, "XL")
+    local compact = envelope.w > envelope.h * 1.15
+    local panelW = envelope.w
+    local headerH = runtime.titleHeaderHeight(theme, titleFont)
     local footerH = textHeight(captionFont) + (compact and spacing.sm or spacing.md)
     local rowH = math.max(textHeight(bodyFont) + spacing.xs,
       compact and 36 or 52)
     local rowCount = math.min(visible, math.max(1, #rows))
-    local panelH = math.min(h - spacing.lg * 2,
-      headerH + rowCount * rowH + footerH
-        + (compact and spacing.md * 2 or spacing.lg * 2))
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    visible = math.max(1, math.min(6, math.floor(math.max(1,
+      panelH - headerH - footerH - (compact and spacing.md * 2
+        or spacing.lg * 2)) / rowH)))
+    offset = clamp(math.floor(tonumber(state.offset) or 0), 0,
+      math.max(0, #rows - visible))
+    rowCount = math.min(visible, math.max(1, #rows))
+    local px, py = envelope.x, envelope.y
     local contentX = px + spacing.lg
     local contentW = panelW - spacing.lg * 2
 
@@ -7891,12 +10388,12 @@ return function(mod)
     local titleFont = font(fontCache, theme.typography.title)
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
-    local landscape = w > h * 1.05
+    local envelope = runtime.stableEnvelope(viewport, theme,
+      "rby_mmo_char_pick", state, rows, "XL")
+    local landscape = envelope.w > envelope.h * 1.05
     local gutter = spacing.lg
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 820))
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 820))
-    local headerH = textHeight(titleFont) + spacing.lg
+    local panelW = envelope.w
+    local headerH = runtime.titleHeaderHeight(theme, titleFont)
     local footerH = textHeight(captionFont) + spacing.md
     local rowH = runtime.minimumRowHeight(theme)
     local detailMinH = math.max(170,
@@ -7908,9 +10405,8 @@ return function(mod)
     local desiredContentH = landscape
       and math.max(desiredListH, detailMinH)
       or detailMinH + spacing.sm + desiredListH
-    local panelH = math.min(h - gutter * 2,
-      headerH + footerH + desiredContentH + spacing.lg * 2)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local detailH = not landscape and math.min(detailMinH,
       math.max(1, panelH - headerH - footerH - spacing.sm - rowH)) or 0
     local listW = panelW - detailW - (detailW > 0 and spacing.sm or 0)
@@ -7989,6 +10485,9 @@ return function(mod)
     local listLayout = { x = px, y = listY, w = listW, h = listH,
       rowHeight = rowH, header = 0, footer = 0, visible = visible,
       radius = theme.radii.sm, sidePanel = false }
+    listLayout.body = { x = px, y = listY, w = listW, h = listH }
+    listLayout.rowMetrics = runtime.measureRows(theme, listW, rows)
+    scroll = runtime.scrollForSelection(listLayout, scroll, selected, #rows)
     runtime.drawRows(theme, listLayout, rows, selected, scroll, game)
     setColor(colors.divider)
     love.graphics.rectangle("fill", px + spacing.lg,
@@ -8013,10 +10512,10 @@ return function(mod)
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
     local gutter = spacing.lg
-    local landscape = w > h * 1.08
-    local panelW = panelWidthFor(viewport, w - gutter * 2,
-      runtime.panelMaxWidth(theme, 760))
-    panelW = math.min(panelW, runtime.scaledPanelWidth(theme, 760))
+    local envelope = runtime.stableEnvelope(viewport, theme,
+      "dex_radar", state, nil, "XL")
+    local landscape = envelope.w > envelope.h * 1.08
+    local panelW = envelope.w
     local headerH = textHeight(titleFont) + textHeight(captionFont)
       + spacing.lg + spacing.sm
     local footerH = textHeight(captionFont) + spacing.lg
@@ -8036,14 +10535,12 @@ return function(mod)
     if totalListH <= 0 then
       totalListH = textHeight(bodyFont) * 2 + spacing.xl
     end
-    local maxPanelH = math.min(h - gutter * 2,
-      runtime.scaledPanelHeight(theme, landscape, 620, 760))
+    local maxPanelH = envelope.h
     local maxListH = math.max(rowH,
       maxPanelH - headerH - footerH)
     local desiredListH = math.min(totalListH, maxListH)
-    local panelH = math.min(h - gutter * 2,
-      headerH + footerH + desiredListH)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelH = envelope.h
+    local px, py = envelope.x, envelope.y
     local listY = py + headerH
     local listH = math.max(1, panelH - headerH - footerH)
     local selectedCursor = clamp(math.floor(tonumber(state.cursor) or 1),
@@ -8123,7 +10620,10 @@ return function(mod)
         listY + (listH - textHeight(bodyFont)) / 2)
     else
       love.graphics.setScissor(px, listY, panelW, listH)
-      local rowY = listY + math.max(0, (listH - usedH) / 2)
+      -- Keep short encounter sets attached to their heading. The XL envelope
+      -- remains stable, but spare body space belongs below the list instead
+      -- of making a three-row route look vertically adrift.
+      local rowY = listY + spacing.sm
       for rawIndex = firstRow, lastRow do
         local row = state.rows[rawIndex]
         local height = radarRowHeight(row)
@@ -8298,6 +10798,8 @@ return function(mod)
     local body = font(fontCache, theme.typography.body)
     local caption = font(fontCache, theme.typography.caption)
     local grid = mod._gen1ModernSpecialPresenters.namingGrid(state)
+    local envelope = runtime.stableEnvelope(viewport, theme, "naming",
+      state, nil, "XL")
     local function namingTarget()
       local target = state and (state.mon or state.pokemon or state.targetMon
         or state.subject)
@@ -8361,7 +10863,7 @@ return function(mod)
     if targetLine == "" and currentName ~= "" then
       targetLine = "CURRENT  " .. currentName
     end
-    local availableW = math.max(1, w - spacing.lg * 2)
+    local availableW = envelope.w
     local gridFont = body
     local cellW = math.max(body:getWidth("W") + spacing.sm * 2,
       maxLabelWidth + spacing.sm * 2)
@@ -8379,7 +10881,7 @@ return function(mod)
         maxLabelWidth + spacing.sm * 2)
       desiredW = maxCols * cellW + spacing.lg * 2
     end
-    local panelW = math.min(availableW, math.max(420, desiredW))
+    local panelW = envelope.w
     cellW = math.max(1, (panelW - spacing.lg * 2) / maxCols)
     local titleH = textHeight(titleFont)
     local targetH = targetLine ~= "" and textHeight(caption) + spacing.xs or 0
@@ -8389,12 +10891,12 @@ return function(mod)
       + spacing.lg
     local desiredCellH = math.max(textHeight(gridFont) + spacing.sm, 36)
     local desiredH = headerH + layoutRows * desiredCellH + footerH + spacing.lg
-    local panelH = math.min(h - spacing.lg * 2, desiredH)
+    local panelH = envelope.h
     local gridH = math.max(textHeight(gridFont) + 2,
       panelH - headerH - footerH - spacing.lg)
     local cellH = math.max(textHeight(gridFont) + 2,
       gridH / layoutRows)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local px, py = envelope.x, envelope.y
     local title = safeText(state.title or "YOUR NAME?")
     local typedCount = #glyphs
     local counter = ("%d/%d"):format(typedCount, maxLen)
@@ -8547,6 +11049,8 @@ return function(mod)
       end
     end
 
+    if state._gen1UiGalleryPreview then return markers end
+
     -- RBYMMO deliberately keeps its live party and roster behind public
     -- exports rather than copying them onto TownMap state. Read those
     -- exports when present so the modern presenter does not suppress the
@@ -8654,12 +11158,12 @@ return function(mod)
     local titleFont = font(fontCache, theme.typography.title)
     local body = font(fontCache, theme.typography.body)
     local caption = font(fontCache, theme.typography.caption)
-    local landscape = w > h * 1.2
+    local envelope = runtime.stableEnvelope(viewport, theme, "town_map",
+      state, nil, "XL")
+    local landscape = envelope.w > envelope.h * 1.2
     local title = state.fly and "FLY TO" or state.nestSpecies and "AREA" or "TOWN MAP"
-    local panelW = math.min(w - spacing.lg * 2,
-      landscape and 900 or math.max(340, w - spacing.lg * 2))
-    local panelH = math.min(h - spacing.lg * 2, landscape and 650 or 760)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
+    local panelW, panelH = envelope.w, envelope.h
+    local px, py = envelope.x, envelope.y
     local topH = textHeight(titleFont) + spacing.xl
     local footerH = textHeight(caption) + spacing.md
     local detailW = landscape and math.min(270, panelW * 0.32) or panelW - spacing.lg * 2
@@ -8923,6 +11427,8 @@ return function(mod)
     local titleFont = font(fontCache, theme.typography.title)
     local body = font(fontCache, theme.typography.body)
     local caption = font(fontCache, theme.typography.caption)
+    local envelope = runtime.stableEnvelope(viewport, theme,
+      "quarantine_report", state, nil, "M")
     local lines = type(state.lines) == "table" and state.lines or {}
     local maxOffset = 0
     if type(state.maxOffset) == "function" then
@@ -8930,21 +11436,29 @@ return function(mod)
       if ok and tonumber(value) then maxOffset = math.max(0, value) end
     end
     local offset = clamp(tonumber(state.offset) or 0, 0, maxOffset)
-    local visible = math.min(13, #lines)
     local rowH = textHeight(body) + spacing.xs
-    local widest = body:getWidth("LOAD REPORT")
-    for index = 1, visible do
-      widest = math.max(widest,
-        body:getWidth(safeText(lines[offset + index] or "")))
+    local footer = maxOffset > 0 and "UP/DOWN  scroll   A/B  continue"
+      or "A/B  continue"
+    local headerH = spacing.md + textHeight(titleFont) + spacing.sm
+    local footerH = spacing.sm + textHeight(caption) + spacing.md
+    local stableRows = math.max(1, math.min(13, #lines))
+    local widest = math.max(titleFont:getWidth("LOAD REPORT"),
+      caption:getWidth(footer))
+    -- Measure the complete report rather than only the current scroll page.
+    -- Its card therefore stays still while the player scrolls.
+    for _, line in ipairs(lines) do
+      widest = math.max(widest, body:getWidth(safeText(line)))
     end
-    local panelW = math.min(w - spacing.lg * 2,
-      math.max(360, widest + spacing.lg * 2))
-    local footerH = textHeight(caption) + spacing.md
-    local panelH = math.min(h - spacing.lg * 2,
-      textHeight(titleFont) + visible * rowH + footerH + spacing.lg * 3)
-    local px, py = x + (w - panelW) / 2, y + (h - panelH) / 2
-    local contentY = py + spacing.lg + textHeight(titleFont) + spacing.sm
+    local panelW = math.min(envelope.w,
+      math.max(320, widest + spacing.lg * 2))
+    local panelH = math.min(envelope.h,
+      headerH + stableRows * rowH + spacing.md + footerH)
+    local px = envelope.x + (envelope.w - panelW) * 0.5
+    local py = envelope.y + (envelope.h - panelH) * 0.5
+    local contentY = py + headerH
     local footerY = py + panelH - footerH
+    local visible = math.max(1, math.min(13, #lines,
+      math.floor(math.max(1, footerY - spacing.md - contentY) / rowH)))
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -8984,8 +11498,6 @@ return function(mod)
       panelW - spacing.lg * 2, runtime.themeMetric(theme, "divider", 1))
     setColor(colors.textMuted)
     love.graphics.setFont(caption)
-    local footer = maxOffset > 0 and "UP/DOWN  scroll   A/B  continue"
-      or "A/B  continue"
     runtime.drawHintIfUseful(theme, footer, px + spacing.lg,
       footerY + spacing.sm, panelW - spacing.lg * 2)
     love.graphics.pop()
@@ -9155,8 +11667,7 @@ return function(mod)
   -- deliberately separate from SCENE HUD cards so the voxel/native-scene
   -- layout can keep its established geometry while 2D is polished in
   -- isolation.
-  runtime.drawBattle2dCard = function(game, theme, battler, x, y, w, info)
-    if not battler then return 0 end
+  function battleRuntime.cardMetrics(theme, info)
     info = info or {}
     local spacing = theme.spacing
     local bodyFont = font(fontCache, theme.typography.body)
@@ -9187,6 +11698,25 @@ return function(mod)
     if not compact and expCurrent and expMaximum and expMaximum > 0 then
       h = h + spacing.xs + captionH
     end
+    return {
+      h = h, bodyFont = bodyFont, captionFont = captionFont,
+      bodyH = bodyH, captionH = captionH, accentH = accentH,
+      barH = barH, compact = compact, metadata = metadata,
+      expCurrent = expCurrent, expMaximum = expMaximum,
+    }
+  end
+
+  runtime.drawBattle2dCard = function(game, theme, battler, x, y, w, info)
+    if not battler then return 0 end
+    info = info or {}
+    local spacing = theme.spacing
+    local metrics = battleRuntime.cardMetrics(theme, info)
+    local bodyFont, captionFont = metrics.bodyFont, metrics.captionFont
+    local bodyH, captionH = metrics.bodyH, metrics.captionH
+    local accentH, barH = metrics.accentH, metrics.barH
+    local compact, metadata = metrics.compact, metrics.metadata
+    local expCurrent, expMaximum = metrics.expCurrent, metrics.expMaximum
+    local h = metrics.h
 
     local surface = battleRuntime.opaque(theme.colors.surfaceRaised
       or theme.colors.surface)
@@ -9300,6 +11830,41 @@ return function(mod)
 
   battleRuntime.messageCache = setmetatable({}, { __mode = "k" })
 
+  battleRuntime.visibleMessageText = function(native, text)
+    if type(native) ~= "table" or type(native.lines) ~= "table"
+        or type(native.shown) ~= "table" or #native.shown == 0
+        or (tonumber(native.lineIndex) or 0) < 1 then
+      return nil
+    end
+    local fragments = {}
+    local position = 1
+    while true do
+      local boundary = text:find("[\n\v]", position)
+      fragments[#fragments + 1] = boundary
+        and text:sub(position, boundary - 1) or text:sub(position)
+      if not boundary then break end
+      position = boundary + 1
+    end
+    local current = clamp(math.floor(tonumber(native.lineIndex) or 1),
+      1, math.max(1, #fragments))
+    local shownCount = clamp(#native.shown, 1, 2)
+    local first = math.max(1, current - shownCount + 1)
+    local visible = {}
+    for index = first, current do
+      local fragment = safeText(fragments[index])
+      if index == current then
+        local currentShown = native.shown[#native.shown]
+        local revealed = type(currentShown) == "table" and #currentShown or 0
+        fragment = runtime.textPrefix(fragment, revealed)
+      end
+      visible[#visible + 1] = fragment
+    end
+    -- BattleState does not soft-wrap these chunks; every boundary is an
+    -- authored line/CONT marker. A deliberately huge classic width disables
+    -- the TextBox hard-wrap heuristic while retaining CJK/hyphen handling.
+    return runtime.dialogueText(visible, { maxCols = 10000 })
+  end
+
   runtime.battleMessage = function(state)
     local native = battleRuntime.inputState(state) or state or {}
     local item = state and state.current or native.current
@@ -9309,7 +11874,10 @@ return function(mod)
       text = text.text or text.value or text.label
     end
     if text then
-      text = safeText(text):gsub("<PK>", "PKMN"):gsub("[\r\n\v]+", " ")
+      text = safeText(text)
+      local visible = battleRuntime.visibleMessageText(native, text)
+      text = (visible ~= nil and visible or text:gsub("[\r\n\v]+", " "))
+        :gsub("<PK>", "PKMN")
       if text ~= "" and type(native) == "table" then
         battleRuntime.messageCache[native] = text
       end
@@ -9329,22 +11897,45 @@ return function(mod)
     return ""
   end
 
-  -- Detect the host surface geometry for native-HUD cleanup. Both standard
-  -- and WIDE move selectors are presented as the same source-indexed 2x2
-  -- modern grid, so no directional input translation is necessary.
-  runtime.battleUsesWideLayout = function(state)
-    if not state then return true end
-    local method = state.wideLayout
-    if type(method) == "function" then
-      local ok, value = pcall(method, state)
-      if ok then return value == true end
+  -- Detect explicit WIDE ownership. A boolean false is authoritative, a
+  -- callback must return true, and absent/unknown metadata fails open to the
+  -- native battle UI. Public adapter models may provide the same two flags.
+  runtime.battleUsesWideLayout = function(state, game)
+    if type(state) ~= "table" then return false end
+    local function explicitFlag(owner, name)
+      if type(owner) ~= "table" then return nil end
+      local value = owner[name]
+      if type(value) == "boolean" then return value end
+      if type(value) == "function" then
+        local ok, result = pcall(value, owner)
+        if ok and type(result) == "boolean" then return result end
+      end
+      return nil
     end
-    method = state.isWideBattleLayout
-    if type(method) == "function" then
-      local ok, value = pcall(method, state)
-      if ok then return value == true end
+    for _, name in ipairs({ "wideLayout", "isWideBattleLayout" }) do
+      local value = explicitFlag(state, name)
+      if value ~= nil then return value end
     end
-    return true
+    local mode = safeText(state.battleLayout or state.layoutMode
+      or state.layout):lower()
+    if mode == "wide" or mode == "widescreen" then return true end
+    if mode ~= "" then return false end
+
+    local compatibility = mod._gen1ModernCompatibility
+    local context = compatibility.active[state]
+      or compatibility:adapterFor(game or currentGame, state)
+    if context and context.screen and context.screen.layer == "battle" then
+      local model = compatibility:modelFor(game or currentGame, state, context)
+      for _, name in ipairs({ "wideLayout", "isWideBattleLayout" }) do
+        local value = explicitFlag(model, name)
+        if value ~= nil then return value end
+      end
+      local modelMode = safeText(model and (model.battleLayout
+        or model.layoutMode or model.layout)):lower()
+      if modelMode == "wide" or modelMode == "widescreen" then return true end
+      if modelMode ~= "" then return false end
+    end
+    return false
   end
 
   -- A source mod can publish a battle screen through the same data-only
@@ -9363,25 +11954,10 @@ return function(mod)
   end
 
   function battleRuntime.presentationMode(state, model)
-    local configured = safeText(runtime.option("battleUiMode", "auto")):lower()
-    if configured == "hud" or configured == "hud_only"
-        or configured == "menu" then
-      return "hud"
-    end
-    if configured == "full" or configured == "canvas" then
-      return "full"
-    end
-
-    local source = model or state or {}
-    local explicit = safeText(source.presentation or source.presentationMode
-      or source.battlePresentation):lower()
-    if explicit == "hud" or explicit == "hud_only"
-        or explicit == "menu" then
-      return "hud"
-    end
-    if explicit == "full" or explicit == "canvas" then return "full" end
-
-    if battleRuntime.nativeSceneRequested(source) then return "hud" end
+    -- Eligibility has already proved this is a 2D WIDE source. Keep every
+    -- legacy mode spelling as a compatibility alias, but use one fixed shell
+    -- and one source-to-screen transform so no saved value can fall back to
+    -- the old unbounded scene-HUD geometry.
     return "full"
   end
 
@@ -9518,10 +12094,24 @@ return function(mod)
 
   function battleRuntime.dataSource(game, state, model)
     local source = model or state or {}
+    local options = mod._gen1ModernCompatibility:battleOptions(game, state)
+    if next(options) then
+      -- Keep the source state and its methods untouched.  A shallow view is
+      -- enough because extension values are copied when they enter the
+      -- compatibility registry.
+      local decorated = {}
+      for key, value in pairs(source) do decorated[key] = value end
+      for key, value in pairs(options) do decorated[key] = value end
+      source = decorated
+    end
     local overlays = source.overlays or source.battleOverlays
       or source.battleUiOverlays or state and state.overlays
     overlays = battleRuntime.enrichOverlays(game, state, source, overlays)
     return source, overlays
+  end
+
+  function battleRuntime.cardWidth(source)
+    return clamp(tonumber(source and source.cardWidth) or 170, 96, 260)
   end
 
   function battleRuntime.overlayValue(source, overlays, keys)
@@ -9832,6 +12422,8 @@ return function(mod)
     runtime.drawPanelFrame(theme, panelX, panelY, panelW, panelH,
       theme.radii.md)
     runtime.drawPanelAccent(theme, panelX, panelY, panelW, theme.radii.md, 3)
+    runtime.recordLayoutRect("battle-message-panel",
+      { x = panelX, y = panelY, w = panelW, h = panelH })
     setColor(theme.colors.text)
     love.graphics.setFont(bodyFont)
     local maxLines = math.max(1,
@@ -9853,7 +12445,10 @@ return function(mod)
     local spacing = theme.spacing
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
-    local rowH = math.max(38, textHeight(bodyFont) + spacing.xs * 2)
+    local uiScale = math.max(0.01,
+      tonumber(theme.scale and theme.scale.ui) or 1)
+    local rowH = math.max(38 * uiScale,
+      textHeight(bodyFont) + spacing.xs * 2)
     return spacing.sm * 2 + textHeight(captionFont) + spacing.xs
       + rowH * 2
   end
@@ -9867,7 +12462,10 @@ return function(mod)
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
     local headerH = textHeight(captionFont)
-    local rowH = math.max(38, textHeight(bodyFont) + spacing.xs * 2)
+    local uiScale = math.max(0.01,
+      tonumber(theme.scale and theme.scale.ui) or 1)
+    local rowH = math.max(38 * uiScale,
+      textHeight(bodyFont) + spacing.xs * 2)
     local panelH = battleRuntime.commandPanelHeight(theme)
     local selected = tonumber(inputState and inputState.menuIndex)
       or tonumber(state.menuIndex) or 1
@@ -9876,6 +12474,8 @@ return function(mod)
       or theme.colors.surface))
     love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.md)
     runtime.drawPanelFrame(theme, x, y, w, panelH, theme.radii.md)
+    runtime.recordLayoutRect("battle-command-panel",
+      { x = x, y = y, w = w, h = panelH })
     runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
     setColor(theme.colors.textMuted)
     love.graphics.setFont(captionFont)
@@ -9909,18 +12509,44 @@ return function(mod)
     return panelH
   end
 
-  function battleRuntime.movePanelHeight(theme, slotCount)
+  function battleRuntime.movePanelMetrics(theme, orientation)
     local spacing = theme.spacing
     local bodyFont = font(fontCache, theme.typography.body)
     local captionFont = font(fontCache, theme.typography.caption)
-    local rowH = math.max(42,
+    local uiScale = math.max(0.01,
+      tonumber(theme.scale and theme.scale.ui) or 1)
+    local rowH = math.max(42 * uiScale,
       math.max(textHeight(bodyFont), textHeight(captionFont))
         + spacing.xs * 2)
-    return spacing.sm * 2 + textHeight(captionFont) + spacing.xs
+    if orientation == "portrait" then
+      rowH = math.max(rowH, textHeight(bodyFont) + textHeight(captionFont)
+        + spacing.xs + spacing.sm)
+      local detailH = spacing.sm * 2 + textHeight(captionFont) + spacing.xs
+        + textHeight(bodyFont) + spacing.xs + textHeight(captionFont)
+      local listHeaderH = spacing.sm * 2 + textHeight(captionFont)
+        + spacing.xs
+      return {
+        h = detailH + listHeaderH + rowH * 2,
+        rowH = rowH, detailH = detailH, listHeaderH = listHeaderH,
+      }
+    end
+    local listH = spacing.sm * 2 + textHeight(captionFont) + spacing.xs
       + rowH * 2
+    local detailH = spacing.sm * 2 + textHeight(captionFont) + spacing.xs
+      + textHeight(bodyFont) + spacing.xs
+      + (textHeight(captionFont) + spacing.xs) * 2
+    return {
+      h = math.max(listH, detailH),
+      rowH = rowH,
+    }
   end
 
-  runtime.drawBattle2dMoves = function(game, state, theme, x, y, w)
+  function battleRuntime.movePanelHeight(theme, slotCount, orientation)
+    return battleRuntime.movePanelMetrics(theme, orientation).h
+  end
+
+  runtime.drawBattle2dMoves = function(game, state, theme, x, y, w,
+      orientation)
     local spacing = theme.spacing
     local moves, selected, move, definition, maximum, inputState =
       battleRuntime.moveSelection(game, state)
@@ -9928,11 +12554,122 @@ return function(mod)
     local captionFont = font(fontCache, theme.typography.caption)
     local titleFont = font(fontCache, theme.typography.title)
     local headerH = textHeight(captionFont)
-    local rowH = math.max(42,
-      math.max(textHeight(bodyFont), textHeight(captionFont))
-        + spacing.xs * 2)
     local slotCount = 4
-    local panelH = battleRuntime.movePanelHeight(theme, slotCount)
+    local panelMetrics = battleRuntime.movePanelMetrics(theme, orientation)
+    local rowH = panelMetrics.rowH
+    local panelH = panelMetrics.h
+
+    if orientation == "portrait" then
+      setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+        or theme.colors.surface))
+      love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.md)
+      runtime.drawPanelFrame(theme, x, y, w, panelH, theme.radii.md)
+      runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
+      runtime.recordLayoutRect("battle-move-panel",
+        { x = x, y = y, w = w, h = panelH })
+
+      local detailH = panelMetrics.detailH
+      setColor(battleRuntime.opaque(theme.colors.surface))
+      love.graphics.rectangle("fill", x, y, w, detailH,
+        theme.radii.md, theme.radii.md, 0, 0)
+      local detailX = x + spacing.sm
+      local detailW = math.max(1, w - spacing.sm * 2)
+      setColor(theme.colors.textMuted)
+      love.graphics.setFont(captionFont)
+      drawText("MOVE INFO", detailX, y + spacing.sm)
+
+      local nameY = y + spacing.sm + headerH + spacing.xs
+      local moveName = definition and definition.name or move and move.id or "-"
+      setColor(theme.colors.text)
+      love.graphics.setFont(bodyFont)
+      drawText(truncate(safeText(moveName), detailW, bodyFont),
+        detailX, nameY)
+
+      local moveType = definition and runtime.displayType(definition.type) or "-"
+      local pp = move and move.pp ~= nil and maximum
+        and ("%d/%d"):format(move.pp, maximum) or "-"
+      local power = battleRuntime.moveStat(definition
+        and (definition.power or definition.basePower), false)
+      local accuracy = battleRuntime.moveStat(definition
+        and (definition.accuracy or definition.acc), true)
+      local summary = ("TYPE %s   PP %s   POW %s   ACC %s"):format(
+        safeText(moveType), pp, power, accuracy)
+      setColor(theme.colors.textMuted)
+      love.graphics.setFont(captionFont)
+      drawText(truncate(summary, detailW, captionFont), detailX,
+        nameY + textHeight(bodyFont) + spacing.xs)
+
+      local listY = y + detailH
+      setColor(theme.colors.divider)
+      love.graphics.rectangle("fill", x + spacing.sm, listY,
+        w - spacing.sm * 2, 1)
+      setColor(theme.colors.textMuted)
+      love.graphics.setFont(captionFont)
+      drawText(state.phase == "mimicSelect" and "COPY A MOVE"
+        or "CHOOSE MOVE", x + spacing.sm, listY + spacing.sm)
+      local gridY = listY + panelMetrics.listHeaderH
+      local cellW = w / 2
+      local native = battleRuntime.inputState(state) or state
+      for index = 1, slotCount do
+        local entry = moves[index]
+        local col = (index - 1) % 2
+        local row = math.floor((index - 1) / 2)
+        local cellX = x + col * cellW
+        local cellY = gridY + row * rowH
+        runtime.registerPointerRegion(cellX, cellY, cellW, rowH, {
+          selectionState = inputState,
+          selectionField = state.phase == "mimicSelect" and "mimicIndex"
+            or "moveIndex",
+          selectionIndex = index, rowCount = slotCount,
+          activate = entry ~= nil, interactive = entry ~= nil,
+          dragHandle = false,
+        })
+        if index == selected then
+          setColor(theme.colors.selected)
+          love.graphics.rectangle("fill", cellX + 1, cellY,
+            cellW - 1, rowH, theme.radii.sm)
+          setColor(theme.colors.accent)
+          love.graphics.rectangle("fill", cellX + 1, cellY, 3, rowH)
+        end
+        if col == 1 then
+          setColor(theme.colors.divider)
+          love.graphics.rectangle("fill", cellX, cellY + spacing.xs,
+            1, rowH - spacing.xs * 2)
+        end
+        if row == 1 then
+          setColor(theme.colors.divider)
+          love.graphics.rectangle("fill", cellX + spacing.sm, cellY,
+            cellW - spacing.sm * 2, 1)
+        end
+        local entryDefinition = entry and game.data and game.data.moves
+          and game.data.moves[entry.id] or nil
+        local entryName = entry and (entryDefinition and entryDefinition.name
+          or entry.id) or "-"
+        local entryMaximum = entryDefinition and entryDefinition.pp
+          and entryDefinition.pp + (entry.ppUps or 0)
+            * math.floor(entryDefinition.pp / 5) or nil
+        local entryPP = entry and entry.pp ~= nil and entryMaximum
+          and ("PP %d/%d"):format(entry.pp, entryMaximum) or ""
+        if native.moveSwapIndex == index then
+          entryPP = "MOVING"
+        elseif native.player and native.player.disabledSlot == index then
+          entryPP = "DISABLED"
+        end
+        local textX = cellX + spacing.sm
+        local textW = math.max(1, cellW - spacing.sm * 2)
+        love.graphics.setFont(bodyFont)
+        setColor(index == selected and theme.colors.text
+          or theme.colors.textMuted)
+        drawText(truncate(safeText(entryName), textW, bodyFont), textX,
+          cellY + spacing.xs)
+        love.graphics.setFont(captionFont)
+        setColor(theme.colors.textMuted)
+        drawText(truncate(entryPP, textW, captionFont), textX,
+          cellY + rowH - spacing.xs - textHeight(captionFont))
+      end
+      return panelH
+    end
+
     local detailW = clamp(w * 0.30, 190, math.max(190, w * 0.38))
     local listX = x + detailW
     local listW = w - detailW
@@ -9942,6 +12679,8 @@ return function(mod)
     love.graphics.rectangle("fill", x, y, w, panelH, theme.radii.md)
     runtime.drawPanelFrame(theme, x, y, w, panelH, theme.radii.md)
     runtime.drawPanelAccent(theme, x, y, w, theme.radii.md, 3)
+    runtime.recordLayoutRect("battle-move-panel",
+      { x = x, y = y, w = w, h = panelH })
     setColor(battleRuntime.opaque(theme.colors.surface))
     love.graphics.rectangle("fill", x, y, detailW, panelH,
       theme.radii.md, 0, theme.radii.md, 0)
@@ -10147,12 +12886,12 @@ return function(mod)
   end
 
   function battleRuntime.fullBattleInStack(game)
-    if runtime.option("battleUiWip", false) ~= true then return nil end
     local states = game and game.stack and game.stack.states
     if type(states) ~= "table" then return nil end
     for index = #states, 1, -1 do
       local candidate = states[index]
       if candidate and runtime.kindFor(candidate, game) == "battle"
+          and runtime.battlePresenterActive(game, candidate)
           and (battleRuntime.presentationMode(candidate,
             battleRuntime.sourceModel(game, candidate)) == "full"
             or battleRuntime.isLevelUpState(game,
@@ -10217,6 +12956,7 @@ return function(mod)
 
   function battleRuntime.childOpen(game, state)
     local native = battleRuntime.inputState(state) or state
+    if native and native._gen1UiGalleryPreview then return false end
     local top = battleRuntime.topState(game)
     return top ~= nil and top ~= native
   end
@@ -10227,7 +12967,7 @@ return function(mod)
       and battleRuntime.isLevelUpState(state.game,
         battleRuntime.topState(state.game))
     return type(state) == "table"
-      and runtime.option("battleUiWip", false) == true
+      and runtime.battlePresenterActive(state.game, state)
       and runtime.option("hideOriginalUi", true) ~= false
       and (battleRuntime.presentationMode(state, nil) == "full" or levelUp)
       and not runtime.battleUsesWideLayout(state)
@@ -10263,57 +13003,36 @@ return function(mod)
       and battleRuntime.isLevelUpState(state.game,
         battleRuntime.topState(state.game))
     return type(state) == "table"
-      and runtime.option("battleUiWip", false) == true
+      and runtime.battlePresenterActive(state.game, state)
       and runtime.option("hideOriginalUi", true) ~= false
       and (battleRuntime.presentationMode(state, nil) == "full" or levelUp)
       and battleRuntime.usesWorldBackground(state)
   end
 
-  -- Native-coordinate bounds of the modern battle arena. WIDE still renders
-  -- its live 304x144 source scene, but the modern frame intentionally uses a
-  -- narrower 1.78:1 composition. Keeping this rectangle in native pixels lets
-  -- the source draw, compose scrub, and screen-space frame share one edge.
+  -- Native-coordinate bounds of the modern battle arena. The WIDE shell maps
+  -- all 304x144 source pixels to the 608x288 interior at exactly 2x. Keeping
+  -- this rectangle authoritative lets source drawing, HUD scrubbing, paper
+  -- cleanup, and the screen-space frame share all four inside edges.
   function battleRuntime.worldSceneRect(state)
     if runtime.battleUsesWideLayout(state) then
-      -- The source WORLD surface is scaled independently of the ornamental
-      -- frame. Four native pixels of horizontal safety on each side keep the
-      -- paper fill and animated scene inside the frame after scaling/rounding,
-      -- while leaving the usable battle height and sprite staging intact.
-      -- WIDE's native paper begins at y=0, while the modern arena begins seven
-      -- source pixels lower after the nine-slice inset is applied.  Clip to
-      -- that same edge (and preserve the old y=105 lower bound) so the source
-      -- paper cannot reappear as a white strip above the ornamental frame at
-      -- larger or fractional window scales.
-      return 28, 7, 248, 98
+      return 0, 0, 304, 144
     end
     return 3, 3, 154, 102
   end
 
-  -- WIDE positions the opponent for all 304 native pixels. The modern arena
-  -- trims roughly 27 pixels from each side, so pull only the source-owned
-  -- opponent picture inward. This preserves send-out/faint picture timing and
-  -- palette animation instead of drawing a second static sprite in the HUD.
+  -- Earlier builds narrowed the WIDE paper and shifted only the opponent to
+  -- compensate. The fixed arena now preserves the complete source transform,
+  -- so restore any hot-reloaded legacy decoration and leave both sides at
+  -- their source-authored coordinates.
   function battleRuntime.decorateWideScenePlacement(state)
-    if runtime.option("battleUiWip", false) ~= true
-        or type(state) ~= "table" or type(state.drawPicsLayer) ~= "function"
-        or state._gen1ModernBattleWidePictures then
-      return state
+    if type(state) == "table" and state._gen1ModernBattleWidePictures
+        and state._gen1ModernBattlePicturesDraw
+        and state.drawPicsLayer == state._gen1ModernBattlePicturesDraw then
+      state.drawPicsLayer = state._gen1ModernBattleNativePictures
+      state._gen1ModernBattlePicturesDraw = nil
+      state._gen1ModernBattleNativePictures = nil
+      state._gen1ModernBattleWidePictures = nil
     end
-    state._gen1ModernBattleWidePictures = true
-    state._gen1ModernBattleNativePictures = state.drawPicsLayer
-    state._gen1ModernBattlePicturesDraw = function(self, slide, sx, sy,
-        onlySide, ...)
-      if runtime.option("battleUiWip", false) == true
-          and runtime.option("hideOriginalUi", true) ~= false
-          and battleRuntime.presentationMode(self, nil) == "full"
-          and runtime.battleUsesWideLayout(self)
-          and onlySide == "enemy" then
-        sx = (tonumber(sx) or 0) - 12
-      end
-      return self._gen1ModernBattleNativePictures(self,
-        slide, sx, sy, onlySide, ...)
-    end
-    state.drawPicsLayer = state._gen1ModernBattlePicturesDraw
     return state
   end
 
@@ -10323,8 +13042,8 @@ return function(mod)
   -- flashes, attacks, send-outs, captures, and shakes remain source-owned,
   -- while the overworld is visible everywhere outside our ornamental frame.
   function battleRuntime.decorateWorldSurface(state)
-    if runtime.option("battleUiWip", false) ~= true
-        or type(state) ~= "table" or type(state.draw) ~= "function"
+    if type(state) ~= "table" or not runtime.battlePresenterActive(state.game, state)
+        or type(state.draw) ~= "function"
         or state._gen1ModernBattleWorldSurface then
       return state
     end
@@ -10426,7 +13145,7 @@ return function(mod)
   -- surface. The scene remains host-rendered; applying the same displacement
   -- to modern cards keeps impact shakes coherent without reproducing battle
   -- animation timing in this mod.
-  function battleRuntime.animationOffsets(state, w, h)
+  function battleRuntime.animationOffsets(state, scaleX, scaleY)
     state = battleRuntime.inputState(state) or state or {}
     local fx = type(state.fx) == "table" and state.fx or {}
     local sx = tonumber(fx.shakeX) or 0
@@ -10434,41 +13153,172 @@ return function(mod)
     if sx == 0 and sy == 0 and (tonumber(fx.shake) or 0) > 0 then
       sx = (tonumber(state.frame) or 0) % 4 < 2 and 2 or -2
     end
-    local scale = math.max(1, math.min(w / 160, h / 144))
+    -- The authored WIDE arena is 304x144 and occupies 608x288 at the
+    -- canonical 640x360 presentation. Keep source animation displacement on
+    -- that same transform instead of the old 160px standard-battle scale.
+    local scale = math.max(0.25, math.min(
+      tonumber(scaleX) or 1, tonumber(scaleY) or tonumber(scaleX) or 1))
     return math.floor(sx * scale + 0.5), math.floor(sy * scale + 0.5),
       math.floor((tonumber(fx.hudShakeX) or 0) * scale + 0.5)
   end
 
-  function battleRuntime.presentationTheme(theme, w, h)
-    local scale = clamp(math.min(w / 760, h / 600), 1, 1.55)
-    if scale <= 1.001 then return theme end
-    return scaledTheme(theme, scale, scale, themeScaleCache)
+  function battleRuntime.presentationTheme(theme, w, h, orientation)
+    local baseW = orientation == "portrait" and 360 or 640
+    local baseH = orientation == "portrait" and 640 or 360
+    local effectiveScale = math.min(w / baseW, h / baseH)
+    local requestedScale = math.max(0.01,
+      tonumber(theme.scale and theme.scale.ui) or 1)
+    local fit = math.min(1, effectiveScale / requestedScale)
+
+    local out = copy(theme)
+    out.typography = copy(theme.typography or {})
+    out.spacing = copy(theme.spacing or {})
+    out.radii = copy(theme.radii or {})
+    out.frame = copy(theme.frame or {})
+    out.density = copy(theme.density or {})
+    out.metrics = copy(theme.metrics or {})
+    for name, value in pairs(out.spacing) do
+      if type(value) == "number" then out.spacing[name] = value * fit end
+    end
+    for name, value in pairs(out.radii) do
+      if type(value) == "number" then out.radii[name] = value * fit end
+    end
+    for name, value in pairs(out.metrics) do
+      if type(value) == "number" then out.metrics[name] = value * fit end
+    end
+    for name, value in pairs(out.frame) do
+      if type(value) == "number" and name ~= "pixelScale"
+          and name ~= "pixelInset" and name ~= "pixelBorder"
+          and name ~= "slice" and name ~= "pixelDpiX"
+          and name ~= "pixelDpiY" then
+        out.frame[name] = value * fit
+      end
+    end
+    for name, value in pairs(out.density) do
+      if type(value) == "number" then out.density[name] = value * fit end
+    end
+    out.scale = copy(theme.scale or {})
+    out.scale.ui = requestedScale * fit
+    out.scale.battleFit = fit
+    if out.scale.pixelFontStep then
+      local requestedStep = clamp(math.floor(out.scale.pixelFontStep), 1, 4)
+      local step = clamp(math.floor(requestedStep * fit + 0.001),
+        1, requestedStep)
+      out.typography.caption = PLAIN_PIXEL_RASTER_STEP * step
+      out.typography.body = PLAIN_PIXEL_RASTER_STEP * step
+      out.typography.title = PLAIN_PIXEL_RASTER_STEP * step * 2
+      out.scale.effectivePixelFontStep = step
+      out.scale.pixelFontStep = step
+      out.scale.font = step
+      out.scale.pixelFontConstrained = out.scale.pixelFontConstrained == true
+        or step < requestedStep
+    else
+      for name, value in pairs(out.typography) do
+        if type(value) == "number" then out.typography[name] = value * fit end
+      end
+      out.scale.font = (tonumber(out.scale.font) or 1) * fit
+    end
+
+    -- Fitting the shell is not enough: large fonts can still make the two
+    -- status cards and command surface intersect. Measure the complete
+    -- worst-case furniture at the effective theme. Plain Pixel may only drop
+    -- by whole authored raster steps; system fonts can shrink continuously.
+    local function contentFits(candidate)
+      local frameOutsetX, frameOutsetY = runtime.frameOutset(candidate)
+      local outerInset = math.max(frameOutsetX, frameOutsetY,
+        16 * effectiveScale)
+      local compact = orientation == "landscape" and h < 480
+      local enemy = battleRuntime.cardMetrics(candidate, {
+        typeText = "TYPE", rateText = "P 0 G 0 U 0", compact = compact,
+      }).h
+      local player = battleRuntime.cardMetrics(candidate, {
+        typeText = "TYPE", experience = { current = 1, maximum = 2 },
+        compact = compact,
+      }).h
+      local move = battleRuntime.movePanelHeight(candidate, 4, orientation)
+      local spacing = candidate.spacing
+      local bodyFont = font(fontCache, candidate.typography.body)
+      local captionFont = font(fontCache, candidate.typography.caption)
+      local arenaW = math.max(1, w - outerInset * 2)
+      if orientation == "landscape" then
+        arenaW = math.min(arenaW, 608 * effectiveScale)
+      end
+      local cardW = orientation == "portrait" and arenaW
+        or math.min(arenaW - spacing.md * 2, 170 * effectiveScale)
+      local cardInnerW = math.max(1, cardW - spacing.md * 2)
+      local cardIdentityW = bodyFont:getWidth("HERCULES") + spacing.sm
+        + bodyFont:getWidth("Lv 100")
+      local cardFooterW = captionFont:getWidth("HP 999/999") + spacing.sm
+        + captionFont:getWidth("PAR  OWNED")
+      local cardMetadataW = math.max(
+        captionFont:getWidth("NORMAL / FLYING"),
+        captionFont:getWidth("P 255 G 255 U 255"))
+      if math.max(cardIdentityW, cardFooterW, cardMetadataW)
+          > cardInnerW + 0.01 then
+        return false
+      end
+      if orientation == "portrait" then
+        local arenaH = math.min(math.max(1, h - outerInset * 2),
+          arenaW * 144 / 304)
+        local moveCellW = arenaW / 2 - spacing.sm * 2
+        if math.max(bodyFont:getWidth("THUNDERBOLT"),
+            captionFont:getWidth("PP 99/99")) > moveCellW + 0.01 then
+          return false
+        end
+        local required = outerInset * 2 + arenaH + spacing.md * 3
+          + enemy + player + move
+        return required <= h + 0.01
+      end
+      local detailW = clamp(arenaW * 0.30, 190,
+        math.max(190, arenaW * 0.38))
+      local moveCellW = (arenaW - detailW) / 2
+      local moveCellRequired = bodyFont:getWidth("THUNDERBOLT")
+        + spacing.xs + captionFont:getWidth("PP 99/99")
+        + spacing.sm * 2
+      if moveCellRequired > moveCellW + 0.01 then return false end
+      return outerInset * 2 + math.max(enemy, player) + spacing.md + move
+        <= h + 0.01
+    end
+
+    if out.scale.pixelFontStep then
+      local step = out.scale.pixelFontStep
+      while step > 1 and not contentFits(out) do
+        step = step - 1
+        out.typography.caption = PLAIN_PIXEL_RASTER_STEP * step
+        out.typography.body = PLAIN_PIXEL_RASTER_STEP * step
+        out.typography.title = PLAIN_PIXEL_RASTER_STEP * step * 2
+        out.scale.effectivePixelFontStep = step
+        out.scale.pixelFontStep = step
+        out.scale.font = step
+        out.scale.pixelFontConstrained = true
+        out.scale.battleContentConstrained = true
+      end
+    else
+      local attempts = 0
+      while attempts < 12 and not contentFits(out) do
+        for name, value in pairs(out.typography) do
+          if type(value) == "number" then out.typography[name] = value * 0.9 end
+        end
+        out.scale.font = (tonumber(out.scale.font) or 1) * 0.9
+        out.scale.fontScaleConstrained = true
+        out.scale.battleContentConstrained = true
+        attempts = attempts + 1
+      end
+    end
+    return out
   end
 
   function battleRuntime.decorateClassicScene(game, state)
-    if runtime.option("battleUiWip", false) ~= true
-        or type(state) ~= "table" or runtime.kindFor(state, game) ~= "battle"
-        or type(state.drawHUDs) ~= "function"
-        or type(state.drawTextArea) ~= "function"
-        or state._gen1ModernBattleSceneIsolation then
-      return state
+    -- Keep the source HUD and text pass native.  The old implementation
+    -- removed these methods at the BattleState boundary, which meant a
+    -- transient/incomplete modern frame produced an entirely blank battle
+    -- menu. `render.compose` already has the complete presentation proof and
+    -- scrubs only the native rectangles after the source draw has finished;
+    -- leaving this seam untouched gives the WIP presenter a reliable native
+    -- fallback on every frame.
+    if type(state) == "table" and state._gen1ModernBattleSceneIsolation then
+      battleRuntime.restoreDecoratedState(state)
     end
-    state._gen1ModernBattleNativeHud = state.drawHUDs
-    state._gen1ModernBattleNativeText = state.drawTextArea
-    state._gen1ModernBattleSceneIsolation = true
-    state._gen1ModernBattleHudDraw = function(self, ...)
-      if battleRuntime.ownsClassicSurface(self)
-          and not battleRuntime.nativeIntroHudNeeded(self) then
-        return
-      end
-      return self._gen1ModernBattleNativeHud(self, ...)
-    end
-    state.drawHUDs = state._gen1ModernBattleHudDraw
-    state._gen1ModernBattleTextDraw = function(self, ...)
-      if battleRuntime.ownsClassicSurface(self) then return end
-      return self._gen1ModernBattleNativeText(self, ...)
-    end
-    state.drawTextArea = state._gen1ModernBattleTextDraw
     return state
   end
 
@@ -10496,7 +13346,7 @@ return function(mod)
     local spacing = theme.spacing
     local captionFont = font(fontCache, theme.typography.caption)
     local dot = math.max(10, textHeight(captionFont) - 2)
-    local h = spacing.sm * 2 + textHeight(captionFont) + spacing.xs + dot
+    local h = battleRuntime.partyStatusHeight(theme)
     setColor(battleRuntime.opaque(theme.colors.surfaceRaised
       or theme.colors.surface))
     love.graphics.rectangle("fill", x, y, w, h, theme.radii.sm)
@@ -10530,6 +13380,13 @@ return function(mod)
     return h
   end
 
+  function battleRuntime.partyStatusHeight(theme)
+    local spacing = theme.spacing
+    local captionFont = font(fontCache, theme.typography.caption)
+    local dot = math.max(10, textHeight(captionFont) - 2)
+    return spacing.sm * 2 + textHeight(captionFont) + spacing.xs + dot
+  end
+
   function battleRuntime.drawCleanup(theme, x, y, w, h)
     if w <= 0 or h <= 0 then return end
     setColor(battleRuntime.opaque(theme.colors.surface))
@@ -10550,7 +13407,7 @@ return function(mod)
   -- FIXED battles expose the exact centred surface rectangle through the HUD
   -- viewport. Anchor modern battle furniture to that surface instead of the
   -- whole monitor, which is especially important on ultrawide displays.
-  function battleRuntime.viewportRect(viewport, state)
+  function battleRuntime.viewportRect(viewport, state, theme)
     local safeX, safeY, safeW, safeH = presenterRect(viewport)
     local x = tonumber(viewport and viewport.gameX)
     local y = tonumber(viewport and viewport.gameY)
@@ -10568,16 +13425,178 @@ return function(mod)
     else
       x, y, w, h = safeX, safeY, safeW, safeH
     end
-    -- WIDE's 304:144 surface is intentionally panoramic, but mirroring that
-    -- full span with modern furniture makes every card and button feel
-    -- needlessly stretched on desktop. Keep the live source scene untouched
-    -- while bringing the ornamental frame and controls modestly inward.
-    if runtime.battleUsesWideLayout(state) and w > h * 1.78 then
-      local framedW = math.min(w, h * 1.78, safeW * 0.90)
-      x = x + (w - framedW) / 2
-      w = framedW
+    local orientation = h > w * 1.20 and "portrait" or "landscape"
+    local preset = orientation == "portrait"
+      and RESPONSIVE_LAYOUT_PRESETS.BATTLE_PORTRAIT
+      or RESPONSIVE_LAYOUT_PRESETS.BATTLE_WIDE
+    local requestedScale = math.max(0.01,
+      tonumber(theme and theme.scale and theme.scale.ui) or 1)
+    local effectiveScale = math.min(requestedScale,
+      w / preset.width, h / preset.height)
+    local targetW = preset.width * effectiveScale
+    local targetH = preset.height * effectiveScale
+    x, y = x + (w - targetW) * 0.5, y + (h - targetH) * 0.5
+    return x, y, targetW, targetH, orientation, effectiveScale
+  end
+
+  function battleRuntime.arenaRect(theme, x, y, w, h, orientation, scale)
+    scale = math.max(0.01, tonumber(scale) or 1)
+    local frameOutsetX, frameOutsetY = runtime.frameOutset(theme)
+    local insetX = math.max(frameOutsetX, 16 * scale)
+    local insetY = math.max(frameOutsetY, 16 * scale)
+    if orientation == "portrait" then
+      local arenaW = math.max(1, w - insetX * 2)
+      local arenaH = math.min(math.max(1, h - insetY * 2),
+        arenaW * 144 / 304)
+      -- Portrait keeps the two sides visually separated: the opponent owns
+      -- a stable slot above the renderer and the player owns the slot below.
+      -- Reserve the opponent's worst-case card height here so the source
+      -- transform, frame, and status furniture all share one geometry.
+      local enemySlotH = battleRuntime.cardMetrics(theme, {
+        typeText = "TYPE", rateText = "P 255 G 255 U 255",
+      }).h
+      local furnitureGap = math.max(theme.spacing.md, frameOutsetY + 1)
+      return x + insetX, y + insetY + enemySlotH + furnitureGap,
+        arenaW, arenaH,
+        arenaW / 304, arenaH / 144
     end
-    return x, y, w, h
+    local arenaW = math.min(math.max(1, w - insetX * 2), 608 * scale)
+    local arenaH = math.min(math.max(1, h - insetY * 2), 288 * scale)
+    return x + (w - arenaW) * 0.5, y + insetY, arenaW, arenaH,
+      arenaW / 304, arenaH / 144
+  end
+
+  function battleRuntime.presentationGeometry(viewport, state, theme)
+    local x, y, w, h, orientation, effectiveScale =
+      battleRuntime.viewportRect(viewport, state, theme)
+    local fittedTheme = battleRuntime.presentationTheme(
+      theme, w, h, orientation)
+    local arenaX, arenaY, arenaW, arenaH = battleRuntime.arenaRect(
+      fittedTheme, x, y, w, h, orientation, effectiveScale)
+    return {
+      x = x, y = y, w = w, h = h,
+      orientation = orientation, effectiveScale = effectiveScale,
+      theme = fittedTheme,
+      arenaX = arenaX, arenaY = arenaY,
+      arenaW = arenaW, arenaH = arenaH,
+    }
+  end
+
+  -- Capture the already-rendered and selectively scrubbed WIDE source before
+  -- the host composites it at its native letterbox size. render.hud can then
+  -- place those exact pixels inside the fixed responsive arena. Reusing the
+  -- host's blitter later retains palette-zone and forced-mono behavior.
+  function battleRuntime.captureSource(renderer, ctx, state)
+    if not (renderer and type(renderer.blitCanvas) == "function"
+        and ctx and ctx.uiCanvas and love and love.graphics) then
+      return false
+    end
+    local width, height = ctx.uiCanvas:getDimensions()
+    if width ~= 304 or height ~= 144 then return false end
+    local canvas = battleRuntime.sourceCanvas
+    if not canvas or canvas:getWidth() ~= width or canvas:getHeight() ~= height then
+      canvas = love.graphics.newCanvas(width, height)
+      canvas:setFilter("nearest", "nearest")
+      battleRuntime.sourceCanvas = canvas
+    end
+    love.graphics.push("all")
+    local ok = pcall(function()
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      love.graphics.setBlendMode("replace")
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(ctx.uiCanvas, 0, 0)
+    end)
+    love.graphics.pop()
+    if not ok then return false end
+
+    local dpiX = math.max(1, tonumber(ctx.dpiX) or 1)
+    local dpiY = math.max(1, tonumber(ctx.dpiY) or 1)
+    local physicalW = tonumber(ctx.pw) or (tonumber(ctx.ww) or width) * dpiX
+    local physicalH = tonumber(ctx.ph) or (tonumber(ctx.wh) or height) * dpiY
+    local uiScale
+    if renderer.uiFill then
+      uiScale = math.min(physicalH / height, physicalW / width)
+    elseif type(renderer.uiScale) == "function" then
+      local scaleOk, value = pcall(renderer.uiScale, renderer)
+      if scaleOk then uiScale = tonumber(value) end
+    end
+    uiScale = math.max(0.01, uiScale or tonumber(ctx.scale) or 1)
+    local originalW, originalH = width * uiScale / dpiX,
+      height * uiScale / dpiY
+    local originalX = math.floor((physicalW - width * uiScale) / 2) / dpiX
+    local originalY = math.floor((physicalH - height * uiScale) / 2) / dpiY
+    battleRuntime.sourceCapture = {
+      canvas = canvas, renderer = renderer, state = state,
+      zones = ctx.zones, dpiX = dpiX, dpiY = dpiY,
+      original = {
+        x = originalX, y = originalY, w = originalW, h = originalH,
+      },
+      world = battleRuntime.ownsWorldSurface(state),
+      dim = clamp(tonumber(renderer.battleDim) or 0, 0, 1),
+    }
+    return true
+  end
+
+  function battleRuntime.drawCapturedSource(game, viewport, theme)
+    local capture = battleRuntime.sourceCapture
+    battleRuntime.sourceCapture = nil
+    if not (capture and capture.canvas and capture.state
+        and runtime.battlePresenterActive(game, capture.state)) then
+      return false
+    end
+    local geometry = battleRuntime.presentationGeometry(
+      viewport, capture.state, theme)
+    local arena = {
+      x = geometry.arenaX, y = geometry.arenaY,
+      w = geometry.arenaW, h = geometry.arenaH,
+    }
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    if capture.world and capture.dim > 0 and capture.original then
+      local outer = capture.original
+      local left = math.max(outer.x, arena.x)
+      local top = math.max(outer.y, arena.y)
+      local right = math.min(outer.x + outer.w, arena.x + arena.w)
+      local bottom = math.min(outer.y + outer.h, arena.y + arena.h)
+      love.graphics.setColor(0, 0, 0, capture.dim)
+      if right <= left or bottom <= top then
+        love.graphics.rectangle("fill", outer.x, outer.y, outer.w, outer.h)
+      else
+        if top > outer.y then
+          love.graphics.rectangle("fill", outer.x, outer.y,
+            outer.w, top - outer.y)
+        end
+        if bottom < outer.y + outer.h then
+          love.graphics.rectangle("fill", outer.x, bottom,
+            outer.w, outer.y + outer.h - bottom)
+        end
+        if left > outer.x then
+          love.graphics.rectangle("fill", outer.x, top,
+            left - outer.x, bottom - top)
+        end
+        if right < outer.x + outer.w then
+          love.graphics.rectangle("fill", right, top,
+            outer.x + outer.w - right, bottom - top)
+        end
+      end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    local sx, sy = arena.w / 304, arena.h / 144
+    local drew = pcall(capture.renderer.blitCanvas, capture.renderer,
+      capture.canvas, sx, sy, capture.zones, sx, sy,
+      arena.x, arena.y, arena.x, arena.y, arena.w, arena.h,
+      capture.dpiX, capture.dpiY)
+    if not drew then
+      love.graphics.setShader()
+      love.graphics.setScissor()
+      love.graphics.setScissor(arena.x, arena.y, arena.w, arena.h)
+      love.graphics.draw(capture.canvas, arena.x, arena.y, 0, sx, sy)
+      love.graphics.setScissor()
+    end
+    love.graphics.pop()
+    return true
   end
 
   -- Level-up is a battle child, but it is still part of the modern battle
@@ -10587,8 +13606,9 @@ return function(mod)
   -- remain source-owned so their animation, palette, and transition timing
   -- continue uninterrupted underneath the card.
   runtime.drawBattleLevelUp = function(game, state, viewport, theme, model)
-    local x, y, w, h = battleRuntime.viewportRect(viewport, state)
-    theme = battleRuntime.presentationTheme(theme, w, h)
+    local x, y, w, h, orientation = battleRuntime.viewportRect(
+      viewport, state, theme)
+    theme = battleRuntime.presentationTheme(theme, w, h, orientation)
     local spacing = theme.spacing
     local top = battleRuntime.topState(game) or state
     local mon = top and top.mon or top and top.pokemon or {}
@@ -10676,110 +13696,158 @@ return function(mod)
   end
 
   runtime.drawBattle2dHud = function(game, state, viewport, theme, model, options)
-    -- FIX 1: NEUTRALIZE FORCED OPACITY
-    battleRuntime.opaque = function(color) return color end
-
     options = options or {}
-    local x, y, w, h = battleRuntime.viewportRect(viewport, state)
-    theme = battleRuntime.presentationTheme(theme, w, h)
+    local geometry = battleRuntime.presentationGeometry(viewport, state, theme)
+    local x, y, w, h = geometry.x, geometry.y, geometry.w, geometry.h
+    local orientation, effectiveScale = geometry.orientation,
+      geometry.effectiveScale
+    theme = geometry.theme
     local spacing = theme.spacing
     local source, overlays = battleRuntime.dataSource(game, state, model)
     local native = battleRuntime.inputState(source) or state
     local phase = source.phase or native.phase
-    local shakeX, shakeY, enemyShakeX =
-      battleRuntime.animationOffsets(source, w, h)
-    local inset = math.max(spacing.md,
-      math.floor(math.min(w, h) * 0.018))
-    local innerX, innerY = x + inset, y + inset
-    local innerW, innerH = w - inset * 2, h - inset * 2
-    local arenaH = math.max(spacing.xl,
-      h * (104 / 144) - inset)
+    local innerX, innerY, innerW, arenaH = geometry.arenaX,
+      geometry.arenaY, geometry.arenaW, geometry.arenaH
+    local shakeX, shakeY, enemyShakeX = battleRuntime.animationOffsets(
+      source, innerW / 304, arenaH / 144)
+    local innerH = arenaH
+    local frameOutsetX, frameOutsetY = runtime.frameOutset(theme)
+    local outerInset = math.max(frameOutsetX, frameOutsetY,
+      16 * effectiveScale)
 
     love.graphics.push("all")
     love.graphics.origin()
+    love.graphics.setScissor(x, y, w, h)
+    runtime.recordLayoutRect("battle-envelope",
+      { x = x, y = y, w = w, h = h })
+    if runtime.layoutDiagnostics.current then
+      runtime.layoutDiagnostics.current.container = {
+        x = x, y = y, w = w, h = h,
+      }
+    end
+    runtime.recordLayoutRect("battle-arena",
+      { x = innerX, y = innerY, w = innerW, h = arenaH },
+      { x = x, y = y, w = w, h = h })
 
     runtime.drawPanelFrame(theme, innerX, innerY, innerW, arenaH,
       theme.radii.lg, false)
     runtime.drawPanelAccent(theme, innerX, innerY, innerW,
       theme.radii.lg, 3)
 
-    local compactLandscape = h < 480 and w > h
+    local compactLandscape = orientation == "landscape" and h < 480
+    local isMove = phase == "moveSelect" or phase == "mimicSelect"
+    local topState = game.stack and game.stack.top and game.stack:top()
+    local isTop = (topState == state or topState == native
+      or source._gen1UiGalleryPreview == true)
+    local furnitureGap = math.max(spacing.md, frameOutsetY + 1)
+    local cardW = orientation == "portrait" and innerW
+      or math.min(innerW - spacing.md * 2,
+        battleRuntime.cardWidth(source) * effectiveScale)
 
-    -- =====================================================================
-    -- FIX 2: EXACTLY 170 PIXELS WIDE
-    -- If Pokémon names truncate, slightly lower FONT SCALE in UI Settings!
-    -- =====================================================================
-    local cardW = 170
-
-    local enemyX = innerX + spacing.xl + 8
-    local enemyY = innerY + spacing.xl + 8
-    local playerX = innerX + innerW - cardW - spacing.xl - 8
-    local playerY = innerY + arenaH * 0.52
+    local enemyX = orientation == "portrait" and innerX
+      or innerX + math.max(spacing.md, 24 * effectiveScale)
+    local playerX = orientation == "portrait" and innerX
+      or innerX + innerW - cardW - math.max(spacing.md, 24 * effectiveScale)
 
     local experience = battleRuntime.overlayValue(source, overlays,
       { "experience", "expBar", "experienceBar" })
+    local enemyInfo = {
+      caught = battleRuntime.caughtValue(source, overlays),
+      typeText = battleRuntime.typeText(game, source.enemy),
+      rateText = battleRuntime.catchRateText(source, overlays),
+      compact = compactLandscape,
+    }
+    local playerInfo = {
+      typeText = battleRuntime.typeText(game, source.player),
+      experience = experience,
+      compact = compactLandscape,
+    }
+    -- AskName intentionally clears both battlers before its dialogue/choice
+    -- states appear. Honor the host's public flag so modern status cards do
+    -- not repopulate the field that the catch flow deliberately blanked.
+    local blankForAskName = source.blankForAskName == true
+      or native.blankForAskName == true
+    local enemyVisible = not blankForAskName
+      and battleRuntime.battlerVisible(source, "enemy")
+    local enemyPartyVisible = not enemyVisible
+      and native.showEnemyBalls and native.enemyParty
+    local enemyCardH = enemyVisible
+      and battleRuntime.cardMetrics(theme, enemyInfo).h
+      or enemyPartyVisible and battleRuntime.partyStatusHeight(theme) or 0
+    local playerCardH = battleRuntime.cardMetrics(theme, playerInfo).h
+    local enemyY = orientation == "portrait"
+      and innerY - furnitureGap - enemyCardH
+      or innerY + math.max(spacing.md, 20 * effectiveScale)
+    local playerY = orientation == "portrait"
+      and innerY + arenaH + furnitureGap or enemyY
+    if orientation == "landscape" then
+      -- Status-card slots do not move as phases change. Reserve the tallest
+      -- command surface even while a message is showing, then clamp the
+      -- player card above that stable boundary.
+      local reservedPanelH = math.max(
+        battleRuntime.movePanelHeight(theme, 4, "landscape"),
+        battleRuntime.commandPanelHeight(theme))
+      local reservedPanelTop = y + h - outerInset - reservedPanelH
+      playerY = math.max(innerY + spacing.sm,
+        math.min(innerY + arenaH * 0.52,
+          reservedPanelTop - furnitureGap - playerCardH))
+    end
 
-    if battleRuntime.battlerVisible(source, "enemy") then
-      runtime.drawBattle2dCard(game, theme, source.enemy,
-        enemyX + shakeX + enemyShakeX, enemyY + shakeY, cardW, {
-          caught = battleRuntime.caughtValue(source, overlays),
-          typeText = battleRuntime.typeText(game, source.enemy),
-          rateText = battleRuntime.catchRateText(source, overlays),
-          compact = compactLandscape,
-        })
-    elseif native.showEnemyBalls and native.enemyParty then
-      battleRuntime.drawPartyStatus(theme, native.enemyParty,
+    if enemyVisible then
+      enemyCardH = runtime.drawBattle2dCard(game, theme, source.enemy,
+        enemyX + shakeX + enemyShakeX, enemyY + shakeY, cardW, enemyInfo)
+    elseif enemyPartyVisible then
+      enemyCardH = battleRuntime.drawPartyStatus(theme, native.enemyParty,
         enemyX + shakeX + enemyShakeX, enemyY + shakeY,
         cardW, "FOE PARTY")
     end
-
-    if not options.hidePlayerCard
-        and battleRuntime.battlerVisible(source, "player") then
-      runtime.drawBattle2dCard(game, theme, source.player,
-        playerX + shakeX, playerY + shakeY, cardW, {
-          typeText = battleRuntime.typeText(game, source.player),
-          experience = experience,
-          compact = compactLandscape,
-        })
+    if enemyCardH > 0 then
+      runtime.recordLayoutRect("battle-enemy-card", {
+        x = enemyX + shakeX + enemyShakeX, y = enemyY + shakeY,
+        w = cardW, h = enemyCardH,
+      })
     end
 
-    if battleRuntime.childOpen(game, native) then
+    if not blankForAskName and not options.hidePlayerCard
+        and battleRuntime.battlerVisible(source, "player") then
+      playerCardH = runtime.drawBattle2dCard(game, theme, source.player,
+        playerX + shakeX, playerY + shakeY, cardW, playerInfo)
+      runtime.recordLayoutRect("battle-player-card", {
+        x = playerX + shakeX, y = playerY + shakeY,
+        w = cardW, h = playerCardH,
+      })
+    end
+
+    if blankForAskName or battleRuntime.childOpen(game, native) then
       love.graphics.pop()
       return
     end
 
-    local isMove = phase == "moveSelect" or phase == "mimicSelect"
-
-    local topState = game.stack and game.stack.top and game.stack:top()
-    local isTop = (topState == state or topState == native)
-
     if isTop then
         if isMove then
-          local panelW = math.min(innerW,
-            math.max(620, math.min(980, innerW * 0.68)))
+          local panelW = innerW
           local moves = phase == "mimicSelect" and source.mimicMoves
             or source.moves or source.player and source.player.curMoves or {}
           local probeH = battleRuntime.movePanelHeight(theme,
-            type(moves) == "table" and #moves or 0)
+            type(moves) == "table" and #moves or 0, orientation)
           local panelX = x + (w - panelW) / 2 + shakeX
-          local panelY = y + h - inset - probeH + shakeY
+          local panelY = math.max(y + outerInset,
+            y + h - outerInset - probeH) + shakeY
           runtime.drawBattle2dMoves(game, source, theme,
-            panelX, panelY, panelW)
+            panelX, panelY, panelW, orientation)
         elseif phase == "menu" then
-          local panelW = math.min(innerW,
-            math.max(460, math.min(720, innerW * 0.48)))
+          local panelW = math.min(innerW, 460 * effectiveScale)
           local probeH = battleRuntime.commandPanelHeight(theme)
           local panelX = x + (w - panelW) / 2 + shakeX
-          local panelY = y + h - inset - probeH + shakeY
+          local panelY = math.max(y + outerInset,
+            y + h - outerInset - probeH) + shakeY
           runtime.drawBattle2dCommands(game, source, theme,
             panelX, panelY, panelW)
         else
           local message = runtime.battleMessage(source)
 
-          -- =====================================================================
-          -- FIX 3: THE INTRO TEXT KILLER
-          -- Delete the sticky fallback text as soon as a real message appears!
-          -- =====================================================================
+          -- Once the source publishes a live message, discard its sticky
+          -- intro fallback so it cannot reappear behind later battle text.
           if source and type(source) == "table" then
               if message ~= "" and message ~= source.introText then
                   source.introText = nil
@@ -10790,9 +13858,17 @@ return function(mod)
           message = runtime.battleMessage(source)
 
           if message ~= "" then
-            runtime.drawBattle2dMessage(theme, message,
-              innerX + shakeX, innerY + shakeY, innerW, innerH,
-              source.msgWaiting or source.msgPrompt)
+            if orientation == "portrait" then
+              local messageY = innerY + arenaH + spacing.sm
+              runtime.drawBattle2dMessage(theme, message,
+                innerX + shakeX, messageY + shakeY, innerW,
+                math.max(1, y + h - outerInset - messageY),
+                source.msgWaiting or source.msgPrompt)
+            else
+              runtime.drawBattle2dMessage(theme, message,
+                innerX + shakeX, innerY + shakeY, innerW, innerH,
+                source.msgWaiting or source.msgPrompt)
+            end
           end
         end
     end
@@ -10800,9 +13876,6 @@ return function(mod)
   end
 
   runtime.drawBattleHud = function(game, state, viewport, theme, model, mode)
-    -- FIX 1: NEUTRALIZE FORCED OPACITY
-    battleRuntime.opaque = function(color) return color end
-
     local top = battleRuntime.topState(game)
     if battleRuntime.isLevelUpState(game, top) then
       runtime.drawBattle2dHud(game, state, viewport, theme, model, {
@@ -10823,8 +13896,9 @@ return function(mod)
     local shortLandscape = h < 480 and w > h
     local inset = math.max(spacing.md, math.floor(math.min(w, h) * 0.018))
 
-    -- FIX 2: EXACTLY 170 PIXELS WIDE
-    local cardW = 170
+    -- Legacy scene-HUD geometry remains only as a defensive fallback for
+    -- direct internal calls; eligible battles resolve to the fixed shell.
+    local cardW = battleRuntime.cardWidth(source)
 
     local experience = battleRuntime.overlayValue(source, overlays,
       { "experience", "expBar", "experienceBar" })
@@ -10845,7 +13919,7 @@ return function(mod)
 
     local message = runtime.battleMessage(source)
 
-    -- FIX 3: THE INTRO TEXT KILLER
+    -- A live source message supersedes the sticky intro fallback.
     if source and type(source) == "table" then
         if message ~= "" and message ~= source.introText then
             source.introText = nil
@@ -10913,6 +13987,7 @@ return function(mod)
   end
 
   runtime.drawBattle = function(game, state, viewport, theme)
+    if not runtime.battlePresenterActive(game, state) then return end
     local nativeState = state
     local model = battleRuntime.sourceModel(game, state)
     if model then
@@ -10935,7 +14010,6 @@ return function(mod)
   -- layer remain untouched. This is substantially safer than covering broad
   -- screen-space bands and lets the modern cards be genuinely content-sized.
   function battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
-    if runtime.option("battleUiWip", false) ~= true then return false end
     if not (game and ctx and ctx.uiCanvas and type(layers) == "table") then
       return false
     end
@@ -10944,6 +14018,7 @@ return function(mod)
       if layer.kind == "battle" then battleState = layer.state break end
     end
     if not battleState then return false end
+    if not runtime.battlePresenterActive(game, battleState) then return false end
     local model = battleRuntime.sourceModel(game, battleState)
     if model then
       model._gen1ModernBattleState = battleState
@@ -11042,8 +14117,13 @@ return function(mod)
           worldSceneW, worldSceneH)
         love.graphics.setScissor()
       else
+        local paperX, paperY, paperW, paperH =
+          battleRuntime.worldSceneRect(battleState)
+        paperX = offsetX + paperX
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.rectangle("fill", 0, 0, canvasW, canvasH)
+        love.graphics.setScissor(paperX, paperY, paperW, paperH)
+        love.graphics.rectangle("fill", paperX, paperY, paperW, paperH)
+        love.graphics.setScissor()
       end
       love.graphics.pop()
       return true
@@ -11074,8 +14154,13 @@ return function(mod)
     local phase = source.phase or native.phase
     local isMove = phase == "moveSelect" or phase == "mimicSelect"
     local message = runtime.battleMessage(source)
-    if childOpen or phase == "menu" or isMove or message ~= "" then
-      if transparentWorld then setWorldOutsidePaint() end
+    if wide or childOpen or phase == "menu" or isMove or message ~= "" then
+      -- WideBattle always paints a native bottom text frame, including idle
+      -- phases with no message. The modern full presenter owns that complete
+      -- information band, so scrub it every frame instead of leaving an
+      -- empty box visible between actions. This rectangle remains inside the
+      -- framed arena; battle paper avoids a map-shaped transparent strip.
+      if transparentWorld then love.graphics.setColor(1, 1, 1, 1) end
       love.graphics.rectangle("fill", offsetX, wide and 104 or 96,
         nativeW, wide and 40 or 48)
     end
@@ -11256,9 +14341,1317 @@ return function(mod)
     love.graphics.pop()
   end
 
+  runtime.uiGalleryFirstKey = function(values)
+    local first
+    for key in pairs(type(values) == "table" and values or {}) do
+      if first == nil or tostring(key) < tostring(first) then first = key end
+    end
+    return first
+  end
+
+  runtime.uiGallerySampleMon = function(game, index)
+    index = math.max(1, math.floor(tonumber(index) or 1))
+    local party = game and game.save and game.save.party or {}
+    local source = #party > 0 and party[((index - 1) % #party) + 1] or nil
+    local mon = type(source) == "table" and copy(source) or {}
+    local pokemon = game and game.data and game.data.pokemon or {}
+    mon.species = mon.species or runtime.uiGalleryFirstKey(pokemon)
+      or "MISSINGNO"
+    local def = pokemon[mon.species] or {}
+    mon.nickname = index == 1 and (mon.nickname or def.name or mon.species)
+      or (safeText(def.name or mon.species) .. " " .. index)
+    mon.level = tonumber(mon.level) or (9 + index)
+    mon.stats = type(mon.stats) == "table" and copy(mon.stats) or {}
+    local base = type(def.baseStats) == "table" and def.baseStats or {}
+    mon.stats.hp = tonumber(mon.stats.hp) or tonumber(base.hp) or 35
+    mon.stats.attack = tonumber(mon.stats.attack) or tonumber(base.attack) or 25
+    mon.stats.defense = tonumber(mon.stats.defense) or tonumber(base.defense) or 24
+    mon.stats.speed = tonumber(mon.stats.speed) or tonumber(base.speed) or 28
+    mon.stats.special = tonumber(mon.stats.special) or tonumber(base.special) or 26
+    mon.hp = clamp(tonumber(mon.hp) or mon.stats.hp, 0, mon.stats.hp)
+    mon.exp = tonumber(mon.exp) or mon.level * mon.level * mon.level
+    mon.moves = type(mon.moves) == "table" and copy(mon.moves) or {}
+    if #mon.moves == 0 then
+      local moveId = runtime.uiGalleryFirstKey(
+        game and game.data and game.data.moves)
+      if moveId then mon.moves[1] = { id = moveId, pp = 20 } end
+    end
+    return mon
+  end
+
+  runtime.uiGalleryRows = function(prefix, count, valuePrefix, longContent)
+    local rows = {}
+    for index = 1, math.max(0, count == nil and 1 or count) do
+      rows[index] = {
+        label = longContent
+          and (prefix .. " WITH A DELIBERATELY LONG WRAPPING LABEL " .. index)
+          or (prefix .. " " .. index),
+        right = valuePrefix and (valuePrefix .. index) or nil,
+        value = valuePrefix and (valuePrefix .. index) or index,
+      }
+    end
+    return rows
+  end
+
+  runtime.uiGalleryCountFor = function(spec, level)
+    local profile = level and level.id or "normal"
+    if spec.kind == "party" then
+      return ({ empty = 0, sparse = 1, normal = 3, full = 6,
+        overflow = 6 })[profile] or 3
+    end
+    if spec.kind == "box_mon_list" or spec.kind == "gen3_box" then
+      return ({ empty = 0, sparse = 1, normal = 10, full = 20,
+        overflow = 20 })[profile] or 10
+    end
+    return math.max(0, tonumber(level and level.count) or 6)
+  end
+
+  runtime.uiGalleryPreviewGame = function(game, count)
+    local previewGame = setmetatable({}, { __index = game or {} })
+    previewGame.data = game and game.data or {}
+    local sourceSave = game and game.save or {}
+    -- Whitelist the save fields used by presenters. No nested table from the
+    -- live save is shared with a synthetic model.
+    previewGame.save = {
+      player = copy(sourceSave.player or {}),
+      options = copy(sourceSave.options or {}),
+      playTime = tonumber(sourceSave.playTime) or 3723,
+      money = tonumber(sourceSave.money) or 999999,
+    }
+    previewGame.save.player = merge({
+      name = "RED", id = 12345,
+    }, previewGame.save.player)
+    previewGame.save.player.name = previewGame.save.player.name or "RED"
+    previewGame.save.player.id = previewGame.save.player.id or 12345
+    previewGame.save.party = {}
+    local partyCount = math.min(6, math.max(0, count or 0))
+    for index = 1, partyCount do
+      previewGame.save.party[index] = runtime.uiGallerySampleMon(game, index)
+    end
+    previewGame.save.currentBox = 1
+    previewGame.save.boxes = { {} }
+    for index = 1, math.min(20, math.max(0, count or 0)) do
+      previewGame.save.boxes[1][index] = runtime.uiGallerySampleMon(game, index)
+    end
+    previewGame.save.inventory = {}
+    for itemId in pairs(previewGame.data.items or {}) do
+      previewGame.save.inventory[itemId] = 9
+    end
+    previewGame.save.pokedex = { seen = {}, owned = {} }
+    for _, mon in ipairs(previewGame.save.party) do
+      previewGame.save.pokedex.seen[mon.species] = true
+      previewGame.save.pokedex.owned[mon.species] = true
+    end
+    previewGame.stack = { states = {} }
+    previewGame.stack.top = function(self)
+      return self.states[#self.states]
+    end
+    return previewGame
+  end
+
+  runtime.buildUiGalleryPreview = function(game, gallery, spec, level)
+    local kind, variant = spec.kind, spec.variant
+    local count = runtime.uiGalleryCountFor(spec, level)
+    local longContent = level and level.id == "overflow"
+    local previewGame = runtime.uiGalleryPreviewGame(game, count)
+    local state = {
+      game = previewGame, screenId = spec.screenId,
+      _gen1UiGalleryPreview = true, isOpaque = true,
+      _gen1UiGalleryPreset = spec.preset or RESPONSIVE_KIND_PRESET[kind] or "M",
+      _gen1UiGallerySpecId = spec.id,
+      _gen1UiGalleryLongContent = longContent,
+      title = spec.name, index = 1, scroll = 0,
+    }
+    local itemId = runtime.uiGalleryFirstKey(previewGame.data.items)
+    local moveId = runtime.uiGalleryFirstKey(previewGame.data.moves)
+    local species = previewGame.save.party[1]
+      and previewGame.save.party[1].species
+      or runtime.uiGalleryFirstKey(previewGame.data.pokemon)
+    local mon = previewGame.save.party[1]
+      or runtime.uiGallerySampleMon(previewGame, 1)
+
+    if kind == "text" then
+      state.pages = { {} }
+      for index = 1, math.min(count, 8) do
+        state.pages[1][index] = index == count and count > 6
+          and "A deliberately long final dialogue line verifies wrapping at the selected scale."
+          or ("Gallery dialogue line " .. index .. ".")
+      end
+      state.pageIndex = 1
+      state.lineIndex = math.max(1, #state.pages[1])
+      state.charIndex = #(state.pages[1][state.lineIndex] or "")
+      state.shown, state.done = { {} }, true
+    elseif kind == "choice" then
+      state.title, state.pending = "MAKE A CHOICE", nil
+      if variant == "catch_nickname" then
+        state.title = ""
+        state._gen1UiGalleryUnderState = {
+          game = previewGame, screenId = "TextBox",
+          _gen1UiGalleryPreview = true,
+          _gen1UiGalleryPreset = "XS",
+          pages = { {
+            "Do you want to",
+            "give a nickname",
+            "to TESTMON?",
+          } },
+          pageIndex = 1, lineIndex = 3, charIndex = 11,
+          shown = { {} }, done = true, choice = true,
+        }
+      end
+    elseif kind == "quantity" then
+      state.qty, state.unitPrice = math.min(99, count), 300
+    elseif kind == "menu" or kind == "list" or kind == "box_root" then
+      state.items = runtime.uiGalleryRows(
+        kind == "box_root" and "BOX ACTION" or "MENU ITEM", count, nil,
+        longContent)
+      if kind == "box_root" then
+        while #state.items < 5 do
+          state.items[#state.items + 1] = {
+            label = "BOX ACTION " .. tostring(#state.items + 1),
+          }
+        end
+        state.noSound = true
+        for index = 1, 4 do state.items[index].keepOpen = true end
+        state.items[5].label = "SEE YA!"
+      end
+    elseif kind == "options" or kind == "mod_options" then
+      state.rows = {}
+      for index = 1, count do
+        local value = index % 2 == 0 and "OFF" or "ON"
+        state.rows[index] = {
+          id = "gallery_option_" .. index,
+          label = "EXAMPLE OPTION " .. index,
+          value = function() return value end,
+        }
+      end
+    elseif kind == "mod_manager" then
+      state.screen = variant == "confirm" and "list"
+        or variant == "help" and "options" or variant or "list"
+      state.cursor, state.scroll, state.tab = 1, 1, 1
+      local galleryMods = {}
+      for index = 1, count do
+        galleryMods[index] = {
+          id = "gallery_mod_" .. index,
+          name = longContent
+            and ("Example Mod With A Long Name " .. index)
+            or ("Example Mod " .. index),
+          version = "1." .. index .. ".0", enabled = index % 3 ~= 0,
+          category = index % 2 == 0 and "UI" or "GAMEPLAY",
+          description = "A safe synthetic manager record used by the UI Gallery.",
+        }
+      end
+      state.currentMod = galleryMods[1] or {
+        id = "gallery_mod", name = "Example Mod", version = "1.0.0",
+        enabled = true, category = "UI",
+      }
+      state.rowsForScreen = function(self)
+        local rows = {}
+        if self.screen == "list" then
+          for index, managed in ipairs(galleryMods) do
+            rows[index] = { label = managed.name, mod = managed }
+          end
+        elseif self.screen == "detail" then
+          rows = {
+            { label = "VERSION", value = self.currentMod.version },
+            { label = "CATEGORY", value = self.currentMod.category },
+            { label = "DESCRIPTION", value = self.currentMod.description },
+            { label = "OPTIONS", value = "OPEN" },
+            { label = "PERMISSIONS", value = "VIEW" },
+          }
+        elseif self.screen == "permissions" then
+          rows = {
+            { label = "FILES", value = "READ MOD ASSETS" },
+            { label = "NETWORK", value = "NONE" },
+            { label = "SAVE DATA", value = "MOD NAMESPACE" },
+          }
+        elseif self.screen == "errors" then
+          for index = 1, math.max(1, count) do
+            rows[index] = { label = "GALLERY ERROR " .. index,
+              value = index == 1 and "Missing optional dependency" or "Warning" }
+          end
+        elseif self.screen == "apply" then
+          for index, managed in ipairs(galleryMods) do
+            rows[index] = { label = managed.name, value = "ENABLE" }
+          end
+        end
+        return rows
+      end
+      state.isStaged = function() return false end
+      state.stagedList = function() return galleryMods end
+      if state.screen == "options" then
+        state.optionRows = {}
+        for index = 1, math.max(1, count) do
+          local shown = index % 2 == 0 and "OFF" or "ON"
+          state.optionRows[index] = {
+            id = "gallery_manager_option_" .. index,
+            label = longContent
+              and ("EXAMPLE MANAGER OPTION WITH A LONG LABEL " .. index)
+              or ("EXAMPLE MANAGER OPTION " .. index),
+            value = function() return shown end,
+          }
+        end
+      end
+      if variant == "confirm" then
+        state.overlay = { kind = "confirm", index = 2,
+          lines = { "Apply the staged gallery changes?",
+            "This synthetic confirmation cannot alter any mods." } }
+      elseif variant == "help" then
+        state._gen1OptionDescription = {
+          title = "EXAMPLE MANAGER OPTION",
+          text = "This is the production option-help modal rendered over a safe synthetic manager screen.",
+        }
+      end
+    elseif kind == "party" then
+      state.party = previewGame.save.party
+      if variant == "actions" then
+        state.submenu, state.subIndex = true, 1
+        state.subItems = runtime.uiGalleryRows("POKEMON ACTION", count, nil,
+          longContent)
+        if #state.subItems == 0 then
+          state.subItems[1] = { label = "CANCEL" }
+        end
+      end
+    elseif kind == "summary" then
+      state.mon = mon
+      state.page = variant == "moves" and 2 or variant == "dvs" and 3 or 1
+      if variant == "dvs" then
+        state.dvs = { attack = 13, defense = 11, speed = 15, special = 9 }
+        state.statExp = { hp = 1234, attack = 2345, defense = 3456,
+          speed = 4567, special = 5678 }
+      elseif variant == "extension" then
+        state._gen1UiGalleryExtensionPage = {
+          title = "EXTRA STAT PAGE", index = 1, scroll = 0,
+          footer = "L/R  page   B  back",
+          rows = runtime.uiGalleryRows("ADDITIVE STAT", count, "VALUE ",
+            longContent),
+        }
+      end
+    elseif kind == "trainer_card" then
+      state.faces = nil
+    elseif kind == "pokedex" then
+      state.items = {}
+      local pokemon = previewGame.data.pokemon or {}
+      local keys = {}
+      for key in pairs(pokemon) do keys[#keys + 1] = key end
+      table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+      for index = 1, count do
+        local key = keys[((index - 1) % math.max(1, #keys)) + 1] or species
+        local def = pokemon[key] or {}
+        state.items[index] = {
+          label = ("%03d %s"):format(tonumber(def.dex) or index,
+            safeText(def.name or key or "POKEMON")),
+          value = key, ball = index % 3 == 1,
+        }
+      end
+      state.footer, state.pageJump = "SEEN 99  OWN 42", true
+    elseif kind == "dex_entry" then
+      local original = previewGame.data.pokemon
+        and previewGame.data.pokemon[species] or {}
+      state.def = copy(original)
+      state.def.id = state.def.id or species
+      state.def.name = state.def.name or safeText(species or "POKEMON")
+      state.def.dex = state.def.dex or 1
+      state.def.types = state.def.types or { "NORMAL" }
+      state.def.baseStats = state.def.baseStats or {
+        hp = 45, attack = 49, defense = 49, speed = 45, special = 65,
+      }
+      state.def.dexEntry = state.def.dexEntry or {
+        kind = "GALLERY POKEMON", heightM = 0.7, weightKg = 6.9,
+      }
+      state.forceOwned = true
+      state.view = variant == "stats" and "stats"
+        or variant == "moves" and "moves" or "data"
+      if state.view == "stats" then
+        state.stats = { stats = {
+          { key = "HP", value = state.def.baseStats.hp },
+          { key = "ATK", value = state.def.baseStats.attack },
+          { key = "DEF", value = state.def.baseStats.defense },
+          { key = "SPD", value = state.def.baseStats.speed },
+          { key = "SPC", value = state.def.baseStats.special },
+        }, bst = 253, evolutions = {
+          { label = "LV 16", name = "NEXT FORM" },
+        } }
+      elseif state.view == "moves" then
+        state.page = 1
+        state.rows = function()
+          local rows = {}
+          local moves = previewGame.data.moves or {}
+          local keys = {}
+          for key in pairs(moves) do keys[#keys + 1] = key end
+          table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+          for index = 1, count do
+            local key = keys[((index - 1) % math.max(1, #keys)) + 1]
+              or moveId or "MOVE"
+            local move = moves[key] or {}
+            rows[index] = longContent
+              and ("LV " .. index .. "  " .. safeText(move.name or key)
+                .. " WITH A LONG LEARNSET NOTE")
+              or ("LV " .. index .. "  " .. safeText(move.name or key))
+          end
+          return rows
+        end
+        state.pages = function()
+          return math.max(1, math.ceil(count / 10))
+        end
+      end
+    elseif kind == "bag" or kind == "shop_list" or kind == "pc_list" then
+      state.items = {}
+      local items, keys = previewGame.data.items or {}, {}
+      for key in pairs(items) do keys[#keys + 1] = key end
+      table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+      for index = 1, count do
+        local key = keys[((index - 1) % math.max(1, #keys)) + 1] or itemId
+        local def = items[key] or {}
+        state.items[index] = {
+          label = safeText(def.name or key or "ITEM") .. " " .. index
+            .. (longContent and " WITH A LONG INVENTORY DESCRIPTION" or ""),
+          right = kind == "shop_list"
+            and ("Y" .. safeText(def.price or index * 100)) or ("x" .. index),
+          value = key,
+        }
+      end
+      state.title = kind == "shop_list" and "BUY"
+        or kind == "pc_list" and "WITHDRAW" or "BAG"
+      state.footer = kind == "shop_list" and "What would you like?"
+        or "Choose an item."
+      state.dialogue = kind == "shop_list" or nil
+      state.messageBox = kind == "pc_list" or nil
+      state.money = function() return previewGame.save.money end
+    elseif kind == "box_mon_list" then
+      state._gen1UiGalleryBoxPokemon = previewGame.save.boxes[1]
+      state._gen1UiGalleryBoxAction = "WITHDRAW"
+      state.items = {}
+      for index, boxed in ipairs(state._gen1UiGalleryBoxPokemon) do
+        state.items[index] = { label = boxed.nickname, value = index }
+      end
+    elseif kind == "gen3_box" then
+      state.mode = variant == "party" and "party" or "box"
+      state.row, state.col = 0, 0
+    elseif kind == "move_learn" then
+      state.selecting, state.index = true, 1
+      state.mon = copy(mon)
+      state.newMoveId = moveId or (state.mon.moves[1] and state.mon.moves[1].id)
+      while #state.mon.moves < math.min(4, math.max(1, count)) do
+        state.mon.moves[#state.mon.moves + 1] = {
+          id = state.newMoveId, pp = 20,
+        }
+      end
+    elseif kind == "pic_box" then
+      state.image = nil
+      state.text = count > 8
+        and "A long picture caption demonstrates wrapping and the stable picture-card envelope under stress content."
+        or "A sample picture caption."
+    elseif kind == "naming" then
+      state.title, state.maxLen = "NICKNAME?", 10
+      state.glyphs, state.default = { "P", "I", "K", "A" }, "PIKA"
+      if variant == "catch_nickname" then
+        state.glyphs, state.default = {}, nil
+      end
+      state.row, state.col, state.lower = 1, 1, false
+      state.grid = function()
+        return {
+          { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
+          { "J", "K", "L", "M", "N", "O", "P", "Q", "R" },
+          { "S", "T", "U", "V", "W", "X", "Y", "Z", " " },
+          { "1", "2", "3", "4", "5", "6", "7", "8", "9" },
+          { "-", "?", "!", "(", ")", "/", ".", ",", "ED" },
+          { "lower case" },
+        }
+      end
+    elseif kind == "town_map" then
+      state.mode = variant == "list" and "list" or "grid"
+      state.sel, state.locs, state.byMap = 1, {}, {}
+      for index = 1, math.min(count, 12) do
+        local loc = { name = "LOCATION " .. index
+            .. (longContent and " WITH A VERY LONG NAME" or ""),
+          x = (index * 2) % 18, y = (index * 3) % 15 }
+        state.locs[index], state.byMap["GALLERY_" .. index] = loc, loc
+      end
+      state.playerLoc = state.locs[1]
+      if variant == "fly" then state.fly = true end
+      if variant == "area" then state.nestSpecies = species end
+    elseif kind == "quarantine_report" then
+      state.offset, state.lines = 0, {}
+      for index = 1, count do
+        state.lines[index] = index == 1 and "Recovered save entries:"
+          or (" POKEMON " .. index .. " (GALLERY_BOX)")
+      end
+      state.maxOffset = function(self)
+        return math.max(0, #self.lines - 8)
+      end
+    elseif kind == "link" then
+      state.stage, state.index = variant or "menu", 1
+      if state.stage == "codeEntry" then
+        state.codeEntry = { chars = { "A", "B", "C", "1", "2", "3" }, pos = 3 }
+      elseif state.stage == "addrEntry" then
+        state.addr = { 1, 2, 7, 0, 0, 0, 0, 0, 1, 9, 9, 9 }
+        state.addrPos = 4
+      elseif state.stage == "notice" then
+        state.noticeLines = {
+          "The other player has a different optional mod set.",
+          "Review compatibility before continuing.",
+        }
+        state.noticeExits = false
+      elseif state.stage == "battleOptions" then
+        state.levelChoice = 50
+      end
+    elseif kind == "dex_radar" then
+      state.mapLabel, state.ownedN, state.totalN = "ROUTE 22", 3, count
+      state.cursor, state.scroll = 1, 0
+      state.showLevels, state.showRates = true, true
+      state.rows, state.monIndex = {
+        { kind = "header", text = "GRASS" },
+      }, {}
+      for index = 1, count do
+        state.rows[#state.rows + 1] = {
+          kind = "mon", id = species, name = "POKEMON " .. index,
+          seen = true, owned = index % 3 == 1,
+          minLv = index, maxLv = index + 3, rate = math.max(1, 40 - index),
+        }
+        state.monIndex[#state.monIndex + 1] = #state.rows
+      end
+    elseif kind == "rby_mmo_profile" then
+      state.player = { name = "ONLINE PLAYER", points = 42,
+        money = 1234, profile = {
+          idNo = 7, playtime = 7260, badges = 3, seen = 86, owned = 35,
+        } }
+    elseif kind == "rby_mmo_rank" then
+      state.offset, state.rows = 0, {}
+      for index = 1, count do
+        state.rows[index] = { name = "PLAYER " .. index,
+          points = (count - index + 1) * 10 }
+      end
+      state.ranked = true
+    elseif kind == "rby_mmo_char_pick" then
+      state.items = runtime.uiGalleryRows("TRAINER", count, nil, longContent)
+      for _, row in ipairs(state.items) do row.value = nil end
+    elseif kind == "external" then
+      state._gen1UiGalleryExternalModel = {
+        title = "REGISTERED ADAPTER",
+        rows = runtime.uiGalleryRows("ADAPTER ROW", count, "VALUE ",
+          longContent),
+        index = 1, scroll = 0,
+        footer = { "A SELECT", "B BACK", "SOURCE MOD OWNS INPUT" },
+      }
+      if variant == "details" then
+        state._gen1UiGalleryExternalApiVersion = 2
+        local def = previewGame.data.pokemon
+          and previewGame.data.pokemon[species] or nil
+        state._gen1UiGalleryExternalModel.title = "STRUCTURED DETAILS"
+        state._gen1UiGalleryExternalModel.assets = {
+          pokemon = imageCandidate(mon) or imageCandidate(def),
+        }
+        state._gen1UiGalleryExternalModel.details = {
+          species = def and def.name or safeText(species),
+          level = "Lv 15 - 17", methods = "GRASS / MORNING",
+          sprite = "pokemon",
+          custom_fields = {
+            columns = 4,
+            data = {
+              { label = "HP", value = 45 },
+              { label = "ATK", value = 50 },
+              { label = "DEF", value = 55 },
+              { label = "TOTAL", value = 255, style = "accent" },
+            },
+          },
+          footer_lists = {
+            { title = "ENCOUNTER", items = {
+              { label = "GRASS", value = "24%" },
+              { label = "NIGHT", value = "12%" },
+            } },
+            { title = "KNOWN MOVES", items = {
+              { label = "ABSORB" }, { label = "SWEET SCENT" },
+            } },
+          },
+        }
+        state._gen1UiGalleryExternalModel.layoutOptions = {
+          overflow = "shrink_to_fit", max_content_height = "100%",
+        }
+      end
+    elseif kind == "custom_surface" then
+      local surfaceContext = mod._gen1ModernCompatibility
+        .surfaceGalleryContexts[spec.id]
+      local surfaceGallery = surfaceContext and surfaceContext.surface.gallery
+      local models = type(surfaceGallery) == "table"
+        and surfaceGallery.models or nil
+      local fixture = type(models) == "table"
+        and (models[level and level.id] or models.normal or models.default)
+        or type(surfaceGallery) == "table"
+          and (surfaceGallery.model or surfaceGallery.fixture) or nil
+      state._gen1UiGallerySurfaceContext = surfaceContext
+      state._gen1UiGallerySurfaceModel = copy(fixture or {})
+    elseif kind == "battle" then
+      state.kind, state.queue, state.wideLayout = "wild", {}, true
+      state.phase = variant == "moves" and "moveSelect"
+        or variant == "message" and "messages" or "menu"
+      state.menuIndex, state.moveIndex = 1, 1
+      state.player = { name = "PLAYER", shownHP = mon.hp, mon = mon,
+        curMoves = {} }
+      for index = 1, 4 do
+        local move = mon.moves[((index - 1) % math.max(1, #mon.moves)) + 1]
+          or { id = moveId, pp = 20 }
+        state.player.curMoves[index] = copy(move)
+      end
+      local foe = runtime.uiGallerySampleMon(previewGame, 2)
+      state.enemy = { name = foe.nickname, shownHP = foe.hp, mon = foe }
+      state.overlays = {
+        caughtIndicator = true,
+        catchRates = { pokeball = 34, greatBall = 51, ultraBall = 68 },
+        experience = { current = 42, maximum = 67 },
+      }
+      if variant == "message" then
+        state.message = "The gallery battle message remains inside its stable WIDE shell."
+      end
+    end
+
+    if state._gen1UiGalleryUnderState then
+      previewGame.stack.states = { state._gen1UiGalleryUnderState, state }
+    elseif kind == "battle" and variant == "level_up" then
+      previewGame.stack.states = { state, {
+        game = previewGame, kind = "level_up", mon = copy(mon),
+        _gen1UiGalleryPreview = true,
+      } }
+    else
+      previewGame.stack.states = { state }
+    end
+    return { game = previewGame, state = state, kind = kind,
+      modal = kind == "choice" or kind == "quantity",
+      underKind = state._gen1UiGalleryUnderState and "text" or nil,
+      underState = state._gen1UiGalleryUnderState,
+    }
+  end
+
+  runtime.uiGalleryPreview = function(game, gallery, spec, level)
+    local key = spec.id .. ":" .. safeText(level and level.id)
+    if gallery.previewKey ~= key or type(gallery.preview) ~= "table" then
+      gallery.preview = runtime.buildUiGalleryPreview(game, gallery, spec, level)
+      gallery.previewKey = key
+    end
+    return gallery.preview
+  end
+
+  runtime.withUiGalleryPreviewContext = function(preview, viewport, callback)
+    local previousPointer = pointerDrawContext
+    local previousLayer = runtime.layoutDiagnostics.current
+    pointerDrawContext = {
+      kind = preview.kind, state = preview.state,
+      layerKey = "ui-gallery-preview:" .. safeText(
+        preview.state._gen1UiGallerySpecId),
+      viewport = viewport, baseViewport = viewport,
+      order = previousPointer and previousPointer.order or 1,
+      suppressRegions = true,
+    }
+    local layer = runtime.beginLayoutLayer(preview.kind, preview.state, viewport)
+    local ok, result = pcall(callback)
+    pointerDrawContext = previousPointer
+    runtime.layoutDiagnostics.current = previousLayer
+    if not ok then error(result, 0) end
+    return layer
+  end
+
+  runtime.drawUiGallery = function(game, gallery, viewport, theme)
+    local spec = runtime.uiGalleryCatalog[clamp(gallery.entryIndex or 1,
+      1, #runtime.uiGalleryCatalog)]
+    local level = runtime.uiGalleryContentLevels[clamp(gallery.contentIndex or 2,
+      1, #runtime.uiGalleryContentLevels)]
+    local x, y, w, h = presenterRect(viewport)
+    local chromeSize = runtime.option("pixelFont", false) == true
+      and PLAIN_PIXEL_RASTER_STEP or 14
+    local chromeFont = font(fontCache, chromeSize)
+    local lineH = textHeight(chromeFont) + 3
+    -- A gallery preview should exercise the production presenter, not an
+    -- artificially tiny viewport created by the gallery itself. Short or
+    -- landscape windows therefore fold the same metadata into two header
+    -- lines. Plain Pixel still uses its exact 15px authored raster step;
+    -- only the chrome reflows.
+    local compactChrome = h < 520 or w >= 560
+    local headerLines = compactChrome and 2 or 4
+    local headerH, footerH = lineH * headerLines + 10, lineH * 2 + 10
+    local gap = math.max(4, theme.spacing.xs)
+    local previewViewport = {
+      width = viewport.width, height = viewport.height,
+      safe = {
+        x = x + gap, y = y + headerH + gap,
+        width = math.max(1, w - gap * 2),
+        height = math.max(1, h - headerH - footerH - gap * 2),
+      },
+    }
+    local preview = runtime.uiGalleryPreview(game, gallery, spec, level)
+    local previewTheme = runtime.withOptionOverrides(gallery.optionOverrides,
+      function()
+        return responsiveTheme(runtime.currentTheme(previewViewport,
+          preview.state), previewViewport, responsiveThemeCache)
+      end)
+    previewTheme = runtime.constrainPresenterTheme(previewTheme, preview.kind,
+      preview.state, previewViewport, preview.game)
+    gallery.previewTheme = previewTheme
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    setBackdrop(theme)
+    love.graphics.rectangle("fill", x, y, w, h)
+    local previewLayer = runtime.withUiGalleryPreviewContext(preview,
+      previewViewport, function()
+        runtime.withOptionOverrides(gallery.optionOverrides, function()
+          if spec.kind == "battle" then
+            local geometry = battleRuntime.presentationGeometry(
+              previewViewport, preview.state, previewTheme)
+            setColor({ 1, 1, 1, 1 })
+            love.graphics.rectangle("fill", geometry.arenaX, geometry.arenaY,
+              geometry.arenaW, geometry.arenaH)
+            local enemyImage = runtime.battleImage(preview.game, preview.state,
+              preview.state.enemy, "front")
+            local playerImage = runtime.battleImage(preview.game, preview.state,
+              preview.state.player, "back")
+            if enemyImage then
+              runtime.drawBattleFit(enemyImage,
+                geometry.arenaX + geometry.arenaW * 0.62,
+                geometry.arenaY + geometry.arenaH * 0.16,
+                geometry.arenaW * 0.24, geometry.arenaH * 0.30)
+            end
+            if playerImage then
+              runtime.drawBattleFit(playerImage,
+                geometry.arenaX + geometry.arenaW * 0.12,
+                geometry.arenaY + geometry.arenaH * 0.52,
+                geometry.arenaW * 0.28, geometry.arenaH * 0.40)
+            end
+          end
+          if spec.kind == "custom_surface" then
+            local surfaceContext = preview.state._gen1UiGallerySurfaceContext
+            if surfaceContext then
+              mod._gen1ModernSurfaceRuntime:drawPreview(preview.game,
+                preview.state, surfaceContext,
+                preview.state._gen1UiGallerySurfaceModel or {},
+                previewViewport, previewTheme)
+            end
+          elseif preview.underKind and preview.underState then
+            runtime.drawModalScrim(previewTheme, previewViewport)
+            runtime.drawModern(preview.game, preview.underState,
+              preview.underKind, previewViewport, previewTheme, false,
+              nil, nil, preview.kind, preview.state)
+            runtime.drawModern(preview.game, preview.state, preview.kind,
+              previewViewport, previewTheme, true,
+              preview.underKind, preview.underState)
+          else
+            runtime.drawModern(preview.game, preview.state, preview.kind,
+              previewViewport, previewTheme, preview.modal)
+          end
+        end)
+      end)
+    gallery.previewDiagnostics = previewLayer
+    local outsideCount = #(previewLayer.overflows or {})
+
+    setColor(battleRuntime.opaque(theme.colors.surfaceRaised
+      or theme.colors.surface))
+    love.graphics.rectangle("fill", x, y, w, headerH)
+    love.graphics.rectangle("fill", x, y + h - footerH, w, footerH)
+    setColor(theme.colors.accent)
+    love.graphics.rectangle("fill", x, y + headerH - 2, w, 2)
+    love.graphics.rectangle("fill", x, y + h - footerH, w, 2)
+    love.graphics.setFont(chromeFont)
+    setColor(theme.colors.text)
+    local pad = 8
+    local uiChoice = runtime.uiGalleryUiScales[gallery.uiScaleIndex]
+      or runtime.uiGalleryUiScales[1]
+    local fontChoices = gallery.optionOverrides.pixelFont
+      and runtime.uiGalleryPixelFontScales
+      or runtime.uiGallerySystemFontScales
+    local fontChoice = fontChoices[gallery.fontScaleIndex] or fontChoices[1]
+    drawFittedText(("UI GALLERY  %02d/%02d  %s"):format(
+      gallery.entryIndex or 1, #runtime.uiGalleryCatalog, spec.name),
+      x + pad, y + 4, w - pad * 2, chromeFont)
+    setColor(theme.colors.textMuted)
+    if compactChrome then
+      drawFittedText(("ID  %s   TYPE  %s   SCREEN  %s%s"):format(spec.id,
+        spec.kind, spec.screenId,
+        spec.variant and ("   VARIANT  " .. spec.variant) or ""),
+        x + pad, y + 4 + lineH, w - pad * 2, chromeFont)
+    else
+      drawFittedText("ID  " .. spec.id, x + pad, y + 4 + lineH,
+        w - pad * 2, chromeFont)
+      drawFittedText(("TYPE  %s   SCREEN  %s%s"):format(spec.kind,
+        spec.screenId, spec.variant and ("   VARIANT  " .. spec.variant) or ""),
+        x + pad, y + 4 + lineH * 2, w - pad * 2, chromeFont)
+      drawFittedText(("CONTENT  %s   UI  %s   FONT  %s %s   OUTSIDE  %d"):format(
+        level.label, uiChoice[1],
+        gallery.optionOverrides.pixelFont and "PIXEL" or "SYSTEM",
+        fontChoice[1], outsideCount), x + pad, y + 4 + lineH * 3,
+        w - pad * 2, chromeFont)
+    end
+    local footerY = y + h - footerH + 5
+    if compactChrome then
+      drawFittedText(("CONTENT  %s   UI  %s   FONT  %s %s   OUTSIDE  %d"):format(
+        level.label, uiChoice[1],
+        gallery.optionOverrides.pixelFont and "PIXEL" or "SYSTEM",
+        fontChoice[1], outsideCount), x + pad, footerY,
+        w - pad * 2, chromeFont)
+      drawFittedText(
+        "L/R  screen   U/D  content   A  UI   SELECT  font   START  mode   B  close",
+        x + pad, footerY + lineH, w - pad * 2, chromeFont)
+    else
+      drawFittedText("LEFT/RIGHT  screen   UP/DOWN  content   A  UI scale",
+        x + pad, footerY, w - pad * 2, chromeFont)
+      drawFittedText("SELECT  font scale   START  font mode   B  close",
+        x + pad, footerY + lineH, w - pad * 2, chromeFont)
+    end
+    runtime.recordLayoutRect("ui-gallery-header",
+      { x = x, y = y, w = w, h = headerH })
+    runtime.recordLayoutRect("ui-gallery-preview", {
+      x = previewViewport.safe.x, y = previewViewport.safe.y,
+      w = previewViewport.safe.width, h = previewViewport.safe.height,
+    })
+    runtime.recordLayoutRect("ui-gallery-footer",
+      { x = x, y = y + h - footerH, w = w, h = footerH })
+    love.graphics.pop()
+  end
+
+  runtime.externalDisplayValue = function(value)
+    if type(value) ~= "table" then return safeText(value) end
+    local parts = {}
+    for _, child in ipairs(value) do parts[#parts + 1] = safeText(child) end
+    if #parts == 0 then
+      local keys = {}
+      for key in pairs(value) do keys[#keys + 1] = key end
+      table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+      for _, key in ipairs(keys) do
+        parts[#parts + 1] = safeText(key) .. " " .. safeText(value[key])
+      end
+    end
+    return table.concat(parts, " / ")
+  end
+
+  runtime.externalDetailFields = function(details)
+    local fields, used = {}, {}
+    local prioritized = { "name", "species", "level", "types", "type",
+      "method", "methods", "location", "status" }
+    local excluded = {
+      custom_fields = true, customFields = true,
+      footer_lists = true, footerLists = true,
+      sprite = true, image = true, artwork = true, icon = true,
+    }
+    local function add(key)
+      local value = details[key]
+      if value == nil or excluded[key] or used[key] then return end
+      used[key] = true
+      fields[#fields + 1] = {
+        label = safeText(key):gsub("_", " "):upper(),
+        value = runtime.externalDisplayValue(value),
+      }
+    end
+    for _, key in ipairs(prioritized) do add(key) end
+    local keys = {}
+    for key, value in pairs(details or {}) do
+      if type(key) == "string" and value ~= nil and not excluded[key]
+          and not used[key] then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do add(key) end
+    return fields
+  end
+
+  runtime.externalScaledTheme = function(theme, factor, pixelStep)
+    local out = copy(theme)
+    out.typography = copy(theme.typography or {})
+    out.spacing = copy(theme.spacing or {})
+    out.radii = copy(theme.radii or {})
+    out.metrics = copy(theme.metrics or {})
+    out.density = copy(theme.density or {})
+    factor = clamp(tonumber(factor) or 1, 0.45, 1)
+    for key, value in pairs(out.spacing) do
+      if type(value) == "number" then out.spacing[key] = value * factor end
+    end
+    for key, value in pairs(out.metrics) do
+      if type(value) == "number" then out.metrics[key] = value * factor end
+    end
+    if type(out.density.rowHeight) == "number" then
+      out.density.rowHeight = out.density.rowHeight * factor
+    end
+    out.scale = copy(theme.scale or {})
+    if pixelStep then
+      pixelStep = clamp(math.floor(pixelStep), 1, 4)
+      out.typography.caption = PLAIN_PIXEL_RASTER_STEP * pixelStep
+      out.typography.body = PLAIN_PIXEL_RASTER_STEP * pixelStep
+      out.typography.title = PLAIN_PIXEL_RASTER_STEP * pixelStep * 2
+      out.scale.pixelFontStep = pixelStep
+      out.scale.effectivePixelFontStep = pixelStep
+      out.scale.font = pixelStep
+    else
+      for key, value in pairs(out.typography) do
+        if type(value) == "number" then out.typography[key] = value * factor end
+      end
+      out.scale.font = (tonumber(out.scale.font) or 1) * factor
+    end
+    if factor < 0.999 then out.scale.externalContentConstrained = true end
+    return out
+  end
+
+  runtime.externalDetailMetrics = function(theme, details, width)
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local fields = runtime.externalDetailFields(details)
+    local scalarLineH = math.max(textHeight(bodyFont), textHeight(captionFont))
+      + spacing.xs
+    local scalarH = #fields * scalarLineH
+    local custom = details.custom_fields or details.customFields
+    local customData = type(custom) == "table"
+      and (custom.data or custom.fields) or nil
+    if type(customData) ~= "table" then customData = {} end
+    local columns = clamp(math.floor(tonumber(type(custom) == "table"
+      and custom.columns) or 1), 1, math.min(4, math.max(1, #customData)))
+    while columns > 1 do
+      local cellW = (width - spacing.sm * (columns - 1)) / columns
+      local widest = 0
+      for _, field in ipairs(customData) do
+        if type(field) == "table" then
+          widest = math.max(widest,
+            captionFont:getWidth(safeText(field.label)),
+            bodyFont:getWidth(runtime.externalDisplayValue(field.value)))
+        end
+      end
+      if widest <= cellW - spacing.sm then break end
+      columns = columns - 1
+    end
+    local customRows = #customData > 0 and math.ceil(#customData / columns) or 0
+    local customCellH = textHeight(captionFont) + textHeight(bodyFont)
+      + spacing.xs * 2
+    local customH = customRows * customCellH
+      + math.max(0, customRows - 1) * spacing.xs
+
+    local footerLists = details.footer_lists or details.footerLists
+    if type(footerLists) ~= "table" then footerLists = {} end
+    local footerColumns = math.min(math.max(1, #footerLists),
+      width >= 420 and 3 or width >= 240 and 2 or 1)
+    local footerRows = #footerLists > 0
+      and math.ceil(#footerLists / footerColumns) or 0
+    local footerRowHeights = {}
+    for groupIndex, group in ipairs(footerLists) do
+      local row = math.ceil(groupIndex / footerColumns)
+      local items = type(group) == "table" and group.items or nil
+      local count = type(items) == "table" and #items or 0
+      local groupH = textHeight(captionFont) + spacing.xs
+        + count * (textHeight(bodyFont) + spacing.xs)
+      footerRowHeights[row] = math.max(footerRowHeights[row] or 0, groupH)
+    end
+    local footerH = 0
+    for _, rowH in ipairs(footerRowHeights) do footerH = footerH + rowH end
+    footerH = footerH + math.max(0, footerRows - 1) * spacing.sm
+    if footerH > 0 then footerH = footerH + spacing.sm end
+    local imageValue = details.sprite or details.image
+      or details.artwork or details.icon
+    local spriteMinimum = imageValue and math.min(72, width * 0.24) or 0
+    local gaps = 0
+    if scalarH > 0 and customH > 0 then gaps = gaps + spacing.sm end
+    if scalarH + customH > 0 and (spriteMinimum > 0 or footerH > 0) then
+      gaps = gaps + spacing.sm
+    end
+    if spriteMinimum > 0 and footerH > 0 then gaps = gaps + spacing.sm end
+    return {
+      fields = fields, scalarLineH = scalarLineH, scalarH = scalarH,
+      custom = custom, customData = customData, columns = columns,
+      customRows = customRows, customCellH = customCellH,
+      customH = customH, footerLists = footerLists,
+      footerColumns = footerColumns, footerRows = footerRows,
+      footerRowHeights = footerRowHeights, footerH = footerH,
+      spriteMinimum = spriteMinimum,
+      total = spacing.lg * 2 + scalarH + customH + footerH
+        + spriteMinimum + gaps,
+    }
+  end
+
+  runtime.externalFitTheme = function(theme, details, width, height,
+      layoutOptions)
+    local overflow = safeText(layoutOptions and layoutOptions.overflow):lower()
+    local candidate = theme
+    local metrics = runtime.externalDetailMetrics(candidate, details, width)
+    if overflow ~= "shrink_to_fit" or metrics.total <= height then
+      return candidate, metrics
+    end
+    local requestedStep = theme.scale and theme.scale.pixelFontStep
+    if requestedStep then
+      local step = clamp(math.floor(requestedStep), 1, 4)
+      while step > 1 and metrics.total > height do
+        step = step - 1
+        candidate = runtime.externalScaledTheme(theme,
+          step / math.max(1, requestedStep), step)
+        metrics = runtime.externalDetailMetrics(candidate, details, width)
+      end
+    else
+      local factor = 1
+      while factor > 0.56 and metrics.total > height do
+        factor = factor * 0.90
+        candidate = runtime.externalScaledTheme(theme, factor)
+        metrics = runtime.externalDetailMetrics(candidate, details, width)
+      end
+    end
+    return candidate, metrics
+  end
+
+  -- Plain Pixel cannot be reduced below its authored 1X raster.  If an
+  -- unusually short card still cannot contain the expanded label/value
+  -- treatment at that size, collapse each datum to one measured line.  The
+  -- footer remains bottom anchored, custom fields keep their requested grid
+  -- where width permits, and lower-priority overflow is omitted rather than
+  -- being allowed to collide with another section.
+  runtime.drawExternalDetailsCompact = function(details, image, x, y, w, h,
+      theme, metrics)
+    local spacing = theme.spacing
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local padding = math.max(2, math.min(spacing.sm, w * 0.04, h * 0.08))
+    local innerX, innerY = x + padding, y + padding
+    local innerW, innerH = math.max(1, w - padding * 2),
+      math.max(1, h - padding * 2)
+    local lineH = math.max(textHeight(bodyFont), textHeight(captionFont))
+      + spacing.xs
+    local rowStride = lineH + spacing.xs
+    local sectionGap = spacing.xs
+
+    local footerCount = #metrics.footerLists
+    local footerColumns = footerCount > 0 and math.min(footerCount,
+      innerW >= 420 and 3 or innerW >= 220 and 2 or 1) or 1
+    local wantedFooterRows = footerCount > 0
+      and math.ceil(footerCount / footerColumns) or 0
+    local footerRows = math.min(wantedFooterRows,
+      math.max(0, math.floor((innerH + spacing.xs) / rowStride)))
+    local footerH = footerRows > 0
+      and footerRows * lineH + math.max(0, footerRows - 1) * spacing.xs or 0
+    local footerY = innerY + innerH - footerH
+    local contentBottom = footerY - (footerH > 0 and sectionGap or 0)
+
+    local customCount = #metrics.customData
+    local customColumns = customCount > 0
+      and math.min(metrics.columns, customCount) or 1
+    local wantedCustomRows = customCount > 0
+      and math.ceil(customCount / customColumns) or 0
+    local scalarColumns = innerW >= 240 and 2 or 1
+    local scalarMinimum = #metrics.fields > 0 and lineH or 0
+    local customBudget = math.max(0, contentBottom - innerY - scalarMinimum
+      - (#metrics.fields > 0 and customCount > 0 and sectionGap or 0))
+    local customRows = math.min(wantedCustomRows,
+      math.max(0, math.floor((customBudget + spacing.xs) / rowStride)))
+    local customH = customRows > 0
+      and customRows * lineH + math.max(0, customRows - 1) * spacing.xs or 0
+    local customY = contentBottom - customH
+    local scalarBottom = customY
+      - (customRows > 0 and #metrics.fields > 0 and sectionGap or 0)
+    local scalarRows = math.max(0,
+      math.floor((scalarBottom - innerY + spacing.xs) / rowStride))
+
+    love.graphics.setFont(bodyFont)
+    local scalarCellW = (innerW - spacing.sm * (scalarColumns - 1))
+      / scalarColumns
+    local scalarMaximum = math.min(#metrics.fields, scalarRows * scalarColumns)
+    local scalarDrawnRows = scalarMaximum > 0
+      and math.ceil(scalarMaximum / scalarColumns) or 0
+    for index = 1, scalarMaximum do
+      local field = metrics.fields[index]
+      local col = (index - 1) % scalarColumns
+      local row = math.floor((index - 1) / scalarColumns)
+      local cellX = innerX + col * (scalarCellW + spacing.sm)
+      local cellY = innerY + row * rowStride
+      setColor(theme.colors.text)
+      drawFittedText(field.label .. "  " .. field.value, cellX, cellY,
+        scalarCellW, bodyFont)
+    end
+    if scalarMaximum > 0 then
+      runtime.recordLayoutRect("external-detail-scalars", {
+        x = innerX, y = innerY, w = innerW,
+        h = math.ceil(scalarMaximum / scalarColumns) * lineH,
+      })
+    end
+
+    if customRows > 0 then
+      local customCellW = (innerW - spacing.sm * (customColumns - 1))
+        / customColumns
+      local customMaximum = math.min(customCount, customRows * customColumns)
+      for index = 1, customMaximum do
+        local field = metrics.customData[index]
+        if type(field) == "table" then
+          local col = (index - 1) % customColumns
+          local row = math.floor((index - 1) / customColumns)
+          local cellX = innerX + col * (customCellW + spacing.sm)
+          local cellY = customY + row * rowStride
+          setColor(field.style == "accent" and theme.colors.accent
+            or theme.colors.text)
+          drawFittedText(safeText(field.label) .. "  "
+            .. runtime.externalDisplayValue(field.value), cellX, cellY,
+            customCellW, bodyFont)
+        end
+      end
+      runtime.recordLayoutRect("external-detail-custom-fields", {
+        x = innerX, y = customY, w = innerW, h = customH,
+      })
+    end
+
+    local imageY = innerY + scalarDrawnRows * rowStride
+      + (scalarDrawnRows > 0 and sectionGap or 0)
+    if image and customY > imageY + lineH then
+      runtime.drawImageFit(image, innerX, imageY, innerW,
+        math.max(1, customY - imageY - sectionGap))
+    end
+
+    if footerRows > 0 then
+      local footerCellW = (innerW - spacing.sm * (footerColumns - 1))
+        / footerColumns
+      local footerMaximum = math.min(footerCount, footerRows * footerColumns)
+      for index = 1, footerMaximum do
+        local group = metrics.footerLists[index]
+        if type(group) == "table" then
+          local col = (index - 1) % footerColumns
+          local row = math.floor((index - 1) / footerColumns)
+          local cellX = innerX + col * (footerCellW + spacing.sm)
+          local cellY = footerY + row * rowStride
+          local items = type(group.items) == "table" and group.items or {}
+          local first = items[1]
+          local itemLabel = type(first) == "table"
+            and safeText(first.label or first.name) or safeText(first)
+          local itemValue = type(first) == "table"
+            and runtime.externalDisplayValue(first.value) or ""
+          local suffix = #items > 1 and ("  +" .. (#items - 1)) or ""
+          setColor(theme.colors.accent)
+          drawFittedText(safeText(group.title or group.label) .. "  "
+            .. itemLabel .. (itemValue ~= "" and (" " .. itemValue) or "")
+            .. suffix, cellX, cellY, footerCellW, bodyFont)
+        end
+      end
+      runtime.recordLayoutRect("external-detail-footer-lists", {
+        x = innerX, y = footerY, w = innerW, h = footerH,
+      })
+    end
+  end
+
+  runtime.drawExternalDetails = function(game, model, x, y, w, h, theme)
+    local details = model.details or {}
+    local padding = theme.spacing.lg
+    local innerX, innerY = x + padding, y + padding
+    local innerW, innerH = math.max(1, w - padding * 2),
+      math.max(1, h - padding * 2)
+    local maximumHeight = model.layoutOptions
+      and (model.layoutOptions.max_content_height
+        or model.layoutOptions.maxContentHeight)
+    local fitHeight = innerH
+    if type(maximumHeight) == "string" then
+      local percent = tonumber(maximumHeight:match("^%s*(%d+%.?%d*)%%%s*$"))
+      if percent then fitHeight = math.min(fitHeight, innerH * percent / 100) end
+    elseif tonumber(maximumHeight) then
+      fitHeight = math.min(fitHeight, math.max(1, tonumber(maximumHeight)))
+    end
+    local imageValue = details.sprite or details.image
+      or details.artwork or details.icon
+    if type(imageValue) == "string" and type(model.assets) == "table"
+        and model.assets[imageValue] ~= nil then
+      imageValue = model.assets[imageValue]
+    end
+    local image = runtime.imageFor(imageValue)
+    local metricDetails = details
+    if not image and imageValue ~= nil then
+      metricDetails = copy(details)
+      metricDetails.sprite, metricDetails.image = nil, nil
+      metricDetails.artwork, metricDetails.icon = nil, nil
+    end
+    local fitted, metrics = runtime.externalFitTheme(theme, metricDetails,
+      innerW, fitHeight, model.layoutOptions)
+    local spacing = fitted.spacing
+    local bodyFont = font(fontCache, fitted.typography.body)
+    local captionFont = font(fontCache, fitted.typography.caption)
+
+    love.graphics.push("all")
+    love.graphics.setScissor(x, y, w, h)
+    if metrics.total > fitHeight + 0.01 then
+      runtime.drawExternalDetailsCompact(details, image, x, y, w, h,
+        fitted, metrics)
+      love.graphics.pop()
+      return
+    end
+    local cursorY = innerY
+    love.graphics.setFont(bodyFont)
+    for _, field in ipairs(metrics.fields) do
+      love.graphics.setFont(captionFont)
+      setColor(fitted.colors.textMuted)
+      local label = field.label
+      drawFittedText(label, innerX, cursorY,
+        math.max(1, innerW * 0.35), captionFont)
+      love.graphics.setFont(bodyFont)
+      setColor(fitted.colors.text)
+      local labelW = math.min(innerW * 0.35,
+        captionFont:getWidth(label) + spacing.sm)
+      drawFittedText(field.value, innerX + labelW, cursorY,
+        math.max(1, innerW - labelW), bodyFont)
+      cursorY = cursorY + metrics.scalarLineH
+    end
+    if metrics.scalarH > 0 and metrics.customH > 0 then
+      cursorY = cursorY + spacing.sm
+    end
+
+    if #metrics.customData > 0 then
+      local cellGap = spacing.sm
+      local cellW = (innerW - cellGap * (metrics.columns - 1))
+        / metrics.columns
+      for index, field in ipairs(metrics.customData) do
+        if type(field) == "table" then
+          local col = (index - 1) % metrics.columns
+          local row = math.floor((index - 1) / metrics.columns)
+          local cellX = innerX + col * (cellW + cellGap)
+          local cellY = cursorY + row * (metrics.customCellH + spacing.xs)
+          love.graphics.setFont(captionFont)
+          setColor(fitted.colors.textMuted)
+          drawFittedText(safeText(field.label), cellX, cellY,
+            cellW, captionFont)
+          love.graphics.setFont(bodyFont)
+          setColor(field.style == "accent" and fitted.colors.accent
+            or fitted.colors.text)
+          drawFittedText(runtime.externalDisplayValue(field.value), cellX,
+            cellY + textHeight(captionFont) + spacing.xs,
+            cellW, bodyFont)
+        end
+      end
+      cursorY = cursorY + metrics.customH
+    end
+
+    local footerH = math.min(metrics.footerH, innerH * 0.66)
+    local footerY = innerY + innerH - footerH
+    if image and footerY > cursorY + spacing.xs then
+      local spriteY = cursorY + spacing.sm
+      local spriteH = math.max(1, footerY - spriteY - spacing.sm)
+      runtime.drawImageFit(image, innerX, spriteY, innerW, spriteH)
+    end
+
+    if footerH > 0 then
+      local groupGap = spacing.sm
+      local groupW = (innerW - groupGap * (metrics.footerColumns - 1))
+        / metrics.footerColumns
+      local rowY = footerY + spacing.sm
+      for row = 1, metrics.footerRows do
+        local rowH = metrics.footerRowHeights[row] or 0
+        for col = 1, metrics.footerColumns do
+          local index = (row - 1) * metrics.footerColumns + col
+          local group = metrics.footerLists[index]
+          if type(group) == "table" then
+            local groupX = innerX + (col - 1) * (groupW + groupGap)
+            love.graphics.setFont(captionFont)
+            setColor(fitted.colors.accent)
+            drawFittedText(safeText(group.title or group.label), groupX,
+              rowY, groupW, captionFont)
+            local itemY = rowY + textHeight(captionFont) + spacing.xs
+            local itemH = textHeight(bodyFont) + spacing.xs
+            local items = type(group.items) == "table" and group.items or {}
+            local maximum = math.max(0, math.floor((rowH
+              - textHeight(captionFont) - spacing.xs) / math.max(1, itemH)))
+            for itemIndex = 1, math.min(#items, maximum) do
+              local item = items[itemIndex]
+              local label = type(item) == "table"
+                and safeText(item.label or item.name) or safeText(item)
+              local value = type(item) == "table"
+                and runtime.externalDisplayValue(item.value) or ""
+              love.graphics.setFont(bodyFont)
+              setColor(fitted.colors.text)
+              drawFittedText(label, groupX, itemY,
+                value ~= "" and groupW * 0.53 or groupW, bodyFont)
+              if value ~= "" then
+                setColor(fitted.colors.textMuted)
+                local shown = truncate(value, groupW * 0.45, bodyFont)
+                drawText(shown, groupX + groupW - bodyFont:getWidth(shown),
+                  itemY)
+              end
+              itemY = itemY + itemH
+            end
+          end
+        end
+        rowY = rowY + rowH + groupGap
+      end
+    end
+    love.graphics.pop()
+  end
+
+  runtime.drawExternal = function(game, state, viewport, theme, model)
+    model = model or runtime.externalModelFor(game, state)
+    if not model then return false end
+    local rows, selected, scroll, title, footerText = runtime.rowsFor(
+      game, state, "external")
+    if not rows then return false end
+    local requestedPreset = safeText(model.layoutOptions
+      and model.layoutOptions.preset):upper()
+    if not RESPONSIVE_LAYOUT_PRESETS[requestedPreset] then
+      requestedPreset = "M"
+    end
+    local envelope = runtime.stableEnvelope(viewport, theme, "external",
+      state, rows, requestedPreset)
+    local x, y, w, h = envelope.x, envelope.y, envelope.w, envelope.h
+    local spacing = theme.spacing
+    local titleFont = font(fontCache, theme.typography.title)
+    local headerH = runtime.titleHeaderHeight(theme, titleFont)
+    local footerH = footerText and footerText ~= ""
+      and textHeight(font(fontCache, theme.typography.caption)) + spacing.md
+      or 0
+    local contentX, contentY = x + spacing.sm, y + headerH
+    local contentW = math.max(1, w - spacing.sm * 2)
+    local contentH = math.max(1, h - headerH - footerH - spacing.sm)
+    local wide = contentW >= 520 and contentW > contentH * 1.12
+    local listX, listY, listW, listH, detailX, detailY, detailW, detailH
+    if wide then
+      listX, listY = contentX, contentY
+      listW, listH = math.max(180, contentW * 0.42), contentH
+      detailX, detailY = listX + listW + spacing.sm, contentY
+      detailW, detailH = math.max(1, contentW - listW - spacing.sm), contentH
+    else
+      listX, listY = contentX, contentY
+      listW, listH = contentW, math.max(120, contentH * 0.42)
+      detailX, detailY = contentX, listY + listH + spacing.sm
+      detailW, detailH = contentW, math.max(1, contentH - listH - spacing.sm)
+    end
+    local layout = {
+      x = listX, y = listY, w = listW, h = listH,
+      header = 0, footer = 0, radius = theme.radii.sm,
+      rowHeight = runtime.minimumRowHeight(theme),
+      body = { x = listX, y = listY, w = listW, h = listH },
+      wrapRows = true,
+    }
+    layout.rowMetrics = runtime.measureRows(theme, layout.w, rows)
+    layout.visible = runtime.visibleRowCount(layout, 0)
+    selected = clamp(selected or 1, 1, math.max(1, #rows))
+    scroll = runtime.scrollForSelection(layout, scroll or 0,
+      selected, #rows)
+
+    love.graphics.push("all")
+    love.graphics.origin()
+    runtime.drawPresenterBackdrop(theme, viewport)
+    setColor(theme.colors.surface)
+    love.graphics.rectangle("fill", x, y, w, h, theme.radii.md)
+    runtime.drawHeader(theme, {
+      x = x, y = y, w = w, h = h, header = headerH,
+      radius = theme.radii.md,
+    }, title)
+    setColor(theme.colors.surfaceRaised or theme.colors.surface)
+    love.graphics.rectangle("fill", detailX, detailY, detailW, detailH,
+      theme.radii.sm)
+    runtime.drawRows(theme, layout, rows, selected, scroll, game)
+    runtime.drawExternalDetails(game, model, detailX, detailY,
+      detailW, detailH, theme)
+    if footerH > 0 then
+      setColor(theme.colors.divider)
+      love.graphics.rectangle("fill", x + spacing.lg,
+        y + h - footerH, w - spacing.lg * 2,
+        runtime.themeMetric(theme, "divider", 1))
+      setColor(theme.colors.textMuted)
+      runtime.drawHintIfUseful(theme, footerText, x + spacing.lg,
+        y + h - footerH + spacing.xs, w - spacing.lg * 2)
+    end
+    runtime.recordLayoutRect("external-list",
+      { x = listX, y = listY, w = listW, h = listH })
+    runtime.recordLayoutRect("external-details",
+      { x = detailX, y = detailY, w = detailW, h = detailH })
+    love.graphics.pop()
+    return true
+  end
+
   runtime.drawModern = function(game, state, kind, viewport, theme, asModal, underKind,
       underState, overKind, overState)
     if not runtime.presenterEnabled(kind, state) then return end
+    if kind == "ui_gallery" then
+      runtime.drawUiGallery(game, state, viewport, theme)
+      return
+    end
     if kind == "text" or kind == "choice" or kind == "quantity"
         or (asModal and underKind == "text") then
       theme = runtime.dialogueTheme(theme)
@@ -11302,6 +15695,19 @@ return function(mod)
       mod._gen1ModernSpecialPresenters.drawRbyMmoCharacterPick(
         game, state, viewport, theme)
       return
+    end
+    if kind == "external" then
+      local externalModel = runtime.externalModelFor(game, state)
+      local externalContext = mod._gen1ModernCompatibility.active[state]
+      local externalApiVersion = state._gen1UiGalleryExternalApiVersion
+        or externalContext and externalContext.entry
+          and externalContext.entry.contract.apiVersion
+      if tonumber(externalApiVersion) == SURFACE_API_VERSION
+          and externalModel and type(externalModel.details) == "table"
+          and next(externalModel.details) ~= nil then
+        runtime.drawExternal(game, state, viewport, theme, externalModel)
+        return
+      end
     end
     if kind == "dex_radar" then
       mod._gen1ModernSpecialPresenters.drawDexRadar(
@@ -11365,10 +15771,8 @@ return function(mod)
     local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
     local layout = runtime.layoutFor(viewport, theme, kind, rows, title, footerText)
-    scroll = clamp(scroll, 0, math.max(0, #rows - layout.visible))
     selected = clamp(selected, 1, math.max(1, #rows))
-    if selected <= scroll then scroll = selected - 1 end
-    if selected > scroll + layout.visible then scroll = selected - layout.visible end
+    scroll = runtime.scrollForSelection(layout, scroll, selected, #rows)
 
     love.graphics.push("all")
     love.graphics.origin()
@@ -11483,6 +15887,13 @@ return function(mod)
       -- available for phases such as message waits, move selection, and
       -- source-owned battle states that do not expose every cell visually.
       add("up"); add("down"); add("left"); add("right"); add("select")
+    elseif (kind == "summary" or kind == "dex_entry"
+        or kind == "trainer_card")
+        and mod._gen1ModernCompatibility.summaryPages[state] then
+      add("left")
+      local pages = mod._gen1ModernCompatibility:pagesFor(
+        currentGame or state.game, state, kind)
+      if #pages > 1 then add("right") end
     end
 
     if state.pageJump then add("left"); add("right") end
@@ -11508,6 +15919,11 @@ return function(mod)
         return state.mode == "party" and "BOX" or "PARTY"
       end
       if action == "start" then return "STATS" end
+    elseif (kind == "summary" or kind == "dex_entry"
+        or kind == "trainer_card")
+        and mod._gen1ModernCompatibility.summaryPages[state] then
+      if action == "left" then return "< PAGE" end
+      if action == "right" then return "PAGE >" end
     elseif kind == "bag"
         and mod._gen1ModernCompatibility:bagHasPockets(state) then
       if action == "left" then return "< POCKET" end
@@ -11590,11 +16006,111 @@ return function(mod)
     end
   end
 
+  -- Actions in either public API lane may return a data-only modal_overlay.
+  -- The overlay is owned by Modern UI, remains a fixed envelope for its
+  -- lifetime, and routes only named semantic actions back to the source mod.
+  runtime.drawDeclarativeModal = function(game, state, viewport, theme, lane)
+    local modal = mod._gen1ModernCompatibility.declarativeModals[state]
+    if type(modal) ~= "table" or type(modal.options) ~= "table"
+        or #modal.options == 0 then return false end
+    local vx, vy, vw, vh = presenterRect(viewport)
+    local spacing = theme.spacing
+    local titleFont = font(fontCache, theme.typography.title)
+    local bodyFont = font(fontCache, theme.typography.body)
+    local captionFont = font(fontCache, theme.typography.caption)
+    local rowH = runtime.minimumRowHeight(theme)
+    local title = safeText(modal.title or modal.label or "")
+    local headerH = title ~= "" and runtime.titleHeaderHeight(theme, titleFont)
+      or spacing.md
+    local footerH = textHeight(captionFont) + spacing.md
+    local maxVisible = clamp(math.floor((vh - headerH - footerH
+      - spacing.xl * 2) / rowH), 1, 7)
+    local visible = math.min(#modal.options, maxVisible)
+    local panelW = math.min(math.max(280, vw * 0.42),
+      math.max(1, vw - spacing.xl * 2))
+    local panelH = math.min(vh - spacing.lg * 2,
+      headerH + visible * rowH + footerH)
+    local panelX = vx + (vw - panelW) * 0.5
+    local panelY = vy + (vh - panelH) * 0.5
+    local selected = clamp(math.floor(tonumber(modal.index) or 1),
+      1, #modal.options)
+    modal.index = selected
+    local scroll = clamp(selected - math.ceil(visible / 2), 0,
+      math.max(0, #modal.options - visible))
+    local previousPointer = pointerDrawContext
+    pointerDrawContext = {
+      kind = lane == "surface" and "custom_surface"
+        or runtime.kindFor(state, game) or "external",
+      state = state, layerKey = "declarative-modal",
+      viewport = viewport, baseViewport = viewport,
+      order = math.max(1, pointerRuntime.topOrder), modalOwner = modal,
+    }
+
+    if modal.dim_background ~= false then
+      setColor({ 0, 0, 0, clamp(tonumber(modal.dim_opacity) or 0.4,
+        0, 0.85) })
+      love.graphics.rectangle("fill", vx, vy, vw, vh)
+    end
+    runtime.registerPointerRegion(vx, vy, vw, vh, {
+      role = "scrim", modalBlocker = true,
+      pointerCommand = "dismiss_declarative_modal", interactive = true,
+    })
+    setColor(theme.colors.surface)
+    love.graphics.rectangle("fill", panelX, panelY, panelW, panelH,
+      theme.radii.md)
+    if title ~= "" then
+      runtime.drawHeader(theme, {
+        x = panelX, y = panelY, w = panelW, h = panelH,
+        header = headerH, radius = theme.radii.md,
+      }, title)
+    else
+      runtime.drawPanelFrame(theme, panelX, panelY, panelW, panelH,
+        theme.radii.md)
+    end
+
+    love.graphics.setFont(bodyFont)
+    for visibleIndex = 1, visible do
+      local optionIndex = scroll + visibleIndex
+      local option = modal.options[optionIndex]
+      local rowY = panelY + headerH + (visibleIndex - 1) * rowH
+      if optionIndex == selected then
+        setColor(theme.colors.selected)
+        love.graphics.rectangle("fill", panelX + spacing.sm, rowY,
+          panelW - spacing.sm * 2, rowH)
+      end
+      setColor(optionIndex == selected and theme.colors.text
+        or theme.colors.textMuted)
+      drawFittedText(safeText(option.label), panelX + spacing.lg,
+        rowY + (rowH - textHeight(bodyFont)) * 0.5,
+        panelW - spacing.lg * 2, bodyFont)
+      runtime.registerPointerRegion(panelX + spacing.sm, rowY,
+        panelW - spacing.sm * 2, rowH, {
+          role = "control", interactive = true,
+          selectionState = modal, selectionField = "index",
+          selectionIndex = optionIndex,
+          declarativeOption = true, declarativeLane = lane,
+          declarativeAction = option.action,
+          declarativePayload = copy(option.payload),
+          controlKey = "declarative:" .. optionIndex,
+        })
+    end
+    love.graphics.setFont(captionFont)
+    setColor(theme.colors.textMuted)
+    drawFittedText("A  choose   B  back", panelX + spacing.lg,
+      panelY + panelH - footerH + spacing.xs,
+      panelW - spacing.lg * 2, captionFont)
+    pointerDrawContext = previousPointer
+    return true
+  end
+
   runtime.drawModernStack = function(game, layers, viewport)
     local topState = layers[#layers] and layers[#layers].state or nil
     local theme = responsiveTheme(runtime.currentTheme(viewport, topState), viewport,
       responsiveThemeCache)
     pointerRuntime.generation = pointerRuntime.generation + 1
+    runtime.layoutDiagnostics.generation = runtime.layoutDiagnostics.generation + 1
+    runtime.layoutDiagnostics.layers = {}
+    runtime.layoutDiagnostics.current = nil
     pointerRegions = {}
     pointerRuntime.topOrder = #layers
     local nextTopState = topState
@@ -11606,28 +16122,40 @@ return function(mod)
     love.graphics.push("all")
     love.graphics.origin()
     local modalActive = false
+    local topTheme = theme
     for index, layer in ipairs(layers) do
       local underKind = index > 1 and layers[index - 1].kind or nil
       local underState = index > 1 and layers[index - 1].state or nil
       local overKind = index < #layers and layers[index + 1].kind or nil
       local overState = index < #layers and layers[index + 1].state or nil
       local modal = index > 1 and runtime.isModalLayer(layer.kind)
-      if modal and not modalActive then runtime.drawModalScrim(theme, viewport) end
-      modalActive = modal
       local offsetX, offsetY = runtime.layerOffset(layer.kind, viewport)
       local layerViewport = shiftedViewport(viewport, offsetX, offsetY)
+      local layerTheme = runtime.constrainPresenterTheme(theme, layer.kind,
+        layer.state, layerViewport, game)
+      if modal and not modalActive then
+        runtime.drawModalScrim(layerTheme, viewport)
+      end
+      modalActive = modal
+      if index == #layers then topTheme = layerTheme end
       pointerDrawContext = {
         kind = layer.kind, state = layer.state,
         layerKey = safeText(layer.kind or "screen") .. ":" .. index,
         viewport = layerViewport, baseViewport = viewport, order = index,
       }
-      runtime.drawModern(game, layer.state, layer.kind, layerViewport, theme,
+      runtime.beginLayoutLayer(layer.kind, layer.state, layerViewport)
+      runtime.drawModern(game, layer.state, layer.kind, layerViewport, layerTheme,
         modal, underKind, underState,
         overKind, overState)
       if index == #layers then
-        runtime.drawPointerControls(theme, pointerDrawContext)
+        runtime.drawPointerControls(layerTheme, pointerDrawContext)
       end
       pointerDrawContext = nil
+      runtime.layoutDiagnostics.current = nil
+    end
+    if topState then
+      runtime.drawDeclarativeModal(game, topState, viewport, topTheme,
+        layers[#layers].kind == "custom_surface" and "surface" or "screen")
     end
     pointerDrawContext = nil
     love.graphics.pop()
@@ -11914,9 +16442,32 @@ return function(mod)
       end
       return false
     end
+    if region.pointerCommand == "dismiss_declarative_modal" then
+      mod._gen1ModernCompatibility.declarativeModals[region.state] = nil
+      return true
+    end
+    if region.declarativeOption then
+      local modal = mod._gen1ModernCompatibility.declarativeModals[region.state]
+      if type(modal) == "table" and region.selectionIndex then
+        modal.index = clamp(math.floor(region.selectionIndex), 1,
+          math.max(1, #modal.options))
+      end
+      mod._gen1ModernCompatibility.declarativeModals[region.state] = nil
+      if not region.declarativeAction then return true end
+      if region.declarativeLane == "surface" then
+        return mod._gen1ModernCompatibility:surfaceAction(game, region.state,
+          region.declarativeAction, region.declarativePayload)
+      end
+      return mod._gen1ModernCompatibility:action(game, region.state,
+        region.declarativeAction, region.declarativePayload)
+    end
     if region.adapterAction then
       return mod._gen1ModernCompatibility:action(game, region.state,
         region.adapterAction, region.adapterIndex)
+    end
+    if region.surfaceAction then
+      return mod._gen1ModernCompatibility:surfaceAction(game, region.state,
+        region.surfaceAction, region.surfacePayload)
     end
     if region.action then return runtime.tapGameButton(game, region.action) end
     local hasSelection = region.rowIndex ~= nil or region.selectionField ~= nil
@@ -11945,9 +16496,14 @@ return function(mod)
     if type(pointer) ~= "table" then
       return next(game, pointer)
     end
+    if mod._gen1ModernSurfaceRuntime:dispatchPointer(game, pointer) then
+      return true
+    end
     local phase = pointer.phase
     local key = runtime.pointerCaptureKey(pointer)
-    if runtime.option("pointerUi", false) ~= true or not runtime.pointerInputReady() then
+    local surfacePointer = mod._gen1ModernSurfaceRuntime:hasPointerSupport()
+    if not surfacePointer and (runtime.option("pointerUi", false) ~= true
+        or not runtime.pointerInputReady()) then
       -- A setting or compatibility change can happen in the middle of a
       -- gesture. Never leave that pointer's old capture waiting to fire when
       -- click support is enabled again later.
@@ -12117,6 +16673,38 @@ return function(mod)
     return next(game, pointer)
   end, 100)
 
+  -- Reapply battle decorators from the render hook as well as the state
+  -- decorator hook. This matters when a user changes the 3D-battle ownership
+  -- switch while a battle is already on the stack: the native methods may
+  -- have been restored on the previous frame and need to be wrapped again.
+  function battleRuntime.ensureDecoratedState(game, decorated)
+    if type(decorated) ~= "table" then return decorated end
+    battleRuntime.seenStates[decorated] = true
+    local activeGame = decorated.game or game or currentGame
+    local kind = runtime.kindFor(decorated, activeGame)
+    if not runtime.battlePresenterActiveForState(activeGame, decorated, kind) then
+      battleRuntime.restoreDecoratedState(decorated)
+      return decorated
+    end
+    -- Keep child screens native at this source-level seam.  Suppressing a
+    -- Bag, Party, Start, or dialogue draw here is unsafe because the modern
+    -- replacement is composed later, and that later composition can still
+    -- decline a frame when a state is incomplete or unfamiliar.  The
+    -- render.compose hook owns the transactional replacement instead: it
+    -- scrubs the native child only after presentationStack has proved that
+    -- every visible layer has a usable modern presenter.  Restore wrappers
+    -- left by an older frame/version before continuing in fail-open mode.
+    if decorated._gen1ModernBattleChildDraw then
+      battleRuntime.restoreDecoratedState(decorated)
+    end
+    battleRuntime.decorateClassicScene(activeGame, decorated)
+    if kind == "battle" then
+      battleRuntime.decorateWideScenePlacement(decorated)
+      battleRuntime.decorateWorldSurface(decorated)
+    end
+    return decorated
+  end
+
   -- TitleState and its menu are flattened into the same classic canvas. A
   -- whole-canvas clear would erase the logo and title Pokémon along with the
   -- menu, so suppress only the ordinary title Menu's draw method. The state
@@ -12173,44 +16761,7 @@ return function(mod)
         return self._gen1ModernOptionsNativeDraw(self)
       end
     end
-    if runtime.option("battleUiWip", false) ~= true then
-      battleRuntime.restoreDecoratedState(decorated)
-      return decorated
-    end
-    -- Some released hosts still draw an opaque Bag/Party child into the
-    -- battle canvas even after screen.render_visible rejects it. Suppress a
-    -- fully modeled child at its source while a framed battle is underneath;
-    -- this avoids trying to erase a centred 160x144 child after it has already
-    -- overwritten the live back/front sprites on the 304px WIDE surface.
-    if type(decorated.draw) == "function"
-        and runtime.kindFor(decorated, game) ~= "battle"
-        and not decorated._gen1ModernBattleChildNativeDraw
-        and not decorated._gen1ModernTitleMenu
-        and not decorated._gen1ModernOptionsMenu then
-      decorated._gen1ModernBattleChildNativeDraw = decorated.draw
-      decorated._gen1ModernBattleChildDraw = function(self, ...)
-        local activeGame = self.game or game or currentGame
-        if runtime.option("battleUiWip", false) == true
-            and runtime.option("hideOriginalUi", true) ~= false
-            and battleRuntime.fullBattleInStack(activeGame)
-            and runtime.canSuppressState(activeGame, self) then
-          return
-        end
-        return self._gen1ModernBattleChildNativeDraw(self, ...)
-      end
-      decorated.draw = decorated._gen1ModernBattleChildDraw
-    end
-    -- Classic BattleState's public draw is already split into scene pictures,
-    -- animation sprites, HUD, and text methods. Intercept only the latter two
-    -- on the instance. The host still owns every timer, palette effect,
-    -- send-out/capture/faint sequence, and source sprite draw, while native
-    -- status/menu tiles can no longer flash through during HP animation.
-    battleRuntime.decorateClassicScene(game, decorated)
-    if runtime.kindFor(decorated, game) == "battle" then
-      battleRuntime.decorateWideScenePlacement(decorated)
-      battleRuntime.decorateWorldSurface(decorated)
-    end
-    return decorated
+    return battleRuntime.ensureDecoratedState(game, decorated)
   end, 100)
 
   -- render.zones is the last state-aware render hook before endFrame.  Cache
@@ -12218,8 +16769,23 @@ return function(mod)
   -- state without requiring engine internals or relying on a previous frame.
   mod.hooks:wrap("render.zones", function(next, game, zones)
     currentGame = game
-    if runtime.option("battleUiWip", false) ~= true then
+    local top = game and game.stack and game.stack.top and game.stack:top()
+    local topKind = top and runtime.kindFor(top, game) or nil
+    local battle = topKind == "battle" and top
+      or runtime.battleStateBelow(game, top)
+    if runtime.option("battleUiWip", false) ~= true
+        or not battle
+        or (battle and not runtime.battlePresenterActive(game, battle)) then
       battleRuntime.restoreBattleDecorations(game)
+    elseif battle then
+      local states = game and game.stack and game.stack.states
+      if type(states) == "table" then
+        for _, state in ipairs(states) do
+          if battleRuntime.seenStates[state] then
+            battleRuntime.ensureDecoratedState(game, state)
+          end
+        end
+      end
     end
     return next(game, zones)
   end, 100)
@@ -12238,6 +16804,23 @@ return function(mod)
     -- suppressed using stale overworld evidence.
     local game = runtime.ownerGame(state, currentGame)
     if game and runtime.hasNativeNewGameFlow(game) then
+      if oneArgument then return next(state) end
+      return next(visible, state)
+    end
+    -- v2 surface replacement is transactional and cannot be proven at this
+    -- early hook. Keep every native state visible until render.compose has a
+    -- successful private-canvas commit for the current frame.
+    if game and mod._gen1ModernCompatibility:surfaceInStack(game) then
+      if oneArgument then return next(state) end
+      return next(visible, state)
+    end
+    -- Battle child screens stay native until render.compose has a complete
+    -- modern stack.  This is deliberately fail-open: the native draw is
+    -- scrubbed only after the replacement frame is known to be complete, so
+    -- a transient Start/Bag/Party/dialogue state can never become invisible
+    -- merely because the WIP battle presenter is enabled.
+    local battleBelow = game and runtime.battleStateBelow(game, state)
+    if battleBelow and runtime.battlePresenterActive(game, battleBelow) then
       if oneArgument then return next(state) end
       return next(visible, state)
     end
@@ -12268,10 +16851,28 @@ return function(mod)
   -- the normal fall-through path is cleared, so another mod that takes over
   -- the whole window can still use the original UI if it needs it.
   mod.hooks:wrap("render.compose", function(next, renderer, ctx)
+    mod._gen1ModernSurfaceRuntime:resetFrame()
+    battleRuntime.sourceCapture = nil
     local handled = next(renderer, ctx)
     local game = currentGame
     local layers, complete, suppressCanvas = runtime.presentationStack(game)
     local hide = runtime.option("hideOriginalUi", true) ~= false
+    local hasSurface = false
+    for _, layer in ipairs(layers) do
+      if layer.kind == "custom_surface" then hasSurface = true break end
+    end
+    if handled ~= true and complete and hasSurface
+        and love and love.graphics and ctx and ctx.uiCanvas then
+      local committed, shouldClear = mod._gen1ModernSurfaceRuntime:prepare(
+        game, layers, ctx, hide)
+      if committed and shouldClear then
+        love.graphics.push("all")
+        love.graphics.setCanvas(ctx.uiCanvas)
+        love.graphics.clear(0, 0, 0, 0)
+        love.graphics.pop()
+      end
+      return handled
+    end
     if handled ~= true and hide and complete and #layers > 0
         and love and love.graphics and ctx and ctx.uiCanvas then
       if suppressCanvas then
@@ -12280,7 +16881,22 @@ return function(mod)
         love.graphics.clear(0, 0, 0, 0)
         love.graphics.pop()
       else
-        battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
+        local scrubbed = battleRuntime.scrubNativeUi(
+          game, ctx, layers, renderer)
+        local battleState
+        for _, layer in ipairs(layers) do
+          if layer.kind == "battle" then battleState = layer.state break end
+        end
+        if scrubbed and battleState
+            and battleRuntime.captureSource(renderer, ctx, battleState) then
+          -- The cleaned source will be placed inside the authoritative arena
+          -- in render.hud. Remove the host's differently sized letterbox copy
+          -- so one frame cannot display both transforms.
+          love.graphics.push("all")
+          love.graphics.setCanvas(ctx.uiCanvas)
+          love.graphics.clear(0, 0, 0, 0)
+          love.graphics.pop()
+        end
       end
       -- TitleState and its Menu share the same canvas as the logo and title
       -- artwork. The title Menu decorator above already suppresses duplicate
@@ -12311,8 +16927,35 @@ return function(mod)
     mod._gen1ModernSpecialPresenters.syncQolLocationOverlay(
       game, modernOwnsQolBanner)
     if complete and #layers > 0 then
-      runtime.drawModernStack(game, layers, viewportForTouchControls(game, viewport))
+      local activeViewport = viewportForTouchControls(game, viewport)
+      local hasSurface = false
+      for _, layer in ipairs(layers) do
+        if layer.kind == "custom_surface" then hasSurface = true break end
+      end
+      if hasSurface then
+        battleRuntime.sourceCapture = nil
+        if not mod._gen1ModernSurfaceRuntime:draw(game) then
+          pointerRegions = {}
+          pointerRuntime.topOrder = 0
+          if pointerRuntime.topState ~= nil then
+            for _, capture in pairs(pointerCaptures) do capture.invalid = true end
+          end
+          pointerRuntime.topState = nil
+          hoveredPointer = nil
+        end
+      elseif battleRuntime.sourceCapture then
+        local battleState = battleRuntime.sourceCapture.state
+        local battleTheme = responsiveTheme(
+          runtime.currentTheme(activeViewport, battleState),
+          activeViewport, responsiveThemeCache)
+        battleRuntime.drawCapturedSource(
+          game, activeViewport, battleTheme)
+        runtime.drawModernStack(game, layers, activeViewport)
+      else
+        runtime.drawModernStack(game, layers, activeViewport)
+      end
     else
+      battleRuntime.sourceCapture = nil
       pointerRegions = {}
       pointerRuntime.topOrder = 0
       if pointerRuntime.topState ~= nil then

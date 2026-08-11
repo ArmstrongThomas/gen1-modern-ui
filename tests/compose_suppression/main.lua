@@ -15,6 +15,26 @@ local function check(value, message)
   if not value then fail(message) end
 end
 
+local function verifyRichPixelHeaders(values, renderHud, latestLayoutRect,
+    verticallySeparated, getLayoutDiagnostics, state, label, shotName, viewport)
+  local savedUiScale, savedFontScale = values.uiScale, values.fontScale
+  values.uiScale = "100"
+  for pixelStep = 2, 4 do
+    values.fontScale = tostring(pixelStep * 100)
+    renderHud({ state }, pixelStep == 4 and shotName or nil, viewport)
+    check(verticallySeparated(latestLayoutRect("header"),
+        latestLayoutRect("rows")),
+      pixelStep .. "X Plain Pixel " .. label
+        .. " rows remain below its header")
+    local diagnostics = getLayoutDiagnostics()
+    local layer = diagnostics.layers and diagnostics.layers[#diagnostics.layers]
+    check(layer and #(layer.overflows or {}) == 0,
+      pixelStep .. "X Plain Pixel " .. label
+        .. " remains inside its stable envelope")
+  end
+  values.uiScale, values.fontScale = savedUiScale, savedFontScale
+end
+
 local function optionDefault(schemas, key)
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -79,6 +99,273 @@ local function namingGridKeepsNativeNewGame(hook, game, state)
   local result = hook(function(grid) return grid end, base,
     { lower = false, game = game, state = state })
   return #result == #base and result[#result][1] == "lower case"
+end
+
+local function verifyFixedBattleSourceTransform(context)
+  local sourceCanvas = love.graphics.newCanvas(304, 144)
+  love.graphics.setCanvas(sourceCanvas)
+  love.graphics.clear(0.1, 0.8, 0.2, 1)
+  love.graphics.setCanvas()
+  local renderer = {
+    uiFill = false, battleDim = 0, scale = 5,
+    uiScale = function(self) return self.scale end,
+    blitCanvas = function(_, canvas, sx, sy, _, _, _, bx, by,
+        boxX, boxY, boxW, boxH)
+      love.graphics.setScissor(boxX, boxY, boxW, boxH)
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(canvas, bx, by, 0, sx, sy)
+      love.graphics.setScissor()
+    end,
+  }
+  context.hooks["render.zones"](
+    function(_, value) return value end, context.game, {})
+  context.hooks["render.compose"](function() return false end, renderer, {
+    uiCanvas = sourceCanvas, uiw = 304, uih = 144,
+    zones = nil, ww = 1600, wh = 1000, pw = 1600, ph = 1000,
+    dpiX = 1, dpiY = 1, scale = 5,
+  })
+  check(context.alphaBounds(sourceCanvas) == nil,
+    "captured WIDE source removes the host-sized duplicate canvas")
+  local transformed = context.renderHud({ context.battle },
+    "battle_2d_fixed_source_transform", context.viewport)
+  local image = transformed:newImageData()
+  local sourceR, sourceG, sourceB, sourceA = image:getPixel(800, 450)
+  local _, _, _, oldLetterboxA = image:getPixel(100, 500)
+  check(sourceA > 0.95 and sourceG > sourceR and sourceG > sourceB,
+    "cleaned 304x144 source is rescaled into the modern arena")
+  check(oldLetterboxA == 0,
+    "fixed WIDE transform leaves no source pixels outside its envelope")
+
+  love.graphics.setCanvas(sourceCanvas)
+  love.graphics.clear(0.1, 0.8, 0.2, 1)
+  love.graphics.setCanvas()
+  renderer.scale = 1
+  context.hooks["render.zones"](
+    function(_, value) return value end, context.game, {})
+  context.hooks["render.compose"](function() return false end, renderer, {
+    uiCanvas = sourceCanvas, uiw = 304, uih = 144,
+    zones = nil, ww = 420, wh = 760, pw = 420, ph = 760,
+    dpiX = 1, dpiY = 1, scale = 1,
+  })
+  local portrait = context.renderHud({ context.battle },
+    "battle_2d_fixed_source_transform_portrait", context.portraitViewport)
+  local portraitImage = portrait:newImageData()
+  local portraitR, portraitG, portraitB, portraitA =
+    portraitImage:getPixel(210, 250)
+  check(portraitA > 0.95 and portraitG > portraitR
+      and portraitG > portraitB,
+    "portrait WIDE shell moves the live source into its framed arena")
+end
+
+local function verifyUiGallery(context)
+  local catalog = context.mod.exports.uiGalleryCatalog()
+  check(type(catalog) == "table" and #catalog >= 50,
+    "UI Gallery publishes the complete stable presenter catalog")
+  local seen, coveredKinds = {}, {}
+  for _, spec in ipairs(catalog) do
+    check(type(spec.id) == "string" and spec.id ~= ""
+        and not seen[spec.id] and type(spec.kind) == "string"
+        and type(spec.screenId) == "string"
+        and spec.qualifiedId == "gen1_modern_ui.gallery." .. spec.id,
+      "UI Gallery entries expose unique id, type, and screen metadata")
+    seen[spec.id] = true
+    coveredKinds[spec.kind] = true
+  end
+  for _, kind in ipairs({
+      "text", "choice", "quantity", "menu", "list", "options",
+      "mod_options", "mod_manager", "link", "external", "party",
+      "summary", "trainer_card", "pokedex", "dex_entry", "box_root",
+      "box_mon_list", "gen3_box", "move_learn", "bag", "shop_list",
+      "pc_list", "pic_box", "naming", "town_map", "quarantine_report",
+      "dex_radar", "rby_mmo_profile", "rby_mmo_rank",
+      "rby_mmo_char_pick", "battle",
+    }) do
+    check(coveredKinds[kind] == true,
+      "UI Gallery covers presenter kind " .. kind)
+  end
+  check(seen["battle.catch.nickname_prompt"]
+      and seen["battle.catch.nickname_entry"],
+    "UI Gallery names both post-catch nickname screens explicitly")
+
+  local savedScale = context.mod.exports.getScaleTokens(context.viewport)
+  local gallery = context.mod.exports.openUiGallery(context.game)
+  check(gallery and gallery.screenId == "Gen1ModernUiGallery"
+      and context.game.stack:top() == gallery,
+    "UI Gallery opens as an in-game Modern UI-owned state")
+  for index, spec in ipairs(catalog) do
+    for _, contentIndex in ipairs({ 1, 3, 5 }) do
+      gallery.entryIndex, gallery.contentIndex = index, contentIndex
+      gallery.preview, gallery.previewKey = nil, nil
+      local shot = contentIndex == 3 and (
+        spec.id == "pokemon.party" and "ui_gallery_party"
+        or spec.id == "battle.wide.moves" and "ui_gallery_battle_moves"
+        or spec.id == "battle.catch.nickname_prompt"
+          and "ui_gallery_catch_nickname_prompt"
+        or spec.id == "battle.catch.nickname_entry"
+          and "ui_gallery_catch_nickname_entry"
+        or spec.id == "integration.external_details"
+          and "ui_gallery_external_details") or nil
+      check(context.alphaBounds(context.renderHud({ gallery }, shot,
+        context.viewport)) ~= nil,
+        "UI Gallery renders " .. spec.id .. " at content profile "
+          .. contentIndex)
+      if spec.id == "integration.external_details" and contentIndex == 3 then
+        local byRole = {}
+        for _, rect in ipairs(gallery.previewDiagnostics
+            and gallery.previewDiagnostics.rects or {}) do
+          byRole[rect.role] = rect
+        end
+        check(gallery.previewDiagnostics
+            and #(gallery.previewDiagnostics.overflows or {}) == 0,
+          "structured adapter details remain inside the Gallery preview")
+        check(byRole["external-detail-scalars"]
+            and byRole["external-detail-custom-fields"]
+            and byRole["external-detail-footer-lists"]
+            and byRole["external-detail-scalars"].y
+              + byRole["external-detail-scalars"].h
+              <= byRole["external-detail-custom-fields"].y + 0.01
+            and byRole["external-detail-custom-fields"].y
+              + byRole["external-detail-custom-fields"].h
+              <= byRole["external-detail-footer-lists"].y + 0.01,
+          "structured adapter fields and bottom footer lists never overlap")
+      end
+    end
+  end
+  gallery.contentIndex = 3
+
+  context.game.stack.states = { gallery }
+  context.game.input = { pressQueue = { "right" } }
+  local entryBefore = gallery.entryIndex
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(gallery.entryIndex ~= entryBefore
+      and #context.game.input.pressQueue == 0,
+    "UI Gallery cycles presenter entries with LEFT/RIGHT")
+  context.game.input.pressQueue = { "down" }
+  local contentBefore = gallery.contentIndex
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(gallery.contentIndex ~= contentBefore,
+    "UI Gallery cycles sparse, normal, and stress content")
+  context.game.input.pressQueue = { "a" }
+  local uiBefore = gallery.optionOverrides.uiScale
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(gallery.optionOverrides.uiScale ~= uiBefore,
+    "UI Gallery cycles temporary UI scale")
+  local liveScale = context.mod.exports.getScaleTokens(context.viewport)
+  check(math.abs(liveScale.uiScale - savedScale.uiScale) < 0.0001,
+    "UI Gallery scale overrides remain scoped to the nested preview")
+  context.game.input.pressQueue = { "select" }
+  local fontBefore = gallery.optionOverrides.fontScale
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(gallery.optionOverrides.fontScale ~= fontBefore,
+    "UI Gallery cycles temporary font scale")
+  context.game.input.pressQueue = { "start" }
+  local pixelBefore = gallery.optionOverrides.pixelFont
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(gallery.optionOverrides.pixelFont ~= pixelBefore,
+    "UI Gallery toggles system and whole-step pixel font modes")
+
+  if not gallery.optionOverrides.pixelFont then
+    context.game.input.pressQueue = { "start" }
+    context.hooks["input.step"](function() end, context.game, 0)
+  end
+  context.renderHud({ gallery }, nil, context.viewport)
+  local pixelStep = gallery.previewTheme and gallery.previewTheme.scale
+    and gallery.previewTheme.scale.pixelFontStep
+  check(type(pixelStep) == "number" and pixelStep >= 1
+      and pixelStep == math.floor(pixelStep),
+    "UI Gallery preserves whole-number Plain Pixel raster steps")
+
+  local menuIndex
+  for index, spec in ipairs(catalog) do
+    if spec.id == "core.start_menu" then menuIndex = index break end
+  end
+  local function previewPanelAt(contentIndex)
+    gallery.entryIndex, gallery.contentIndex = menuIndex, contentIndex
+    gallery.preview, gallery.previewKey = nil, nil
+    context.renderHud({ gallery }, nil, context.viewport)
+    for _, rect in ipairs(gallery.previewDiagnostics
+        and gallery.previewDiagnostics.rects or {}) do
+      if rect.role == "panel" then return rect end
+    end
+  end
+  local emptyPanel = previewPanelAt(1)
+  local overflowPanel = previewPanelAt(5)
+  check(emptyPanel and overflowPanel
+      and math.abs(emptyPanel.w - overflowPanel.w) < 0.01
+      and math.abs(emptyPanel.h - overflowPanel.h) < 0.01,
+    "Gallery content profiles retain one stable presenter envelope")
+  check(gallery.previewDiagnostics
+      and #(gallery.previewDiagnostics.overflows or {}) == 0,
+    "Gallery reports no out-of-bounds rectangles for the menu stress preview")
+
+  context.game.input.pressQueue = { "b" }
+  context.hooks["input.step"](function() end, context.game, 0)
+  check(context.game.stack:top() ~= gallery,
+    "UI Gallery closes without retaining its temporary preview state")
+end
+
+local function verifyCatchNicknameScreens(context)
+  -- AskName is two different screens: a TextBox with a ChoiceBox riding it,
+  -- followed by the opaque NamingScreen when YES is selected. Keep both in
+  -- the visual regression so battle child handling cannot make either one
+  -- disappear again.
+  local function newCatchPrompt()
+    return setmetatable({
+      pages = { { "Do you want to", "give a nickname", "to TESTMON?" } },
+      pageIndex = 1, lineIndex = 3, charIndex = 11,
+      shown = { {} }, done = true, choice = true,
+    }, { __index = context.textBoxClass })
+  end
+  local function newCatchChoice()
+    return setmetatable({ index = 1, anchor = "bottom" },
+      { __index = context.choiceClass })
+  end
+  local function promptPanels()
+    local dialoguePanel, choicePanel
+    for _, layer in ipairs(
+        context.mod.exports.getLayoutDiagnostics().layers or {}) do
+      for _, rect in ipairs(layer.rects or {}) do
+        if rect.role == "panel" and layer.kind == "text" then
+          dialoguePanel = rect
+        elseif rect.role == "panel" and layer.kind == "choice" then
+          choicePanel = rect
+        end
+      end
+    end
+    return dialoguePanel, choicePanel
+  end
+  local oldBlank, oldPhase = context.battle.blankForAskName,
+    context.battle.phase
+  context.battle.blankForAskName, context.battle.phase = true, "messages"
+  context.renderHud({ context.battle, newCatchPrompt(), newCatchChoice() },
+    "battle_catch_nickname_prompt", context.battleViewport)
+  local desktopDialogue, desktopChoice = promptPanels()
+  check(desktopDialogue and desktopChoice,
+    "post-catch nickname dialogue and YES/NO prompt render together")
+  context.renderHud({ context.battle, newCatchPrompt(), newCatchChoice() },
+    "battle_catch_nickname_prompt_compact", context.compactViewport)
+  local dialoguePanel, choicePanel = promptPanels()
+  check(dialoguePanel and choicePanel
+      and choicePanel.y + choicePanel.h <= dialoguePanel.y + 0.51,
+    "compact post-catch prompt stays visible with its choice clear of dialogue")
+  local catchNaming = setmetatable({
+    screenId = "NamingScreen", title = "NICKNAME?", maxLen = 10,
+    glyphs = {}, row = 1, col = 1, lower = false,
+    grid = function()
+      return {
+        { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
+        { "J", "K", "L", "M", "N", "O", "P", "Q", "R" },
+        { "S", "T", "U", "V", "W", "X", "Y", "Z", " " },
+        { "1", "2", "3", "4", "5", "6", "7", "8", "9" },
+        { "-", "?", "!", "(", ")", "/", ".", ",", "ED" },
+        { "lower case" },
+      }
+    end,
+  }, { __index = context.namingClass })
+  check(context.alphaBounds(context.renderHud({ catchNaming },
+      "battle_catch_nickname_entry", context.portraitViewport)) ~= nil,
+    "post-catch NamingScreen renders its complete modern keyboard")
+  context.battle.blankForAskName, context.battle.phase = oldBlank, oldPhase
 end
 
 function love.load()
@@ -271,14 +558,19 @@ function love.load()
       and mod.exports.pixelFontTokens.rasterStep == 15
       and mod.exports.pixelFontTokens.coordinateStep == 1,
     "pixel font exposes its 11-row cell and 15-point raster contract")
+  check(mod.exports.scaleTokens.uiMax == 4
+      and mod.exports.scaleTokens.fontMax == 4
+      and mod.exports.scaleTokens.fontAutoMax == 5,
+    "public scale tokens distinguish manual 400% from system-font AUTO 500%")
   check(optionDefault(schemas, "pointerUi") == false
       and optionDefault(schemas, "dragPanels") == false,
     "experimental pointer interaction and panel dragging default off")
-  local battleWipRow, battleModeRow
+  local battleWipRow, battleModeRow, battle3dBypassRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
       if row.key == "battleUiWip" then battleWipRow = row end
       if row.key == "battleUiMode" then battleModeRow = row end
+      if row.key == "battle3dBypass" then battle3dBypassRow = row end
     end
   end
   check(battleWipRow and battleWipRow.default == false,
@@ -288,7 +580,9 @@ function love.load()
       and battleModeRow.choices[2][2] == "full"
       and battleModeRow.choices[3][2] == "hud"
       and battleModeRow.default == "auto",
-    "battle UI exposes AUTO, 2D FRAMED, and SCENE HUD modes")
+    "battle UI retains AUTO, 2D FRAMED, and the legacy SCENE HUD alias")
+  check(battle3dBypassRow and battle3dBypassRow.default == true,
+    "3D battle native ownership bypass defaults on")
   local minimalRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -313,12 +607,12 @@ function love.load()
       if row.key == "dialogueTextScale" then dialogueScaleRow = row end
     end
   end
-  check(uiScaleRow and #uiScaleRow.choices == 17 and uiScaleRow.choices[1][2] == "auto"
+  check(uiScaleRow and #uiScaleRow.choices == 27 and uiScaleRow.choices[1][2] == "auto"
       and uiScaleRow.default == "100",
-    "UI scale exposes AUTO plus 75% through 150% in 5% steps")
-  check(fontScaleRow and #fontScaleRow.choices == 26 and fontScaleRow.choices[1][2] == "auto"
+    "UI scale preserves 75%-150% steps and adds high-resolution presets through 400%")
+  check(fontScaleRow and #fontScaleRow.choices == 34 and fontScaleRow.choices[1][2] == "auto"
       and fontScaleRow.default == "100",
-    "font scale exposes AUTO plus 80% through 200% in 5% steps")
+    "font scale preserves 80%-200% steps and adds high-resolution presets through 400%")
   check(dialogueScaleRow and #dialogueScaleRow.choices == 6
       and dialogueScaleRow.default == "inherit",
     "dialogue scale exposes inherit and readability presets")
@@ -539,6 +833,74 @@ function love.load()
     usefulBagState.__pocketIds = nil
     check(not mod._gen1ModernCompatibility:isUsefulBagState(usefulBagState),
       "malformed Useful Bag state stays on the native fallback")
+
+    local extensionContract = {
+      apiVersion = 1,
+      extensions = {
+        partyRows = {
+          match = function(_, kind) return kind == "party" end,
+          model = function() return {
+            rows = { [1] = { background = "surfaceRaised" } },
+          } end,
+        },
+        trainerPage = {
+          match = function(_, kind) return kind == "trainer_card" end,
+          model = function() return {
+            pages = { { id = "notes", rows = { { label = "NOTES" } } } },
+          } end,
+        },
+        battleLayout = {
+          match = function(_, kind) return kind == "battle" end,
+          model = function() return { battle = { cardWidth = 180 } } end,
+        },
+      },
+    }
+    check(mod.exports.registerAdapter({ owner = "test_source",
+      contract = extensionContract }),
+      "additive-only extension contract registers")
+    local extensionRows = { { label = "ONE" }, { label = "TWO" } }
+    mod._gen1ModernCompatibility:augmentRows(adapterGame,
+      { party = {} }, "party", extensionRows)
+    check(extensionRows[1].background == "surfaceRaised",
+      "additive extension decorates an existing row")
+    local trainerPages = mod._gen1ModernCompatibility:pagesFor(
+      adapterGame, {}, "trainer_card")
+    check(#trainerPages == 1 and trainerPages[1].page.id == "notes",
+      "additive extension contributes a Trainer Card page")
+    local battleOptions = mod._gen1ModernCompatibility:battleOptions(
+      adapterGame, {})
+    check(battleOptions.cardWidth == 180,
+      "battle extension contributes data-only layout options")
+    local nativeContract = {
+      apiVersion = 1,
+      battle = {
+        native3d = function() return true end,
+      },
+      extensions = extensionContract.extensions,
+    }
+    check(mod.exports.registerAdapter({ owner = "test_source",
+      contract = nativeContract }),
+      "native 3D ownership contract registers")
+    check(mod._gen1ModernCompatibility:isNative3dBattle(
+        adapterGame, battleAdapterState),
+      "native 3D ownership contract is detected")
+    check(mod.exports.unregisterAdapter("test_source"),
+      "native 3D ownership contract unregisters cleanly")
+    values.externalHandles.dramatic_shape = {
+      id = "dramatic_shape", version = "1.7.8", exports = {
+        lib = {
+          require = function(name)
+            if name == "OverworldBattle" then
+              return { enabled = function() return true end }
+            end
+          end,
+        },
+      },
+    }
+    check(mod._gen1ModernCompatibility:isNative3dBattle(
+        adapterGame, battleAdapterState),
+      "DramaticShape public OverworldBattle setting is detected")
+    values.externalHandles.dramatic_shape = nil
   end
   check(mod.exports.registerFrame({ owner = "test_source", id = "frame",
     asset = "assets/pixel_frame1.png" }) == "test_source:frame",
@@ -612,6 +974,29 @@ function love.load()
     end,
   } }
   do
+    -- The lifecycle event must tolerate hosts that emit screen.pushed before
+    -- the new state is visible in the stack. It must not make a transient
+    -- native state transparent before the first complete modern frame exists.
+    local transientMenu = setmetatable({ game = game, items = {
+      { label = "POKEMON" },
+    }, index = 1, isOpaque = true }, { __index = menuClass })
+    local transientText = setmetatable({ game = game, pages = {
+      { "HELLO" },
+    }, pageIndex = 1, lineIndex = 1, charIndex = 0, isOpaque = true },
+      { __index = textBoxClass })
+    game.stack.states = { overworld }
+    eventListeners["screen.pushed"]({ state = transientMenu })
+    eventListeners["screen.pushed"]({ state = transientText })
+    check(transientMenu.isOpaque == true and transientText.isOpaque == true,
+      "early screen lifecycle events keep transient menu and dialogue native")
+    game.stack.states = { overworld, transientMenu }
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, transientMenu) == false,
+      "settled first-frame menu can be suppressed without opacity mutation")
+    game.stack.states = { overworld, state }
+  end
+  do
     local oakSpeech = setmetatable({ screenId = "OakSpeech" },
       { __index = package.loaded["src.ui.OakSpeech"] })
     local namingState = setmetatable({ screenId = "NamingScreen" },
@@ -658,6 +1043,13 @@ function love.load()
     check(shortcutManager.optionRows[1]
         and shortcutManager.optionRows[1].id == "__category:appearance",
       "direct UI SETTINGS opens with categorized option rows")
+    values.galleryAction = shortcutManager._gen1OptionGroups
+      and shortcutManager._gen1OptionGroups.advanced
+      and shortcutManager._gen1OptionGroups.advanced.rows[1]
+    check(values.galleryAction
+        and values.galleryAction.id == "gen1_modern_ui.gallery.open"
+        and type(values.galleryAction.activate) == "function",
+      "Advanced UI settings exposes the stable UI Gallery action")
     hooks["render.zones"](function(_, zones) return zones end, game, {})
     check(hooks["screen.render_visible"](
         function(visible) return visible end, true, shortcutManager) == false,
@@ -833,40 +1225,42 @@ function love.load()
     values.battleUiWip, values.battleUiMode = true, "full"
     local moveState = {
       phase = "moveSelect", moveIndex = 1,
-      wideLayout = function() return false end,
       player = { curMoves = { {}, {}, {}, {} } },
     }
-    local moveGame = { input = { pressQueue = { "right" } }, stack = {
+    local moveGame = { input = { pressQueue = {} }, stack = {
       top = function() return moveState end,
     } }
-    hooks["input.step"](function() end, moveGame, 0)
-    check(moveState.moveIndex == 2 and #moveGame.input.pressQueue == 0,
-      "standard battle move grid maps RIGHT from slot 1 to slot 2")
-    moveGame.input.pressQueue = { "down" }
-    hooks["input.step"](function() end, moveGame, 0)
-    check(moveState.moveIndex == 4,
-      "standard battle move grid maps DOWN from slot 2 to slot 4")
-    moveGame.input.pressQueue = { "left" }
-    hooks["input.step"](function() end, moveGame, 0)
-    check(moveState.moveIndex == 3,
-      "standard battle move grid maps LEFT from slot 4 to slot 3")
-    moveGame.input.pressQueue = { "up" }
-    hooks["input.step"](function() end, moveGame, 0)
-    check(moveState.moveIndex == 1,
-      "standard battle move grid maps UP from slot 3 to slot 1")
-    moveState.wideLayout = function() return true end
-    moveGame.input.pressQueue = { "right" }
-    hooks["input.step"](function() end, moveGame, 0)
-    check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
-      "WIDE battle keeps directional input source-owned")
-    moveState.wideLayout = function() return false end
+    for _, layoutCase in ipairs({
+        { name = "callback false", value = function() return false end },
+        { name = "boolean false", value = false },
+        { name = "missing metadata", missing = true },
+      }) do
+      moveState.moveIndex = 1
+      moveState.wideLayout = layoutCase.missing and nil or layoutCase.value
+      moveGame.input.pressQueue = { "right" }
+      hooks["input.step"](function() end, moveGame, 0)
+      check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
+        layoutCase.name .. " battle keeps native move navigation untouched")
+    end
+    for _, layoutCase in ipairs({
+        { name = "callback true", value = function() return true end },
+      }) do
+      moveState.moveIndex = 1
+      moveState.wideLayout = layoutCase.value
+      moveGame.input.pressQueue = { "right" }
+      hooks["input.step"](function() end, moveGame, 0)
+      check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
+        layoutCase.name .. " WIDE battle keeps directional input source-owned")
+    end
+    moveState.wideLayout = false
     moveState.dramaticShapeShot = { canvas = true }
     values.battleUiMode = "auto"
+    values.battle3dBypass = true
     moveGame.input.pressQueue = { "right" }
     hooks["input.step"](function() end, moveGame, 0)
     check(moveState.moveIndex == 1 and moveGame.input.pressQueue[1] == "right",
-      "AUTO scene HUD battle keeps directional input source-owned")
-    values.battleUiWip, values.battleUiMode = false, "auto"
+      "AUTO 3D scene battle keeps directional input source-owned")
+    values.battleUiWip, values.battleUiMode, values.battle3dBypass = false, "auto", true
   end
   local zones = {}
   local returnedZones = hooks["render.zones"](
@@ -1208,6 +1602,7 @@ function love.load()
   state = { screenId = "Gen3Box", mode = "box", row = 0, col = 0,
     draw = function() end }
   game.stack.states = { state }
+  game.stack.states = { state }
   fill()
   compose(false)
   check(alpha() == 0, "recognized Gen3 Box instance draw remains suppressible")
@@ -1274,11 +1669,12 @@ function love.load()
     introChild = hooks["ui.state.decorate"](
       function(_, value) return value end, game, introChild, nil)
     check(disabledBattle.draw ~= originalDraw
-        and disabledBattle.drawHUDs ~= originalHud
-        and disabledBattle.drawTextArea ~= originalText
-        and disabledBattle.drawPicsLayer ~= originalPics
-        and introChild.draw ~= originalChildDraw,
-      "enabled battle UI installs scene and child decorators")
+        and disabledBattle.drawHUDs == originalHud
+        and disabledBattle.drawTextArea == originalText
+        and disabledBattle.drawPicsLayer == originalPics
+        and introChild.draw == originalChildDraw
+        and introChild._gen1ModernBattleChildDraw == nil,
+      "enabled WIDE UI clips the source surface without shifting pictures or replacing native child/HUD fallbacks")
 
     values.battleUiWip = false
     game.stack.states = { disabledBattle, introChild }
@@ -1289,6 +1685,57 @@ function love.load()
         and disabledBattle.drawPicsLayer == originalPics
         and introChild.draw == originalChildDraw,
       "disabling battle UI restores decorators installed earlier in the session")
+
+    values.battleUiWip = true
+    game.stack.states = { disabledBattle, introChild }
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(disabledBattle.draw ~= originalDraw
+        and disabledBattle.drawHUDs == originalHud
+        and introChild.draw == originalChildDraw
+        and introChild._gen1ModernBattleChildDraw == nil,
+      "re-enabling battle UI reinstalls scene decorators while retaining native child fallback")
+    values.battleUiWip = false
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+
+    values.battleUiWip, values.battle3dBypass = true, true
+    values.externalHandles.dramatic_shape = {
+      id = "dramatic_shape", version = "1.7.8", exports = {
+        lib = {
+          require = function(name)
+            if name == "OverworldBattle" then
+              return { enabled = function() return true end }
+            end
+          end,
+        },
+      },
+    }
+    local native3dDraw = function() end
+    local native3dHud = function() end
+    local native3dText = function() end
+    local native3dBattle = {
+      game = game, phase = "menu", queue = {}, kind = "wild",
+      draw = native3dDraw, drawHUDs = native3dHud,
+      drawTextArea = native3dText,
+    }
+    local native3dChild = setmetatable({ game = game,
+      screenId = "BagMenu", items = {}, index = 1, scroll = 0,
+      isOpaque = true }, { __index = listClass })
+    native3dBattle = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, native3dBattle, nil)
+    native3dChild = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, native3dChild, nil)
+    game.stack.states = { native3dBattle, native3dChild }
+    hooks["render.zones"](function(_, zones) return zones end, game, {})
+    check(native3dBattle.draw == native3dDraw
+        and native3dBattle.drawHUDs == native3dHud
+        and native3dBattle.drawTextArea == native3dText
+        and native3dChild._gen1ModernBattleChildDraw == nil,
+      "DramaticShape 3D-BTL leaves battle and child interfaces native")
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, native3dChild) == true,
+      "DramaticShape 3D-BTL child remains visible to the native renderer")
+    values.externalHandles.dramatic_shape = nil
+    values.battleUiWip, values.battle3dBypass = false, true
     game.stack.states = { state }
   end
 
@@ -1306,18 +1753,18 @@ function love.load()
       function(_, value) return value end, game, isolated, nil)
     isolated:drawHUDs(0)
     isolated:drawTextArea()
-    check(hudCalls == 0 and textCalls == 0,
-      "classic 2D battle decoration isolates native HUD and text at source")
+    check(hudCalls == 1 and textCalls == 1,
+      "classic 2D battle keeps native HUD and text available as a fallback")
     isolated.introBalls = true
     isolated:drawHUDs(0)
-    check(hudCalls == 1,
+    check(hudCalls == 2,
       "classic 2D battle preserves source-owned intro party-ball animation")
     isolated.introBalls = nil
     values.battleUiMode = "hud"
     isolated:drawHUDs(0)
     isolated:drawTextArea()
-    check(hudCalls == 2 and textCalls == 1,
-      "scene HUD mode delegates native battle HUD and text unchanged")
+    check(hudCalls == 3 and textCalls == 2,
+      "legacy HUD value leaves an ineligible standard battle wholly native")
     values.battleUiMode = "full"
 
     local worldBattle = {
@@ -1345,13 +1792,15 @@ function love.load()
     worldBattle:draw()
     love.graphics.setCanvas()
     local worldImage = worldCanvas:newImageData()
-    local _, _, _, worldOutsideA = worldImage:getPixel(20, 20)
+    local worldEdgeR, worldEdgeG, worldEdgeB, worldEdgeA =
+      worldImage:getPixel(20, 20)
     local worldPaperR, worldPaperG, worldPaperB, worldPaperA =
       worldImage:getPixel(40, 20)
     local worldSpriteR, worldSpriteG, worldSpriteB, worldSpriteA =
       worldImage:getPixel(151, 49)
-    check(worldOutsideA == 0,
-      "WORLD battle decoration leaves the overworld clear outside its frame")
+    check(worldEdgeA > 0.95 and worldEdgeR > 0.95
+        and worldEdgeG > 0.95 and worldEdgeB > 0.95,
+      "WORLD battle paper reaches the complete source edge inside its frame")
     check(worldPaperA > 0.95 and worldPaperR > 0.95
         and worldPaperG > 0.95 and worldPaperB > 0.95,
       "WORLD battle decoration fills the modern arena with battle paper")
@@ -1361,8 +1810,8 @@ function love.load()
     check(love.graphics.rectangle == rectangleBefore,
       "WORLD battle decoration restores the graphics API after source draw")
     worldBattle:drawPicsLayer(0, 0, 0, "enemy")
-    check(worldBattle.lastPictureX == -12,
-      "WIDE battle decoration pulls the opponent inside the modern frame")
+    check(worldBattle.lastPictureX == 0,
+      "WIDE battle preserves source-authored opponent placement")
     worldBattle:drawPicsLayer(0, 0, 0, "player")
     check(worldBattle.lastPictureX == 0,
       "WIDE battle decoration leaves the player picture placement unchanged")
@@ -1377,9 +1826,9 @@ function love.load()
     eventListeners["screen.pushed"]({ state = pushedBattle })
     pushedBattle:drawHUDs(0)
     pushedBattle:drawTextArea()
-    check(pushedHudCalls == 0 and pushedTextCalls == 0
-        and pushedBattle._gen1ModernBattleSceneIsolation == true,
-      "screen push isolates classic battle HUD and text before first draw")
+    check(pushedHudCalls == 1 and pushedTextCalls == 1
+        and pushedBattle._gen1ModernBattleSceneIsolation == nil,
+      "screen push keeps classic battle HUD and text available before first modern frame")
   end
   state = { phase = "menu", queue = {}, kind = "wild", menuIndex = 1,
     draw = function() end,
@@ -1389,10 +1838,91 @@ function love.load()
     enemy = { mon = { species = "TESTMON", level = 3, hp = 12,
       stats = { hp = 12 } } } }
   game.stack.states = { state }
+  do
+    -- Regression coverage for the user-visible failure: enabling the WIP
+    -- battle presenter must not make a newly pushed Start/dialogue state
+    -- disappear while its model is still settling.
+    local nativeWideLayout = state.wideLayout
+    state.wideLayout = function() return true end
+    local transientPopup = setmetatable({ game = game, screenId = "StartMenu",
+      items = {}, index = 1, isOpaque = true, draw = function(self)
+        self.nativeDraws = (self.nativeDraws or 0) + 1
+      end }, { __index = menuClass })
+    game.stack.states = { state, transientPopup }
+    transientPopup = hooks["ui.state.decorate"](
+      function(_, value) return value end, game, transientPopup, nil)
+    game.stack.states[2] = transientPopup
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    transientPopup:draw()
+    check(transientPopup.nativeDraws == 1
+        and hooks["screen.render_visible"](
+          function(visible) return visible end, true, transientPopup) == true,
+      "WIP battle keeps an incomplete Start menu native and visible")
+    fill()
+    compose(false)
+    check(alpha() == 1,
+      "WIP battle keeps an incomplete Start menu canvas visible")
+
+    local readyStart = setmetatable({ game = game, screenId = "StartMenu",
+      items = { { label = "POKéMON" }, { label = "ITEM" } }, index = 1,
+      isOpaque = true }, { __index = menuClass })
+    local readyDialogue = setmetatable({ game = game, pages = {
+      { "HELLO" },
+    }, pageIndex = 1, lineIndex = 1, charIndex = 5, done = true,
+      isOpaque = true }, { __index = textBoxClass })
+    game.stack.states = { state, readyStart }
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, readyStart) == true,
+      "WIP battle defers Start menu suppression to composition")
+    local readyStartCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(readyStartCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = readyStartCanvas, uiw = 304, uih = 144,
+    })
+    local readyStartImage = readyStartCanvas:newImageData()
+    local startR, startG, startB, startA = readyStartImage:getPixel(0, 0)
+    local startArenaR, startArenaG, startArenaB, startArenaA =
+      readyStartImage:getPixel(150, 48)
+    check(startR > 0.95 and startG > 0.95 and startB > 0.95
+        and startA > 0.95 and startArenaR > 0.95
+        and startArenaG > 0.95 and startArenaB > 0.95
+        and startArenaA > 0.95,
+      ("complete modern Start replacement restores the full framed battle paper "
+        .. "(corner %.2f/%.2f/%.2f/%.2f, arena %.2f/%.2f/%.2f/%.2f)")
+        :format(startR, startG, startB, startA,
+          startArenaR, startArenaG, startArenaB, startArenaA))
+    game.stack.states = { state, readyDialogue }
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    check(hooks["screen.render_visible"](
+        function(visible) return visible end, true, readyDialogue) == true,
+      "WIP battle defers dialogue suppression to composition")
+    local readyDialogueCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(readyDialogueCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = readyDialogueCanvas, uiw = 304, uih = 144,
+    })
+    local readyDialogueImage = readyDialogueCanvas:newImageData()
+    local dialogueR, dialogueG, dialogueB, dialogueA =
+      readyDialogueImage:getPixel(0, 0)
+    local dialogueArenaR, dialogueArenaG, dialogueArenaB, dialogueArenaA =
+      readyDialogueImage:getPixel(150, 48)
+    check(dialogueR > 0.95 and dialogueG > 0.95 and dialogueB > 0.95
+        and dialogueA > 0.95 and dialogueArenaR > 0.95
+        and dialogueArenaG > 0.95 and dialogueArenaB > 0.95
+        and dialogueArenaA > 0.95,
+      "complete modern dialogue replacement restores the full framed battle paper")
+    state.wideLayout = nativeWideLayout
+  end
+  game.stack.states = { state }
   fill()
   compose(false)
   check(alpha() == 1,
-    "enabled full battle presenter preserves native animation canvas")
+    "standard battle stays wholly native when WIDE metadata is false")
   do
     local sourceCanvas = love.graphics.newCanvas(160, 144)
     love.graphics.setCanvas(sourceCanvas)
@@ -1407,12 +1937,11 @@ function love.load()
     local playerR, playerG = image:getPixel(80, 60)
     local menuR, menuG = image:getPixel(8, 112)
     local sceneR, sceneG = image:getPixel(100, 40)
-    check(enemyR > 0.95 and enemyG > 0.95
-        and playerR > 0.95 and playerG > 0.95
-        and menuR > 0.95 and menuG > 0.95,
-      "2D battle compose scrubs only native HUD and command tiles")
-    check(sceneR > 0.95 and sceneG < 0.05,
-      "2D battle compose preserves the native sprite/animation arena")
+    check(enemyR > 0.95 and enemyG < 0.05
+        and playerR > 0.95 and playerG < 0.05
+        and menuR > 0.95 and menuG < 0.05
+        and sceneR > 0.95 and sceneG < 0.05,
+      "false WIDE metadata leaves the complete native 160x144 canvas untouched")
 
     state.wideLayout = function() return true end
     local wideCanvas = love.graphics.newCanvas(304, 144)
@@ -1435,6 +1964,19 @@ function love.load()
     check(wideSceneR > 0.95 and wideSceneG < 0.05,
       "WIDE 2D battle compose preserves its sprite and animation arena")
 
+    state.phase = "animations"
+    love.graphics.setCanvas(wideCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = wideCanvas, uiw = 304, uih = 144,
+    })
+    wideImage = wideCanvas:newImageData()
+    wideMenuR, wideMenuG = wideImage:getPixel(8, 120)
+    check(wideMenuR > 0.95 and wideMenuG > 0.95,
+      "idle WIDE battle scrubs the always-painted native text frame")
+    state.phase = "menu"
+
     state.bgMode = function() return "world" end
     love.graphics.setCanvas(wideCanvas)
     love.graphics.clear(1, 0, 0, 1)
@@ -1444,18 +1986,21 @@ function love.load()
       uiCanvas = wideCanvas, uiw = 304, uih = 144,
     })
     local worldWideImage = wideCanvas:newImageData()
-    local _, _, _, worldWideHudA = worldWideImage:getPixel(4, 4)
-    local _, _, _, worldWideGutterA = worldWideImage:getPixel(290, 60)
-    local _, _, _, worldWideLeftEdgeA = worldWideImage:getPixel(27, 60)
-    local _, _, _, worldWideRightEdgeA = worldWideImage:getPixel(276, 60)
+    local worldWideHudR, worldWideHudG, worldWideHudB, worldWideHudA =
+      worldWideImage:getPixel(4, 4)
+    local worldWideLeftR, worldWideLeftG, _, worldWideLeftA =
+      worldWideImage:getPixel(0, 40)
+    local worldWideRightR, worldWideRightG, _, worldWideRightA =
+      worldWideImage:getPixel(303, 40)
     local worldWideSceneR, worldWideSceneG, _, worldWideSceneA =
       worldWideImage:getPixel(150, 48)
-    check(worldWideHudA == 0,
-      "WORLD WIDE battle scrub exposes the map beneath native HUD tiles")
-    check(worldWideGutterA == 0,
-      "WORLD WIDE battle scrub clips retained scene pixels at its frame")
-    check(worldWideLeftEdgeA == 0 and worldWideRightEdgeA == 0,
-      "WORLD WIDE battle paper stays inside both horizontal frame edges")
+    check(worldWideHudA > 0.95 and worldWideHudR > 0.95
+        and worldWideHudG > 0.95 and worldWideHudB > 0.95,
+      "WORLD WIDE native HUD tiles scrub back to battle paper")
+    check(worldWideLeftA > 0.95 and worldWideRightA > 0.95
+        and worldWideLeftR > 0.95 and worldWideLeftG < 0.05
+        and worldWideRightR > 0.95 and worldWideRightG < 0.05,
+      "WORLD WIDE source scene reaches both horizontal arena edges")
     check(worldWideSceneA > 0.95 and worldWideSceneR > 0.95
         and worldWideSceneG < 0.05,
       "WORLD WIDE battle scrub leaves the source sprite arena opaque")
@@ -1468,10 +2013,9 @@ function love.load()
         uiCanvas = wideCanvas, uiw = 304, uih = 144,
       })
     local dimmedWorldImage = wideCanvas:newImageData()
-    local dimR, dimG, dimB, dimA = dimmedWorldImage:getPixel(290, 60)
-    check(dimR < 0.05 and dimG < 0.05 and dimB < 0.05
-        and dimA > 0.35 and dimA < 0.45,
-      "WORLD WIDE battle matches the host veil across its former viewport")
+    local dimR, dimG, _, dimA = dimmedWorldImage:getPixel(150, 48)
+    check(dimR > 0.95 and dimG < 0.05 and dimA > 0.95,
+      "WORLD WIDE battle dimming never veils the framed source arena")
 
     local childBase = state
     childBase.bgMode = function() return "world" end
@@ -1497,13 +2041,33 @@ function love.load()
     check(childArenaA > 0.95 and childArenaR > 0.95
         and childArenaG > 0.95 and childArenaB > 0.95,
       "WORLD battle keeps its white arena behind Bag/Party children")
-    check(childGutterR < 0.05 and childGutterG < 0.05
-        and childGutterB < 0.05 and childGutterA > 0.35
-        and childGutterA < 0.45,
-      "WORLD battle keeps its dimmed gutter behind Bag/Party children")
+    check(childGutterR > 0.95 and childGutterG > 0.95
+        and childGutterB > 0.95 and childGutterA > 0.95,
+      "WORLD battle keeps paper to the arena edge behind Bag/Party children")
+
+    childBase.bgMode = nil
+    game.stack.states = { childBase, childOverlay }
+    local nonWorldChildCanvas = love.graphics.newCanvas(304, 144)
+    love.graphics.setCanvas(nonWorldChildCanvas)
+    love.graphics.clear(1, 0, 0, 1)
+    love.graphics.setCanvas()
+    hooks["render.zones"](function(_, value) return value end, game, {})
+    hooks["render.compose"](function() return false end, {}, {
+      uiCanvas = nonWorldChildCanvas, uiw = 304, uih = 144,
+    })
+    local nonWorldChildImage = nonWorldChildCanvas:newImageData()
+    local nonWorldCornerR, nonWorldCornerG, nonWorldCornerB, nonWorldCornerA =
+      nonWorldChildImage:getPixel(4, 4)
+    local nonWorldArenaR, nonWorldArenaG, nonWorldArenaB, nonWorldArenaA =
+      nonWorldChildImage:getPixel(150, 48)
+    check(nonWorldCornerR > 0.95 and nonWorldCornerG > 0.95
+        and nonWorldCornerB > 0.95 and nonWorldCornerA > 0.95
+        and nonWorldArenaR > 0.95 and nonWorldArenaG > 0.95
+        and nonWorldArenaB > 0.95 and nonWorldArenaA > 0.95,
+      "non-WORLD battle child cleanup restores the complete 304x144 arena paper")
     game.stack.states = { state }
     state.bgMode = nil
-    state.wideLayout = function() return false end
+    state.wideLayout = function() return true end
 
     local battleBase = state
     battleBase.isOpaque = true
@@ -1517,17 +2081,17 @@ function love.load()
       function(_, value) return value end, game, battleBag, nil)
     game.stack.states[2] = battleBag
     battleBag:draw()
-    check(childNativeDraws == 0
-        and type(battleBag._gen1ModernBattleChildNativeDraw) == "function",
-      "battle child source draw is suppressed before it can overwrite WIDE sprites")
+    check(childNativeDraws == 1
+        and battleBag._gen1ModernBattleChildNativeDraw == nil,
+      "battle child source draw stays native until composition proves replacement")
     eventListeners["screen.pushed"]({ state = battleBag })
     hooks["render.zones"](function(_, value) return value end, game, {})
     check(hooks["screen.render_visible"](
         function(visible) return visible end, true, battleBase) == true,
       "battle native draw remains visible under a modern child screen")
     check(hooks["screen.render_visible"](
-        function(visible) return visible end, true, battleBag) == false,
-      "Bag child native draw is hidden independently above BattleState")
+        function(visible) return visible end, true, battleBag) == true,
+      "Bag child native draw stays visible until composition proves replacement")
 
     -- Match the released host exactly: BattleState.StatBox has no kind,
     -- screenId, isOpaque flag, or instance-owned draw/update functions. Its
@@ -1565,16 +2129,16 @@ function love.load()
       function(_, value) return value end, game, levelUpState, nil)
     game.stack.states[2] = levelUpState
     levelUpState:draw()
-    check(levelUpNativeDraws == 0
-        and type(levelUpState._gen1ModernBattleChildNativeDraw) == "function",
-      "level-up native StatBox draw is suppressed at its source")
+    check(levelUpNativeDraws == 1
+        and levelUpState._gen1ModernBattleChildNativeDraw == nil,
+      "level-up native StatBox draw stays native until composition proves replacement")
     hooks["render.zones"](function(_, value) return value end, game, {})
     check(hooks["screen.render_visible"](
         function(visible) return visible end, true, battleBase) == true,
       "battle scene remains visible under the modern level-up card")
     check(hooks["screen.render_visible"](
-        function(visible) return visible end, true, levelUpState) == false,
-      "level-up native StatBox is hidden independently above BattleState")
+        function(visible) return visible end, true, levelUpState) == true,
+      "level-up native StatBox stays visible until composition proves replacement")
 
     local levelUpCanvas = love.graphics.newCanvas(304, 144)
     love.graphics.setCanvas(levelUpCanvas)
@@ -1586,15 +2150,18 @@ function love.load()
     local levelUpImage = levelUpCanvas:newImageData()
     local outsideR, outsideG, outsideB, outsideA =
       levelUpImage:getPixel(4, 4)
-    local _, _, _, topStripA = levelUpImage:getPixel(150, 5)
+    local topStripR, topStripG, topStripB, topStripA =
+      levelUpImage:getPixel(150, 5)
     -- Sample above the player ribbon and to the right of the native StatBox
     -- scrub so this remains a source-scene assertion, not a HUD assertion.
     local sceneR, sceneG, sceneB, sceneA =
       levelUpImage:getPixel(200, 48)
-    check(outsideA == 0,
-      "real host StatBox leaves WORLD visible outside the modern 9-slice")
-    check(topStripA == 0,
-      "real host StatBox cannot restore WORLD paper above the modern frame")
+    check(outsideR > 0.95 and outsideG > 0.95 and outsideB > 0.95
+        and outsideA > 0.95,
+      "real host StatBox restores paper to the framed arena edge")
+    check(topStripR > 0.95 and topStripG < 0.05 and topStripB < 0.05
+        and topStripA > 0.95,
+      "real host StatBox preserves the full-height WIDE source arena")
     check(sceneR > 0.95 and sceneG < 0.05 and sceneB < 0.05
         and sceneA > 0.95,
       "real host StatBox preserves source battle pixels inside modern scene")
@@ -1610,7 +2177,8 @@ function love.load()
   values.battleUiMode = "hud"
   fill()
   compose(false)
-  check(alpha() == 1, "SCENE HUD battle presenter preserves native battle UI")
+  check(alpha() == 1,
+    "legacy SCENE HUD setting remains a safe save-compatible battle mode")
   values.battleUiMode = "auto"
   values.battleUiWip = false
 
@@ -1674,12 +2242,40 @@ function love.load()
   values.pixelFont = true
   local autoPortrait = mod.exports.getScaleTokens(portraitViewport)
   local autoDesktop = mod.exports.getScaleTokens(largeDesktopViewport)
-  check(autoPortrait.uiScale >= 0.75 and autoPortrait.uiScale <= 1.50
-      and autoPortrait.fontScale >= 0.80 and autoPortrait.fontScale <= 2.00,
+  check(autoPortrait.uiScale >= 0.75 and autoPortrait.uiScale <= 4.00
+      and autoPortrait.fontScale >= 0.80 and autoPortrait.fontScale <= 4.00,
     "AUTO scale stays within the configured bounds")
   check(autoDesktop.uiScale > autoPortrait.uiScale
       and autoDesktop.fontScale == 1 and autoPortrait.fontScale == 1,
     "AUTO UI scale responds while pixel font scale stays on an integer step")
+  values.pixelFont = false
+  values.fiveKScale = mod.exports.getScaleTokens({ width = 5120, height = 2784,
+    safe = { x = 0, y = 0, width = 5120, height = 2784 } })
+  check(values.fiveKScale.uiScale == 3.85
+      and values.fiveKScale.fontScale == 5,
+    "AUTO scales UI to 385% and preserves the system-text ratio at 500% on 5K")
+  values.fourKScale = mod.exports.getScaleTokens({ width = 3840, height = 2160,
+    dpiX = 1, dpiY = 1,
+    safe = { x = 0, y = 0, width = 3840, height = 2160 } })
+  values.hiDpi1080Scale = mod.exports.getScaleTokens({ width = 1920, height = 1080,
+    dpiX = 2, dpiY = 2,
+    safe = { x = 0, y = 0, width = 1920, height = 1080 } })
+  check(values.fourKScale.uiScale == 3 and values.fourKScale.fontScale == 4
+      and values.hiDpi1080Scale.uiScale * 2 == values.fourKScale.uiScale
+      and values.hiDpi1080Scale.fontScale * 2 == values.fourKScale.fontScale,
+    "logical AUTO scale and host DPI produce equivalent physical 4K sizing")
+  values.uiScale, values.fontScale = "100", "100"
+  values.manualFiveKScale = mod.exports.getScaleTokens({ width = 5120, height = 2784,
+    safe = { x = 0, y = 0, width = 5120, height = 2784 } })
+  check(values.manualFiveKScale.uiScale == 1
+      and values.manualFiveKScale.fontScale == 1,
+    "manual 100% remains exactly 100% on high-resolution displays")
+  values.uiScale, values.fontScale, values.pixelFont = "auto", "auto", true
+  values.fiveKPixelScale = mod.exports.getScaleTokens({ width = 5120, height = 2784,
+    safe = { x = 0, y = 0, width = 5120, height = 2784 } })
+  check(values.fiveKPixelScale.fontScale == 3
+      and values.fiveKPixelScale.fontScale % 1 == 0,
+    "Plain Pixel AUTO resolves 5K to a whole 3X raster step")
   local hudCanvases = {}
   local captureHud = os.getenv("GEN1_UI_SHOTS") == "1"
   local function renderHud(states, name, activeViewport)
@@ -1731,6 +2327,80 @@ function love.load()
     if not minX then return nil end
     return { x = minX, y = minY, w = maxX - minX + 1, h = maxY - minY + 1 }
   end
+  local function latestLayoutRect(role)
+    local diagnostics = mod.exports.getLayoutDiagnostics()
+    local layers = diagnostics and diagnostics.layers or {}
+    for layerIndex = #layers, 1, -1 do
+      local rects = layers[layerIndex].rects or {}
+      for rectIndex = #rects, 1, -1 do
+        if rects[rectIndex].role == role then return rects[rectIndex] end
+      end
+    end
+    return nil
+  end
+  local function verticallySeparated(upper, lower)
+    return upper and lower and upper.y + upper.h <= lower.y + 0.51
+  end
+
+  -- Modern 2D battle ownership is explicit-WIDE only. Standard/false/unknown
+  -- layouts must fail open without HUD pixels, source scrubbing, or input
+  -- remapping; either supported true form opts into the modern presenter.
+  do
+    values.battleUiWip, values.battleUiMode = true, "full"
+    local function battleHudState()
+      return {
+        phase = "menu", queue = {}, kind = "wild", isOpaque = true,
+        player = { name = "BUDDY", mon = testMon },
+        enemy = { name = "FOE", mon = boxedMon },
+        draw = function() end,
+      }
+    end
+    for _, layoutCase in ipairs({
+        { name = "callback_false", value = function() return false end },
+        { name = "boolean_false", value = false },
+        { name = "missing_metadata", missing = true },
+      }) do
+      local nativeState = battleHudState()
+      if not layoutCase.missing then nativeState.wideLayout = layoutCase.value end
+      local modernCanvas = renderHud({ nativeState },
+        "battle_native_" .. layoutCase.name, viewport)
+      check(alphaBounds(modernCanvas) == nil,
+        layoutCase.name .. " battle receives no modern HUD pixels")
+
+      local nativeCanvas = love.graphics.newCanvas(160, 144)
+      love.graphics.setCanvas(nativeCanvas)
+      love.graphics.clear(1, 0, 0, 1)
+      love.graphics.setCanvas()
+      game.stack.states = { nativeState }
+      hooks["render.zones"](function(_, value) return value end, game, {})
+      hooks["render.compose"](function() return false end, {}, {
+        uiCanvas = nativeCanvas, uiw = 160, uih = 144,
+      })
+      local nativeImage = nativeCanvas:newImageData()
+      local untouched = true
+      for _, point in ipairs({ { 4, 4 }, { 80, 60 }, { 8, 112 }, { 150, 140 } }) do
+        local r, g, b, a = nativeImage:getPixel(point[1], point[2])
+        untouched = untouched and r > 0.95 and g < 0.05 and b < 0.05
+          and a > 0.95
+      end
+      check(untouched,
+        layoutCase.name .. " battle leaves its native canvas untouched")
+    end
+
+    for _, layoutCase in ipairs({
+        { name = "callback_true", value = function() return true end },
+        { name = "boolean_true", value = true },
+      }) do
+      local wideState = battleHudState()
+      wideState.wideLayout = layoutCase.value
+      local battleHud = renderHud({ wideState },
+        "battle_wide_" .. layoutCase.name, viewport)
+      check(alphaBounds(battleHud) ~= nil,
+        layoutCase.name .. " WIDE battle renders the modern 2D HUD")
+    end
+    values.battleUiWip, values.battleUiMode = false, "auto"
+  end
+
   bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
   bag.footer = "¥1234"
   local savedPage = textBox.pages
@@ -1801,12 +2471,76 @@ function love.load()
   local longTypingBounds, longReadyBounds = alphaBounds(longDialogueTyping),
     alphaBounds(longDialogueReady)
   check(longTypingBounds and longReadyBounds
-      and longTypingBounds.h > typingBounds.h
+      and longTypingBounds.x == typingBounds.x
+      and longTypingBounds.y == typingBounds.y
+      and longTypingBounds.w == typingBounds.w
+      and longTypingBounds.h == typingBounds.h
       and longTypingBounds.x == longReadyBounds.x
       and longTypingBounds.y == longReadyBounds.y
       and longTypingBounds.w == longReadyBounds.w
       and longTypingBounds.h == longReadyBounds.h,
-    "long dialogue pages expand without a two-line scroll window")
+    "dialogue envelope stays stable when page content length changes")
+  values.uiScale, values.fontScale, values.dialogueTextScale =
+    "100", "100", "inherit"
+  values.dialogueBreakState = setmetatable({
+    pages = {{ "I like bugs, so", "I'm going back to", "Viridian Forest." }},
+    pageIndex = 1, lineIndex = 3, charIndex = #"Viridian Forest.",
+    shown = { {}, {}, {} }, done = true, waiting = false, isOpaque = true,
+  }, { __index = textBoxClass })
+  renderHud({ overworld, values.dialogueBreakState },
+    "dialogue_legacy_breaks_collapsed", largeDesktopViewport)
+  values.dialogueBreakBounds = alphaBounds(
+    renderHud({ overworld, values.dialogueBreakState }, nil,
+      largeDesktopViewport))
+  values.dialogueSingleState = setmetatable({
+    pages = {{ "I like bugs, so I'm going back to Viridian Forest." }},
+    pageIndex = 1, lineIndex = 1,
+    charIndex = #"I like bugs, so I'm going back to Viridian Forest.",
+    shown = { {} }, done = true, waiting = false, isOpaque = true,
+  }, { __index = textBoxClass })
+  values.dialogueSingleBounds = alphaBounds(
+    renderHud({ overworld, values.dialogueSingleState }, nil,
+      largeDesktopViewport))
+  check(values.dialogueBreakBounds and values.dialogueSingleBounds
+      and values.dialogueBreakBounds.x == values.dialogueSingleBounds.x
+      and values.dialogueBreakBounds.y == values.dialogueSingleBounds.y
+      and values.dialogueBreakBounds.w == values.dialogueSingleBounds.w
+      and values.dialogueBreakBounds.h == values.dialogueSingleBounds.h,
+    "legacy newline fragments reflow like one modern-width sentence")
+  values.dialogueHardWrapState = setmetatable({
+    pages = {{ "ABCDEFGHIJKLMNOPQR", "STUVWXYZABCDEFGHIJ",
+      "KLMNOPQRSTUVWXYZAB", "CDEFGHIJKLMNOPQRST" }},
+    maxCols = 18, pageIndex = 1, lineIndex = 4,
+    charIndex = #"CDEFGHIJKLMNOPQRST", shown = { {}, {}, {}, {} },
+    done = true, waiting = false, isOpaque = true,
+  }, { __index = textBoxClass })
+  values.dialogueHardWrapBounds = alphaBounds(
+    renderHud({ overworld, values.dialogueHardWrapState }, nil,
+      largeDesktopViewport))
+  values.dialogueHardWrapSingleState = setmetatable({
+    pages = {{ "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST" }},
+    maxCols = 18, pageIndex = 1, lineIndex = 1,
+    charIndex = #"ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST",
+    shown = { {} }, done = true, waiting = false, isOpaque = true,
+  }, { __index = textBoxClass })
+  values.dialogueHardWrapSingleBounds = alphaBounds(
+    renderHud({ overworld, values.dialogueHardWrapSingleState }, nil,
+      largeDesktopViewport))
+  check(values.dialogueHardWrapBounds and values.dialogueHardWrapSingleBounds
+      and values.dialogueHardWrapBounds.x == values.dialogueHardWrapSingleBounds.x
+      and values.dialogueHardWrapBounds.y == values.dialogueHardWrapSingleBounds.y
+      and values.dialogueHardWrapBounds.w == values.dialogueHardWrapSingleBounds.w
+      and values.dialogueHardWrapBounds.h == values.dialogueHardWrapSingleBounds.h,
+    "classic hard wraps rejoin without inserting spaces into long tokens")
+  values.dialogueTextScale = "200"
+  values.dialogueDoubleBounds = alphaBounds(
+    renderHud({ overworld, values.dialogueSingleState },
+      "dialogue_balanced_200", largeDesktopViewport))
+  check(values.dialogueDoubleBounds
+      and values.dialogueDoubleBounds.w >= values.dialogueSingleBounds.w * 1.75
+      and values.dialogueDoubleBounds.h >= values.dialogueSingleBounds.h * 1.75,
+    "200% dialogue scaling grows the text envelope and breathing room together")
+  values.dialogueTextScale = "inherit"
   textBox.pages, textBox.shown = values.savedDialoguePages, values.savedDialogueShown
   textBox.charIndex = values.savedDialogueCharIndex
   textBox.pages, textBox.charIndex = savedPage, savedCharIndex
@@ -1944,7 +2678,7 @@ function love.load()
   local battle = {
     phase = "moveSelect", queue = {}, kind = "wild", moveIndex = 1,
     menuIndex = 1, draw = function() end,
-    wideLayout = function() return false end,
+    wideLayout = true,
     player = { name = "HERCULES", shownHP = 118,
       mon = { species = "TESTMON", nickname = "HERCULES", level = 32,
         hp = 118, exp = 1000, stats = { hp = 118 } },
@@ -1961,8 +2695,45 @@ function love.load()
       experience = { current = 42, maximum = 67 },
     },
   }
+  local savedBattleUiScale, savedBattleFontScale = values.uiScale, values.fontScale
+  values.uiScale, values.fontScale = "100", "100"
   values.battleUiWip, values.battleUiMode = true, "full"
   local battleCanvas = renderHud({ battle }, "battle_2d_moves")
+  check(verticallySeparated(latestLayoutRect("battle-player-card"),
+      latestLayoutRect("battle-move-panel")),
+    "landscape WIDE player card stays above the move panel")
+  -- renderHud reuses one canvas per viewport size. Inspect this ordinary
+  -- battle immediately so later compact overlays (including AskName) cannot
+  -- replace the pixels these checks are meant to describe.
+  check(pixelAlpha(battleCanvas,
+      math.floor(viewport.width / 2), viewport.height - 12) > 0,
+    "2D battle replacement paints an opaque modern move region")
+  check(pixelAlpha(battleCanvas,
+      math.floor(viewport.width / 2), 80) == 0,
+    "2D battle arena frame leaves the live source scene visible")
+  values.savedBattleMessagePhase = battle.phase
+  values.savedBattleMessageCurrent = battle.current
+  values.savedBattleMessageLines = battle.lines
+  values.savedBattleMessageShown = battle.shown
+  values.savedBattleMessageLineIndex = battle.lineIndex
+  values.savedBattleMessageWaiting = battle.msgWaiting
+  battle.phase, battle.current = "message", { text = "FIRST\vSECRET" }
+  battle.lines, battle.lineIndex = { {}, {} }, 1
+  battle.shown, battle.msgWaiting = { { 1, 2, 3, 4, 5 } }, true
+  values.gatedBattleMessagePixels = renderHud({ battle },
+    "battle_message_continuation_gated", viewport):newImageData()
+    :encode("png"):getString()
+  battle.current, battle.lines = { text = "FIRST" }, { {} }
+  values.referenceBattleMessagePixels = renderHud({ battle }, nil, viewport)
+    :newImageData():encode("png"):getString()
+  check(values.gatedBattleMessagePixels == values.referenceBattleMessagePixels,
+    "modern battle text does not reveal content beyond an unresolved CONT gate")
+  battle.phase = values.savedBattleMessagePhase
+  battle.current = values.savedBattleMessageCurrent
+  battle.lines = values.savedBattleMessageLines
+  battle.shown = values.savedBattleMessageShown
+  battle.lineIndex = values.savedBattleMessageLineIndex
+  battle.msgWaiting = values.savedBattleMessageWaiting
   local battleViewport = { width = 1024, height = 768,
     safe = { x = 0, y = 0, width = 1024, height = 768 } }
   renderHud({ battle }, "battle_2d_moves_desktop", battleViewport)
@@ -1976,9 +2747,18 @@ function love.load()
     "battle_level_up_modern", battleViewport)
   check(alphaBounds(levelUpCardCanvas) ~= nil,
     "modern level-up stats card renders above the preserved battle scene")
-  local fixedBattleViewport = { width = 1600, height = 900,
-    safe = { x = 0, y = 0, width = 1600, height = 900 },
-    gameX = 320, gameY = 90, gameWidth = 960, gameHeight = 720 }
+
+  verifyCatchNicknameScreens({
+    mod = mod, battle = battle, textBoxClass = textBoxClass,
+    choiceClass = choiceClass,
+    namingClass = package.loaded["src.ui.NamingScreen"],
+    renderHud = renderHud, alphaBounds = alphaBounds,
+    battleViewport = battleViewport, compactViewport = viewport,
+    portraitViewport = portraitViewport,
+  })
+  local fixedBattleViewport = { width = 1920, height = 720,
+    safe = { x = 40, y = 20, width = 1840, height = 680 },
+    gameX = 480, gameY = 80, gameWidth = 960, gameHeight = 540 }
   battle.wideLayout = function() return true end
   local fixedBattleCanvas = renderHud({ battle },
     "battle_2d_moves_fixed_surface", fixedBattleViewport)
@@ -1990,13 +2770,92 @@ function love.load()
       and fixedBattleBounds.y + fixedBattleBounds.h
         <= fixedBattleViewport.gameY + fixedBattleViewport.gameHeight,
     "FIXED battle presenter stays inside the host battle surface")
-  battle.wideLayout = function() return false end
-  check(pixelAlpha(battleCanvas,
-      math.floor(viewport.width / 2), viewport.height - 12) > 0,
-    "2D battle replacement paints an opaque modern move region")
-  check(pixelAlpha(battleCanvas,
-      math.floor(viewport.width / 2), 80) == 0,
-    "2D battle arena frame leaves the live source scene visible")
+  check(fixedBattleBounds
+      and fixedBattleBounds.x >= fixedBattleViewport.safe.x
+      and fixedBattleBounds.y >= fixedBattleViewport.safe.y
+      and fixedBattleBounds.x + fixedBattleBounds.w
+        <= fixedBattleViewport.safe.x + fixedBattleViewport.safe.width
+      and fixedBattleBounds.y + fixedBattleBounds.h
+        <= fixedBattleViewport.safe.y + fixedBattleViewport.safe.height,
+    "FIXED battle presenter stays inside the monitor safe area")
+  check(fixedBattleBounds and fixedBattleBounds.w <= 641
+      and fixedBattleBounds.h <= 361,
+    "WIDE battle uses a fixed 640x360 envelope at 100% scale")
+
+  values.uiScale, values.fontScale, values.pixelFont = "auto", "auto", false
+  values.highResolutionBattleViewport = { width = 2560, height = 1440,
+    safe = { x = 0, y = 0, width = 2560, height = 1440 } }
+  renderHud({ battle }, "battle_2d_moves_1440p_auto",
+    values.highResolutionBattleViewport)
+  values.highResolutionBattleEnvelope = latestLayoutRect("battle-envelope")
+  check(values.highResolutionBattleEnvelope
+      and math.abs(values.highResolutionBattleEnvelope.w - 1280) <= 1
+      and math.abs(values.highResolutionBattleEnvelope.h - 720) <= 1,
+    "AUTO grows the WIDE battle envelope beyond the old 150% cap at 1440p")
+  values.uiScale, values.fontScale, values.pixelFont = "100", "100", true
+
+  -- The released host normally blits a 304x144 WIDE canvas at its own
+  -- integer letterbox scale. Modern UI captures that cleaned source and
+  -- places it in the fixed arena instead, so a large desktop cannot retain
+  -- an oversized second copy behind the modern frame.
+  verifyFixedBattleSourceTransform({
+    hooks = hooks, game = game, battle = battle,
+    alphaBounds = alphaBounds, renderHud = renderHud,
+    viewport = largeDesktopViewport,
+    portraitViewport = { width = 420, height = 760,
+      safe = { x = 20, y = 40, width = 380, height = 680 } },
+  })
+
+  values.battleUiMode = "hud"
+  local legacyHudCanvas = renderHud({ battle },
+    "battle_2d_legacy_hud_alias", fixedBattleViewport)
+  local legacyHudBounds = alphaBounds(legacyHudCanvas)
+  check(legacyHudBounds and legacyHudBounds.w <= 641
+      and legacyHudBounds.h <= 361,
+    "legacy SCENE HUD value resolves to the fixed WIDE envelope")
+  check(verticallySeparated(latestLayoutRect("battle-player-card"),
+      latestLayoutRect("battle-move-panel")),
+    "legacy SCENE HUD value cannot restore unbounded overlapping geometry")
+  values.battleUiMode = "full"
+
+  local portraitBattleViewport = { width = 420, height = 760,
+    safe = { x = 20, y = 40, width = 380, height = 680 } }
+  local portraitBattleCanvas = renderHud({ battle },
+    "battle_2d_moves_portrait_safe", portraitBattleViewport)
+  check(verticallySeparated(latestLayoutRect("battle-enemy-card"),
+      latestLayoutRect("battle-arena")),
+    "portrait WIDE opponent card stays above the battle renderer")
+  check(verticallySeparated(latestLayoutRect("battle-arena"),
+      latestLayoutRect("battle-player-card")),
+    "portrait WIDE player card stays below the battle renderer")
+  check(verticallySeparated(latestLayoutRect("battle-player-card"),
+      latestLayoutRect("battle-move-panel")),
+    "portrait WIDE status cards stay above the reflowed move panel")
+  local portraitBattleBounds = alphaBounds(portraitBattleCanvas)
+  check(portraitBattleBounds
+      and portraitBattleBounds.x >= portraitBattleViewport.safe.x
+      and portraitBattleBounds.y >= portraitBattleViewport.safe.y
+      and portraitBattleBounds.x + portraitBattleBounds.w
+        <= portraitBattleViewport.safe.x + portraitBattleViewport.safe.width
+      and portraitBattleBounds.y + portraitBattleBounds.h
+        <= portraitBattleViewport.safe.y + portraitBattleViewport.safe.height,
+    "portrait WIDE battle presenter stays inside the safe area")
+  values.fontScale = "400"
+  local pixelFourBattle = renderHud({ battle }, "battle_2d_moves_pixel_4x")
+  local pixelFourBounds = alphaBounds(pixelFourBattle)
+  local pixelFourDiagnostics = mod.exports.getLayoutDiagnostics()
+  local pixelFourLayer = pixelFourDiagnostics.layers
+    and pixelFourDiagnostics.layers[#pixelFourDiagnostics.layers]
+  check(pixelFourBounds and pixelFourBounds.x >= 0 and pixelFourBounds.y >= 0
+      and pixelFourBounds.x + pixelFourBounds.w <= viewport.width
+      and pixelFourBounds.y + pixelFourBounds.h <= viewport.height,
+    "4X Plain Pixel battle request remains inside the monitor")
+  check(verticallySeparated(latestLayoutRect("battle-player-card"),
+      latestLayoutRect("battle-move-panel")),
+    "4X Plain Pixel battle request caps by whole steps before panels overlap")
+  check(pixelFourLayer and #(pixelFourLayer.overflows or {}) == 0,
+    "4X Plain Pixel battle request reports no layout overflow")
+  values.fontScale = "100"
   battle.phase, battle.current, battle.introSlide = "messages", nil, 12
   local introCanvas = renderHud({ battle }, "battle_native_intro_passthrough")
   check(pixelAlpha(introCanvas, 100, 100) == 0
@@ -2012,7 +2871,7 @@ function love.load()
   local animationCanvas = renderHud({ battle },
     "battle_animation_modern_hud")
   check(pixelAlpha(animationCanvas, math.floor(viewport.width / 2),
-      viewport.height - 40) > 0,
+      viewport.height - 80) > 0,
     "modern battle message and animated HP HUD remain visible during attacks")
   battle.animPlaying, battle.msgHold = nil, nil
   battle.player.shownHP = 118
@@ -2029,6 +2888,7 @@ function love.load()
   renderHud({ battle }, "battle_voxel_commands_desktop", battleViewport)
   battle.dramaticShapeShot = nil
   values.battleUiWip, values.battleUiMode = false, "auto"
+  values.uiScale, values.fontScale = savedBattleUiScale, savedBattleFontScale
   game.data.moves = savedMoves
   renderHud({ title, titleMenu }, "title_main_menu")
 
@@ -2041,6 +2901,10 @@ function love.load()
   values.minimalUi = true
   renderHud({ dex }, "pokedex_minimal")
   values.minimalUi = false
+  verifyRichPixelHeaders(values, renderHud, latestLayoutRect,
+    verticallySeparated, mod.exports.getLayoutDiagnostics,
+    dex, "Pokédex", "pokedex_pixel_4x",
+    largeDesktopViewport)
 
   local party = setmetatable({ screenId = "PartyMenu", game = game,
     index = 1, party = game.save.party }, { __index = partyClass })
@@ -2058,6 +2922,10 @@ function love.load()
   local partySixLarge = renderHud({ party }, "party_rich_six_large", largeDesktopViewport)
   check(pixelAlpha(partySixLarge, 800, 900) == 0,
     "Party rich panel sizes to six rows and detail content")
+  verifyRichPixelHeaders(values, renderHud, latestLayoutRect,
+    verticallySeparated, mod.exports.getLayoutDiagnostics,
+    party, "Party", "party_pixel_4x",
+    largeDesktopViewport)
   party.party = savedPartyForShot
   values.layoutStyle = "floating"
   local floatingParty = renderHud({ party }, nil)
@@ -2541,6 +3409,13 @@ function love.load()
     { __index = package.loaded["src.ui.QuarantineReport"] })
   check(alphaBounds(renderHud({ state }, nil, portraitViewport)) ~= nil,
     "Quarantine report presenter renders its recovery summary")
+  values.uiScale, values.fontScale = "100", "100"
+  values._reportBounds = alphaBounds(renderHud({ state },
+    "quarantine_report_compact", largeDesktopViewport))
+  check(values._reportBounds and values._reportBounds.w <= 660
+      and values._reportBounds.h <= 480,
+    "Load Report uses a compact stable envelope instead of filling desktop")
+  values._reportBounds = nil
 
   local pointerItems = {}
   for index = 1, 12 do
@@ -2947,6 +3822,12 @@ function love.load()
 
   bag.items = savedBagItems
   bag.index, bag.scroll = 1, 0
+
+  verifyUiGallery({
+    mod = mod, game = game, hooks = hooks,
+    renderHud = renderHud, alphaBounds = alphaBounds,
+    viewport = viewport,
+  })
 
   if captureHud then
     print("compose suppression shots: " .. love.filesystem.getSaveDirectory())

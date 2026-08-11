@@ -30,7 +30,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.8.4 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
+Version 0.9.0 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
 gen1recomp v0.1.51 and later 0.x releases, the released 1.x line, and the
 development engine build for local testing. The packaged mod does not
 require a custom engine checkout or a patched binary.
@@ -80,9 +80,11 @@ require a custom engine checkout or a patched binary.
 - In this mod's options screen, press **SELECT** on a focused setting for a
   brief explanation; **SELECT**, **A**, or **B** closes the help card.
 - Source-mod compatibility is provided by the versioned
-  `mod.exports.gen1ModernUi` contract (`apiVersion = 1`). Supporting mods can
-  publish read-only screen models and source-owned semantic actions, then
-  register them through `mod.find("gen1_modern_ui").exports`:
+  `mod.exports.gen1ModernUi` contract. Existing `apiVersion = 1` mods can
+  publish read-only screen models and source-owned semantic actions. V2 adds
+  structured details, declarative modals, and isolated custom surfaces for
+  coordinate grids, live animation, and scoped effects. Both versions register
+  through `mod.find("gen1_modern_ui").exports`:
 
   ```lua
   local ui = mod.find("gen1_modern_ui")
@@ -109,12 +111,15 @@ require a custom engine checkout or a patched binary.
   nearest-neighbor nine-slice renderer, repeating edge pixels and preserving
   the seven-pixel authored inset. Source mods own their assets and may pass
   public image/texture/catalog references resolved by the source mod instead of
-  private paths. Custom draw/render
-  callbacks, malformed models, unsupported versions, disabled mods, and
-  adapter errors fall back to the native UI. The UI never loads private
-  modules or arbitrary files from another mod. See
-  [`docs/UI_PRESENTATION_API.md`](../../docs/UI_PRESENTATION_API.md#compatibility-contract-v1)
-  and the [adapter examples](../../docs/examples/README.md).
+  private paths. V1 custom draw/render callbacks remain unsupported. A v2
+  surface callback runs transactionally on a private canvas and commits only
+  after a complete successful frame. Malformed models, unsupported versions,
+  disabled mods, and adapter errors retain the native UI. The UI never loads
+  private modules or arbitrary files from another mod. See the
+  [V1 compatibility contract](../../docs/UI_PRESENTATION_API.md#compatibility-contract-v1),
+  [V2 custom-surface contract](../../docs/UI_PRESENTATION_API.md#compatibility-contract-v2-custom-surfaces),
+  [full custom UI guide](../../docs/CUSTOM_UI_AND_THEME_API.md), and
+  [adapter examples](../../docs/examples/README.md).
 
   Custom screen rows may use `image`, `icon`, `thumbnail`, `sprite`, or
   `asset` references. For reuse, expose a public `assets` catalog from the
@@ -333,20 +338,39 @@ while **TEXT / LINE OPACITY** independently controls labels, borders, dividers,
 and accents. The old **DESKTOP FLOATING UI** setting is retained only to
 migrate existing saves.
 
+### High-resolution scaling
+
+Choose **AUTO** for UI and font scale on 4K/5K displays. Existing behavior is
+unchanged through 1080p; above that, UI AUTO reaches 200% at 1440p, 300% at
+4K, and 385% on a 5120×2784 safe viewport. System-font AUTO preserves the
+existing text-to-panel ratio and may reach 500%, while manual choices stop at
+400%. Plain Pixel AUTO always selects an exact whole 1×–4× raster step.
+
+Manual 100% remains exactly 100% at every resolution for save compatibility.
+Dialogue readability presets now scale their padding and chrome with their
+text. Legacy TextBox line placement reflows to the modern card width only
+after the host exposes each fragment; `\v` input gates and `\f` page boundaries
+remain source-owned.
+
 ### Battle presentation
 
-Battles have an opt-in responsive presenter with enemy/player status cards,
-palette-aware HP bars, action buttons, move rows, and battle messages. It is
-draw-only: the existing `BattleState` still owns all navigation, timing,
-callbacks, and third-party battle hooks. `BATTLE UI MODE` offers `AUTO`,
-`2D FRAMED`, and `SCENE HUD`. In the classic 2D path, Modern UI isolates the
-native HUD and text methods while retaining the source picture, attack-effect,
-send-out, capture, faint, palette, shake, and fade layers. This makes Modern UI
-the complete presentation compositor without duplicating battle simulation or
-animation timing. WIDE and scene-owned battles keep their native draw path and
-use the conservative composition fallback. AUTO uses the framed compositor for
-ordinary 2D battles, then switches to compact voxel-safe card placement when
-an active scene marker is published.
+Battles have an opt-in WIP presenter with enemy/player status cards,
+palette-aware HP bars, action buttons, move rows, and battle messages. The
+presenter activates only when the source explicitly identifies a 2D WIDE
+layout. A standard 160x144 battle, a false or missing WIDE marker, and any
+unknown battle geometry remain completely native. The main mod also leaves
+3D/voxel and other scene-owned battle interfaces untouched.
+
+The presenter is draw-only: the existing `BattleState` still owns all
+navigation, timing, callbacks, animations, and third-party battle hooks.
+Legacy `BATTLE UI MODE` values may remain in existing settings, but they do not
+opt standard 160x144 or 3D/voxel battles into the modern presenter. On an
+eligible 2D WIDE source, those legacy values all resolve to the same fixed,
+bounded WIDE shell. The live 304×144 source is captured before the host's
+letterbox blit and rescaled once into the shell's 608×288 arena, so paper,
+sprites, palette effects, and the ornamental frame share one clipped edge. See the
+[responsive layout plan](../../docs/RESPONSIVE_LAYOUT_PLAN.md#wide-battle-plan)
+for the fixed WIDE envelope and native-fallback contract.
 
 Source mods may publish a data-only `layer = "battle"` adapter. Its model can
 provide public battlers, moves, message text, and data-only `experience`,
@@ -356,18 +380,18 @@ state transitions remain source-owned. If the adapter is missing, malformed,
 throws, the battle falls back to the native UI. A battle adapter enriches the
 overlay only; its `canSuppressNative` value never suppresses BattleState.
 
-Modern status cards stay present during source-owned effects and follow the
-live animated HP value. The last active message is retained during a source
-message hold, so attacks and HP drains do not flash a blank panel. Native intro
-party-ball animation remains delegated to the host; the compositor supplies a
-compact party-status row for the post-faint enemy-party reveal.
+On a supported WIDE battle, modern status cards stay present during
+source-owned effects and follow the live animated HP value. The last active
+message is retained during a source message hold, so attacks and HP drains do
+not flash a blank panel. Native intro party-ball animation remains delegated to
+the host; the compositor supplies a compact party-status row for the post-faint
+enemy-party reveal.
 
 The overlay recognizes wild, trainer, link, safari, and scripted battle phases
 through their public state fields.
-The move presenter uses a source-indexed 2x2 grid in both OG and WIDE battle
-layouts. WIDE keeps its native four-direction cursor; OG directional edges are
-mapped onto the same grid before BattleState performs the selected move's
-normal PP, disabled-slot, callback, and turn validation.
+The supported WIDE move presenter uses a source-indexed 2x2 grid and retains
+the source's native four-direction cursor. `BattleState` still performs the
+selected move's normal PP, disabled-slot, callback, and turn validation.
 
 The battle presenter is WIP and disabled by default; leave its option off for
 normal play while its responsive layout is stabilized. The mod options expose
@@ -377,6 +401,18 @@ sprite animation. Turning a surface off leaves the original game presentation vi
 animation off freezes animated sheets on their first frame. **HIDE ORIGINAL
 UI** is independent of those surface toggles and defaults on; it suppresses the
 classic UI only when the corresponding modern presenter is enabled.
+
+### In-game UI Gallery
+
+Open **UI SETTINGS → ADVANCED → UI GALLERY** to inspect every built-in and
+compatibility presenter through its real production draw path. Left/right
+changes the named presenter, and up/down changes empty/sparse/normal/full/
+overflow content. **A** cycles UI scale, **SELECT** cycles font scale, and
+**START** toggles the system and whole-step Plain Pixel fonts. These are
+temporary gallery overrides; closing with **B** restores the saved settings.
+The header exposes a stable ID, presenter type, source-style screen ID, and
+variant for unambiguous reports. `OUTSIDE 0` is the current preview's bounds
+diagnostic. See the [UI Gallery catalog](../../docs/UI_GALLERY.md).
 
 ## Theme packs
 

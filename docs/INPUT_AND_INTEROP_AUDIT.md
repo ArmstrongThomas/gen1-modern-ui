@@ -144,8 +144,8 @@ row presentation displays `right` or an explicit `displayValue`; opaque
 
 ## Versioned presenter compatibility contract
 
-The compatibility foundation is now the versioned `mod.exports.gen1ModernUi`
-contract (`apiVersion = 1`). A supporting mod may publish screen descriptors
+The compatibility foundation is the versioned `mod.exports.gen1ModernUi`
+contract. A v1 supporting mod may publish screen descriptors
 with `match(state)`, a read-only `model(game, state)`, optional source-owned
 semantic actions (`up`, `down`, `left`, `right`, `select`, `back`, `start`, and
 `hover`), `layer`, and `canSuppressNative`. Models may contain title, rows,
@@ -157,8 +157,15 @@ or public image, texture, sprite, or catalog references owned by that source
 mod. A source mod should resolve its private PNG through `mod.assets:image`
 before publishing it. Nine-slice
 rendering, nearest filtering, integer pixel scale, and the seven-pixel authored
-inset are provided by Gen1 Modern UI. Third-party draw/render callbacks are
+inset are provided by Gen1 Modern UI. V1 screen/extension draw callbacks are
 never accepted.
+
+API v2 keeps the v1 lane intact and adds isolated custom surfaces. Surface
+models, layouts, modals, and Gallery fixtures remain data-only; the single
+descriptor-owned render callback runs on a private canvas with virtual pointer
+coordinates and commits only after a successful frame. A false result,
+exception, or graphics-state violation leaves native input and rendering
+untouched.
 
 Source mods can register explicitly through `mod.find("gen1_modern_ui").exports`
 or expose their contract for discovery by a known integration. Gen1 Modern UI

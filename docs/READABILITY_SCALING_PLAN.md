@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-04
 
+The follow-up [responsive layout and scaling plan](RESPONSIVE_LAYOUT_PLAN.md)
+defines stable preset envelopes, whole-step Plain Pixel scaling, overflow
+checks, and the WIDE-only modern battle layout.
+
 ## Implementation status
 
 The v0.7.3 implementation ships the independent UI, font, and dialogue scale
@@ -27,13 +31,16 @@ Both scale controls also accept `AUTO`. It resolves a bounded five-percent
 value from the safe window dimensions at render time, using both dimensions in
 landscape and the limiting width in portrait.
 
-- **UI SCALE** — 75% to 150%, 5% steps, default 100%. Scales panel padding,
-  row height, icons, borders, radii, and control-hint spacing.
-- **FONT SCALE** — 80% to 200%, 5% steps, default 100%. Scales title, body,
+- **UI SCALE** — 75% to 150% in 5% steps plus 175% to 400% high-resolution
+  presets in 25% steps, default 100%. Scales panel padding, row height, icons,
+  borders, radii, and control-hint spacing.
+- **FONT SCALE** — 80% to 200% in 5% steps plus 225% to 400%
+  high-resolution presets in 25% steps, default 100%. Scales title, body,
   caption, values, and control-hint fonts independently from panel chrome.
 - **DIALOGUE TEXT SCALE** — Inherit, 110%, 125%, 150%, 175%, or 200%.
-  Defaults to Inherit and applies an optional readability boost only to
-  dialogue, choices, quantities, and confirmation prompts.
+  Defaults to Inherit and applies an optional readability boost to dialogue,
+  choices, quantities, and confirmation prompts. Their interior spacing and
+  geometry grow with the effective text step so the ratio remains balanced.
 
 Existing **UI DENSITY** remains a content-density preference. Scale controls
 change physical size; density controls how tightly that size is arranged.
@@ -98,8 +105,8 @@ polish remain follow-up work.
 
 ## Acceptance tests
 
-- 80%, 100%, 125%, 150%, and 200% font cases on desktop, portrait phone, and
-  short landscape phone viewports.
+- 80%, 100%, 125%, 150%, 200%, 300%, 400%, and AUTO font cases on desktop,
+  portrait phone, short landscape phone, 4K, and 5K viewports.
 - Dialogue with one line, several wrapped lines, YES/NO, quantity, and a long
   localized string at each planned dialogue scale.
 - Empty, short, full, and scrolling Start, Bag, Pokédex, Party, PC, and mod
