@@ -57,6 +57,9 @@ local DEFAULT_THEME = {
 local RESPONSIVE_LAYOUT_PRESETS = {
   XS = { width = 320, height = 200 },
   S = { width = 400, height = 300 },
+  -- Navigation surfaces deliberately favor vertical capacity over width.
+  -- This keeps Start and MOD MENUS useful when several mods add entries.
+  NAV = { width = 440, height = 560 },
   M = { width = 600, height = 420 },
   L = { width = 760, height = 540 },
   XL = { width = 960, height = 640 },
@@ -3937,7 +3940,7 @@ return function(mod)
     { id = "core.quantity", name = "Quantity Prompt", kind = "quantity",
       screenId = "QuantityBox", category = "Core" },
     { id = "core.start_menu", name = "Start Menu", kind = "menu",
-      screenId = "StartMenu", category = "Core" },
+      screenId = "StartMenu", category = "Core", preset = "NAV" },
     { id = "core.list_menu", name = "Generic List", kind = "list",
       screenId = "ListMenu", category = "Core" },
     { id = "core.options_menu", name = "Game Options", kind = "options",
@@ -6508,6 +6511,10 @@ return function(mod)
     end
     local presetName = type(state) == "table" and state._gen1UiGalleryPreset
       or RESPONSIVE_KIND_PRESET[kind] or "M"
+    if kind == "menu" and state
+        and (state.screenId == "StartMenu" or state._gen1ModMenus) then
+      presetName = "NAV"
+    end
     if kind == "external" then
       local model = runtime.externalModelFor(game, state)
       local requested = safeText(model and model.layoutOptions
@@ -15770,7 +15777,10 @@ return function(mod)
     end
     local rows, selected, scroll, title, footerText = runtime.rowsFor(game, state, kind)
     if not rows then return end
-    local layout = runtime.layoutFor(viewport, theme, kind, rows, title, footerText)
+    local navigationMenu = kind == "menu" and state
+      and (state.screenId == "StartMenu" or state._gen1ModMenus)
+    local layout = runtime.layoutFor(viewport, theme, kind, rows, title,
+      footerText, navigationMenu and "NAV" or nil)
     selected = clamp(selected, 1, math.max(1, #rows))
     scroll = runtime.scrollForSelection(layout, scroll, selected, #rows)
 

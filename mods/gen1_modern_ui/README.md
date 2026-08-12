@@ -8,6 +8,9 @@ the original 160x144 layout. It is visual-first: the game remains responsible
 for keyboard/controller input, state transitions, and callbacks; pointer taps
 use only the host's source-safe action facade.
 
+> **Retired after 0.9.1.** This is the final Gen1-only legacy build and it
+> conflicts with its ground-up successor, `gen1_clean_ui`.
+
 ## Install a release
 
 Download the newest archive from the
@@ -30,7 +33,7 @@ updates from the Mods panel.
 - `manifest.json` - identity, version range, load order
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.9.0 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
+Version 0.9.1 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
 gen1recomp v0.1.51 and later 0.x releases, the released 1.x line, and the
 development engine build for local testing. The packaged mod does not
 require a custom engine checkout or a patched binary.

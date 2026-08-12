@@ -186,6 +186,12 @@ local function verifyUiGallery(context)
   check(seen["battle.catch.nickname_prompt"]
       and seen["battle.catch.nickname_entry"],
     "UI Gallery names both post-catch nickname screens explicitly")
+  local startSpec
+  for _, spec in ipairs(catalog) do
+    if spec.id == "core.start_menu" then startSpec = spec break end
+  end
+  check(startSpec and startSpec.preset == "NAV",
+    "UI Gallery exercises Start through the production NAV envelope")
 
   local savedScale = context.mod.exports.getScaleTokens(context.viewport)
   local gallery = context.mod.exports.openUiGallery(context.game)
@@ -599,6 +605,11 @@ function love.load()
   end
   check(modMenusRow and modMenusRow.default == true,
     "Start menu mod grouping defaults to enabled")
+  check(mod.exports.layoutPresets
+      and mod.exports.layoutPresets.NAV
+      and mod.exports.layoutPresets.NAV.width == 440
+      and mod.exports.layoutPresets.NAV.height == 560,
+    "NAV envelope remains the tall 440x560 Start-menu contract")
   local uiScaleRow, fontScaleRow, dialogueScaleRow
   for _, schema in ipairs(schemas) do
     for _, row in ipairs(schema) do
@@ -2628,6 +2639,13 @@ function love.load()
       { label = "SPRITE STYLE" }, { label = "SPAWN AMOUNT" },
     } }, { __index = menuClass })
   local desktopMenu = renderHud({ startMenu }, "start_menu_floating")
+  renderHud({ startMenu }, nil, largeDesktopViewport)
+  values.desktopStartPanel = latestLayoutRect("panel")
+  check(values.desktopStartPanel
+      and values.desktopStartPanel.h > values.desktopStartPanel.w
+      and values.desktopStartPanel.h > largeDesktopViewport.height * 0.5
+      and values.desktopStartPanel.w < largeDesktopViewport.width * 0.65,
+    "desktop Start menu uses the tall, narrow NAV envelope")
   check(pixelAlpha(desktopMenu, 10, 180) == 0
       and pixelAlpha(desktopMenu, 610, 180) > 0,
     "desktop start menu floats at the right with outside breathing room")
@@ -2635,6 +2653,19 @@ function love.load()
     mobileLandscapeViewport)
   check(pixelAlpha(mobileMenu, 0, 0) == 0,
     "adaptive mobile landscape start menu leaves the world area transparent")
+
+  values.modMenusState = setmetatable({ screenId = "Menu", index = 1,
+    _gen1ModMenus = true, items = {
+      { label = "UI SETTINGS" }, { label = "DEX RADAR" },
+      { label = "BOXES" }, { label = "ANOTHER MOD" },
+    } }, { __index = menuClass })
+  renderHud({ values.modMenusState }, nil, largeDesktopViewport)
+  values.modMenusPanel = latestLayoutRect("panel")
+  check(values.modMenusPanel
+      and values.modMenusPanel.h > values.modMenusPanel.w
+      and values.modMenusPanel.h > largeDesktopViewport.height * 0.5
+      and values.modMenusPanel.w < largeDesktopViewport.width * 0.65,
+    "MOD MENUS uses the same tall, narrow NAV envelope")
 
   -- Third-party settings mods use plain registered screens built from the
   -- released OptionRows helper rather than an OptionsMenu subclass. The

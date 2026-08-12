@@ -10,8 +10,9 @@ Outer containers use stable presets in logical units at 100% UI scale:
 
 | Preset | Preferred size | Intended screens |
 |---|---:|---|
+| NAV | 440×560 | Start menu and MOD MENUS |
 | XS | 320×200 | Confirmations, quantities, small choices |
-| S | 400×300 | Start menu, short menus, submenus |
+| S | 400×300 | Short menus and submenus |
 | M | 600×420 | Options, Mod Manager, long generic lists |
 | L | 760×540 | Party, Pokédex, Bag, Shop, Summary, Trainer Card, Dex entries |
 | XL | 960×640 | Box grids, Naming, Town Map, Dex Radar, MMO screens |
@@ -27,7 +28,9 @@ Multi-page screens lock their chosen envelope when opened. Changing Summary page
 - Theme or frame change
 - Reopening the screen
 
-Simple menus may choose S or M based on their complete row set, but that choice is also locked while open.
+Start and MOD MENUS use NAV for their entire lifetime. Other simple menus may
+choose S or M based on their complete row set, but that choice is also locked
+while open.
 
 ## Sizing strategy
 

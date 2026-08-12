@@ -35,6 +35,12 @@ function love.load()
   local manifest = love.filesystem.read(manifestPath)
   check(manifest and manifest:find('"id"%s*:%s*"gen1_modern_ui"'),
     "manifest id is missing or unreadable")
+  check(manifest and manifest:find('"version"%s*:%s*"0%.9%.1"'),
+    "retirement version is missing or unreadable")
+  check(manifest and manifest:find('"games"%s*:%s*%[%s*"gen1"%s*%]'),
+    "retirement package is not explicitly Gen1-only")
+  check(manifest and manifest:find('"conflicts"%s*:%s*%[%s*"gen1_clean_ui"%s*%]'),
+    "retirement package does not conflict with Gen1 Clean UI")
   check(love.filesystem.getInfo(mount .. "/main.lua", "file"),
     "main.lua is not a readable root file")
   for _, name in ipairs({ "pixel_frame1.png", "pixel_frame2.png",

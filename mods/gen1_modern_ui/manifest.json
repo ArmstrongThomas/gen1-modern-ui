@@ -1,19 +1,20 @@
 {
   "id": "gen1_modern_ui",
   "name": "Gen1 Modern UI",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "api": 2,
   "entry": "main.lua",
   "profile": "overhaul",
+  "games": ["gen1"],
   "game_version": "0.0.0-dev || >=0.1.51 <2.0.0",
   "category": "UI",
   "priority": 100,
   "dependencies": [],
   "optional_dependencies": [],
-  "conflicts": [],
+  "conflicts": ["gen1_clean_ui"],
   "incompatible": [],
   "experimental": false,
   "affects_link": false,
-  "description": "Responsive modern menus, readability scaling, dialogue, Party, PC, Trainer, Pokedex, Bag, Shop, themes, frames, and versioned mod compatibility",
+  "description": "Retired Gen1-only responsive UI; superseded by the ground-up Gen1 Clean UI project",
   "github": "ArmstrongThomas/gen1-modern-ui"
 }
