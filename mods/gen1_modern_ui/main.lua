@@ -10942,7 +10942,8 @@ return function(mod)
     love.graphics.pop()
   end
 
-  runtime.drawBattle = function(game, state, viewport, theme)
+    runtime.drawBattle = function(game, state, viewport, theme)
+    if not runtime.battlePresenterActive(game, state) then return end
     local nativeState = state
     local model = battleRuntime.sourceModel(game, state)
     if model then
@@ -10957,6 +10958,75 @@ return function(mod)
     -- SCENE HUD placement. Both
     -- preserve the same live source draw and all of its animations.
     local mode = battleRuntime.presentationMode(state, model)
+
+    -- ==========================================
+    -- THE FRAME KILLER (Step 3: Message Box Control)
+    -- ==========================================
+    local is3D = mod._gen1ModernCompatibility:isNative3dBattle(game, state)
+    if is3D then
+      local screenW = love.graphics.getWidth()
+      local screenH = love.graphics.getHeight()
+
+      -- 1. Safely kill the giant background frame
+      local origFrame = runtime.drawPanelFrame
+      runtime.drawPanelFrame = function(t, fx, fy, fw, fh, rad, fill)
+        if fill == false then return end
+        return origFrame(t, fx, fy, fw, fh, rad, fill)
+      end
+
+      local origAccent = runtime.drawPanelAccent
+      runtime.drawPanelAccent = function(t, ax, ay, aw, ar, ah)
+        if ay < (screenH * 0.5) then return end
+        return origAccent(t, ax, ay, aw, ar, ah)
+      end
+
+      -- 2. Expand the Envelope & Arena bounds
+      local origGeom = battleRuntime.presentationGeometry
+      battleRuntime.presentationGeometry = function(vp, s, t)
+        local geom = origGeom(vp, s, t)
+        geom.x, geom.y = 0, 0
+        geom.w, geom.h = screenW, screenH
+        geom.arenaX = 30
+        geom.arenaW = screenW - 60
+        geom.arenaY = 60 
+        geom.arenaH = (screenH * 0.65) - 60
+        return geom
+      end
+
+      -- 3. TARGET 2: MESSAGE BOX (Auto-Scale & Center Bottom)
+      local origMsg = runtime.drawBattle2dMessage
+      if origMsg then
+        runtime.drawBattle2dMessage = function(t, msg, mx, my, mw, mh, prompt)
+          local f = love.graphics.getFont()
+          local textStr = tostring(msg or "")
+          -- Measure the exact width of the text
+          local textW = f and f:getWidth(textStr) or (string.len(textStr) * 12)
+          
+          -- Shrink the box to fit the text + 80px of comfortable padding
+          local boxW = math.min(textW + 80, screenW - 40)
+          
+          -- Center the box horizontally
+          local boxX = (screenW - boxW) / 2
+          
+          -- Drop the box to the very bottom of the screen (Action Menu height)
+          local newH = screenH - my - 20 
+          
+          return origMsg(t, msg, boxX, my, boxW, newH, prompt)
+        end
+      end
+
+      -- Draw the HUD
+      runtime.drawBattleHud(game, state, viewport, theme, model, mode)
+      
+      -- Restore the engine
+      runtime.drawPanelFrame = origFrame
+      runtime.drawPanelAccent = origAccent
+      battleRuntime.presentationGeometry = origGeom
+      if origMsg then runtime.drawBattle2dMessage = origMsg end
+      return
+    end
+    -- ==========================================
+
     runtime.drawBattleHud(game, state, viewport, theme, model, mode)
   end
 
@@ -10964,8 +11034,7 @@ return function(mod)
   -- surface before it is scaled/composited. The arena pictures and animation
   -- layer remain untouched. This is substantially safer than covering broad
   -- screen-space bands and lets the modern cards be genuinely content-sized.
-  function battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
-    if runtime.option("battleUiWip", false) ~= true then return false end
+    function battleRuntime.scrubNativeUi(game, ctx, layers, renderer)
     if not (game and ctx and ctx.uiCanvas and type(layers) == "table") then
       return false
     end
@@ -10974,6 +11043,7 @@ return function(mod)
       if layer.kind == "battle" then battleState = layer.state break end
     end
     if not battleState then return false end
+    if not runtime.battlePresenterActive(game, battleState) then return false end
     local model = battleRuntime.sourceModel(game, battleState)
     if model then
       model._gen1ModernBattleState = battleState
@@ -10996,10 +11066,6 @@ return function(mod)
     local native = battleState
     local childOpen = top ~= nil and top ~= native
 
-    -- New classic BattleState instances are isolated before drawing: their
-    -- scene, sprites, flashes, and animation layer reach this canvas, while
-    -- drawHUDs/drawTextArea are already absent. Never paint over that scene.
-    -- On old hosts the rectangle scrub below remains the safe fallback.
     if battleState._gen1ModernBattleSceneIsolation and not wide
         and battleRuntime.ownsClassicSurface(battleState)
         and (not childOpen or runtime.renderVisibleHookSeen) then
@@ -11009,7 +11075,16 @@ return function(mod)
     love.graphics.push("all")
     love.graphics.setCanvas(ctx.uiCanvas)
     love.graphics.origin()
-    local transparentWorld = battleRuntime.ownsWorldSurface(battleState)
+
+    -- ==========================================
+    -- THE ERASER UPGRADE + SHADOW KILLER
+    -- ==========================================
+    local is3D = mod._gen1ModernCompatibility:isNative3dBattle(game, battleState)
+    local transparentWorld = is3D or battleRuntime.ownsWorldSurface(battleState)
+    
+    -- Completely disable the side pillarbox shadows in 3D mode!
+    if is3D and renderer then renderer.battleDim = 0 end
+    
     local worldDim = transparentWorld
       and clamp(tonumber(renderer and renderer.battleDim) or 0, 0, 1) or 0
     local worldSceneX, worldSceneY, worldSceneW, worldSceneH
@@ -11018,16 +11093,8 @@ return function(mod)
       love.graphics.setColor(0, 0, 0, worldDim)
     end
     if transparentWorld then
-      -- Replace, rather than alpha-blend, these exact native HUD rectangles
-      -- with transparent pixels. This exposes the already-rendered WORLD
-      -- canvas without treating legitimate white pixels in battle sprites as
-      -- a color key.
       love.graphics.setBlendMode("replace")
       love.graphics.setColor(0, 0, 0, 0)
-      -- Remove every source pixel outside the same native arena rectangle
-      -- used by the WORLD draw decorator. This catches retained canvas pixels
-      -- and animated effects that would otherwise remain active in the bright
-      -- side gutters beyond the modern frame.
       worldSceneX, worldSceneY, worldSceneW, worldSceneH =
         battleRuntime.worldSceneRect(battleState)
       worldSceneLeft = offsetX + worldSceneX
@@ -11040,9 +11107,6 @@ return function(mod)
       love.graphics.rectangle("fill", worldSceneLeft,
         worldSceneY + worldSceneH, worldSceneW,
         math.max(0, canvasH - worldSceneY - worldSceneH))
-      -- Renderer dims the overworld outside its complete native UI viewport.
-      -- Reapply that same veil to our now-transparent inner gutters so the
-      -- old viewport cannot survive as a conspicuously brighter rectangle.
       if worldDim > 0 then
         setWorldOutsidePaint()
         love.graphics.rectangle("fill", 0, 0, worldSceneLeft, canvasH)
@@ -11059,30 +11123,27 @@ return function(mod)
     end
     if childOpen and not levelUp
         and (not top or not top._gen1ModernBattleChildNativeDraw) then
-      -- If this host never passed the child through ui.state.decorate, there
-      -- is no reliable way to recover the battle pixels after a centred
-      -- classic child overwrites them. Keep the WORLD outside dimmed and
-      -- restore only the framed arena paper instead of filling the entire
-      -- canvas with that dim color.
       if transparentWorld then
-        love.graphics.setColor(1, 1, 1, 1)
+        if is3D then love.graphics.setColor(0, 0, 0, 0) else love.graphics.setColor(1, 1, 1, 1) end
         love.graphics.setScissor(worldSceneLeft, worldSceneY,
           worldSceneW, worldSceneH)
         love.graphics.rectangle("fill", worldSceneLeft, worldSceneY,
           worldSceneW, worldSceneH)
         love.graphics.setScissor()
       else
+        local paperX, paperY, paperW, paperH =
+          battleRuntime.worldSceneRect(battleState)
+        paperX = offsetX + paperX
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.rectangle("fill", 0, 0, canvasW, canvasH)
+        love.graphics.setScissor(paperX, paperY, paperW, paperH)
+        love.graphics.rectangle("fill", paperX, paperY, paperW, paperH)
+        love.graphics.setScissor()
       end
       love.graphics.pop()
       return true
     end
     if transparentWorld then
-      -- The native HP boxes live inside the arena. Erase their text and bars
-      -- back to battle paper, not transparency, so no map-shaped holes remain
-      -- around the modern content-sized status ribbons.
-      love.graphics.setColor(1, 1, 1, 1)
+      if is3D then love.graphics.setColor(0, 0, 0, 0) else love.graphics.setColor(1, 1, 1, 1) end
       love.graphics.setScissor(worldSceneLeft, worldSceneY,
         worldSceneW, worldSceneH)
     end
@@ -11095,22 +11156,23 @@ return function(mod)
         wide and 52 or 56, wide and 124 or 88, wide and 48 or 40)
     end
     if levelUp then
-      -- StatBox is a battle child. Remove its native stat window while
-      -- leaving the live battle scene and all source-owned animations intact;
-      -- drawBattleLevelUp paints the modern card after this scrub.
       love.graphics.rectangle("fill", offsetX + 72, 16, 88, 80)
     end
     if transparentWorld then love.graphics.setScissor() end
     local phase = source.phase or native.phase
     local isMove = phase == "moveSelect" or phase == "mimicSelect"
     local message = runtime.battleMessage(source)
-    if childOpen or phase == "menu" or isMove or message ~= "" then
-      if transparentWorld then setWorldOutsidePaint() end
+    if wide or childOpen or phase == "menu" or isMove or message ~= "" then
+      if transparentWorld then 
+        if is3D then love.graphics.setColor(0, 0, 0, 0) else love.graphics.setColor(1, 1, 1, 1) end
+      end
       love.graphics.rectangle("fill", offsetX, wide and 104 or 96,
         nativeW, wide and 40 or 48)
     end
     if isMove and not wide then
-      if transparentWorld then love.graphics.setColor(1, 1, 1, 1) end
+      if transparentWorld then 
+        if is3D then love.graphics.setColor(0, 0, 0, 0) else love.graphics.setColor(1, 1, 1, 1) end
+      end
       love.graphics.rectangle("fill", offsetX, 56, 92, 48)
     end
     love.graphics.pop()
