@@ -3637,7 +3637,13 @@ return function(mod)
   end
 
   runtime.presenterReady = function(game, state, kind)
-    if kind == "external" then
+    if kind == "custom_surface" then
+      local context = mod._gen1ModernCompatibility.activeSurfaces[state]
+        or mod._gen1ModernCompatibility:surfaceFor(game, state)
+      return context ~= nil
+        and mod._gen1ModernCompatibility:surfaceModelFor(
+          game, state, context) ~= nil
+    elseif kind == "external" then
       local context = mod._gen1ModernCompatibility.active[state]
         or mod._gen1ModernCompatibility:adapterFor(game, state)
       return context and context.screen.canSuppressNative == true
@@ -3685,7 +3691,21 @@ return function(mod)
         break
       end
     end
-    if not targetIndex then return nil end
+    if not targetIndex then
+      -- A few hosts pass a short-lived/proxy child to render_visible while
+      -- the authoritative state remains elsewhere in the stack. Prefer an
+      -- explicit public linkage when available, but only when that linked
+      -- BattleState is actually on this Game's stack. An arbitrary off-stack
+      -- child must not inherit the current top state's battle ownership.
+      for _, candidate in ipairs({ target.battleState, target.battle,
+          target.baseState, target.underlying, target.parentState }) do
+        if candidate and runtime.stackContainsState(game, candidate)
+            and runtime.kindFor(candidate, game) == "battle" then
+          return candidate
+        end
+      end
+      return nil
+    end
     for index = targetIndex - 1, 1, -1 do
       local candidate = states[index]
       if candidate and runtime.kindFor(candidate, game) == "battle" then
@@ -3693,6 +3713,64 @@ return function(mod)
       end
     end
     return nil
+  end
+
+  -- This is the single ownership decision used by battle rendering,
+  -- visibility suppression, child-screen decoration, and input remapping.
+  -- Keeping it centralized prevents a 3D battle from looking native in one
+  -- path while a Modern UI cleanup pass still erases part of it elsewhere.
+  -- ==========================================
+  -- MISSING API FUNCTION: Define Wide Layout Helper
+  -- ==========================================
+  runtime.battleUsesWideLayout = function(state, game)
+    if type(state) ~= "table" then return false end
+    if state.wideLayout == true or state.isWideBattle == true or state.wide == true then
+      return true
+    end
+    if type(state.wideLayout) == "function" then
+      local ok, val = pcall(state.wideLayout, state)
+      if ok and val == true then return true end
+    end
+    -- Allow 3D Voxel battles to be recognized as active modern layouts!
+    if mod._gen1ModernCompatibility:isNative3dBattle(game, state) then
+      return true
+    end
+    return false
+  end
+  -- ==========================================
+
+  runtime.battlePresenterActive = function(game, state)
+    game = runtime.ownerGame(state, game or currentGame)
+    if state and state._gen1UiGalleryPreview then
+      return state.wideLayout == true
+    end
+    if runtime.option("battleUiWip", false) ~= true then return false end
+    if runtime.option("battle3dBypass", true) == true
+        and mod._gen1ModernCompatibility:isNative3dBattle(game, state) then
+      return false
+    end
+
+    -- ==========================================
+    -- THE FIX: Let Voxel Battles bypass the WIDE layout requirement!
+    -- ==========================================
+    if mod._gen1ModernCompatibility:isNative3dBattle(game, state) then
+        return true
+    end
+    -- ==========================================
+
+    return type(runtime.battleUsesWideLayout) == "function"
+      and runtime.battleUsesWideLayout(state, game) == true
+  end
+
+  runtime.battlePresenterActiveForState = function(game, state, kind)
+    game = runtime.ownerGame(state, game or currentGame)
+    if runtime.option("battleUiWip", false) ~= true then return false end
+    if kind == "battle" then
+      return runtime.battlePresenterActive(game, state)
+    end
+    local battle = runtime.battleStateBelow(game, state)
+    if battle then return runtime.battlePresenterActive(game, battle) end
+    return false
   end
 
   -- The new host hook asks about one state at a time while StateStack is
