@@ -10942,7 +10942,7 @@ return function(mod)
     love.graphics.pop()
   end
 
-    runtime.drawBattle = function(game, state, viewport, theme)
+  runtime.drawBattle = function(game, state, viewport, theme)
     if not runtime.battlePresenterActive(game, state) then return end
     local nativeState = state
     local model = battleRuntime.sourceModel(game, state)
