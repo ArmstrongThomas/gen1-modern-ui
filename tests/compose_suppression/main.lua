@@ -2412,6 +2412,44 @@ function love.load()
     values.battleUiWip, values.battleUiMode = false, "auto"
   end
 
+  -- A source-owned transient model is a deliberately narrower compatibility
+  -- surface than a screen adapter: it supplies presentation data only while
+  -- Gen1 Modern UI owns theme, safe-area layout, and drawing.
+  local transientNotice = {
+    id = "test_source:quick-save", title = "QUICK SAVED",
+    detail = "CERULEAN CITY", severity = "success",
+  }
+  check(mod.exports.registerAdapter({ owner = "test_source", contract = {
+    apiVersion = 1,
+    screens = {},
+    transient = {
+      model = function() return transientNotice end,
+    },
+  } }), "a source transient registers through the public adapter contract")
+  check(mod.exports.isTransientPresentationActive("test_source"),
+    "an enabled Modern UI publicly claims the source transient")
+  local transientCanvas = renderHud({ game.overworld }, "source_transient", viewport)
+  check(alphaBounds(transientCanvas) ~= nil,
+    "a valid source transient receives a themed Modern UI presentation")
+  values.menuUi = false
+  check(not mod.exports.isTransientPresentationActive("test_source"),
+    "disabled Modern UI releases transient presentation to the source fallback")
+  values.menuUi = true
+  transientNotice = { id = "test_source:bad", title = "BAD", leaked = function() end }
+  check(not mod.exports.isTransientPresentationActive("test_source", game),
+    "a malformed source model releases the native fallback")
+  transientCanvas = renderHud({ game.overworld }, "malformed_source_transient", viewport)
+  check(alphaBounds(transientCanvas) == nil,
+    "a malformed transient model is ignored without drawing arbitrary callbacks")
+  local throwingModel = mod._gen1ModernCompatibility.adapters.test_source
+    .contract.transient
+  throwingModel.model = function() error("injected source failure") end
+  check(not mod.exports.isTransientPresentationActive("test_source", game),
+    "a throwing source model releases the native fallback")
+  throwingModel.model = function() return transientNotice end
+  transientNotice = nil
+  check(mod.exports.unregisterAdapter("test_source"),
+    "source transient unregisters with the ordinary adapter lifecycle")
   bag.items = { { label = "POTION", right = "x2", value = "POTION" } }
   bag.footer = "¥1234"
   local savedPage = textBox.pages

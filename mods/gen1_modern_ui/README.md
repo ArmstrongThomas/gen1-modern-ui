@@ -124,6 +124,11 @@ require a custom engine checkout or a patched binary.
   [full custom UI guide](../../docs/CUSTOM_UI_AND_THEME_API.md), and
   [adapter examples](../../docs/examples/README.md).
 
+  A source may also publish one data-only transient notice. The public
+  `isTransientPresentationActive(owner, game)` signal claims presentation only
+  when that current model is valid; a missing or throwing model releases the
+  source's native fallback instead of hiding the notification.
+
   Custom screen rows may use `image`, `icon`, `thumbnail`, `sprite`, or
   `asset` references. For reuse, expose a public `assets` catalog from the
   model and set a row's `image` to the catalog key. The generic presenter

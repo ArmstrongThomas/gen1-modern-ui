@@ -1362,9 +1362,19 @@ return function(mod)
     if contract.surfaces ~= nil and apiVersion ~= self.surfaceApiVersion then
       return false, "contract.surfaces requires apiVersion 2"
     end
+    if contract.transient ~= nil then
+      if type(contract.transient) ~= "table"
+          or type(contract.transient.model) ~= "function" then
+        return false, "transient requires a model function"
+      end
+      if contract.transient.draw or contract.transient.render
+          or contract.transient.drawCallback then
+        return false, "transient custom draw callbacks are not supported"
+      end
+    end
     if contract.screens == nil and contract.extensions == nil
-        and contract.surfaces == nil then
-      return false, "contract.screens, contract.extensions, or contract.surfaces is required"
+        and contract.surfaces == nil and contract.transient == nil then
+      return false, "contract.screens, contract.extensions, contract.surfaces, or contract.transient is required"
     end
     if contract.themes ~= nil and type(contract.themes) ~= "table" then
       return false, "contract.themes must be a table"
@@ -1538,6 +1548,56 @@ return function(mod)
       end
     end
     return true
+  end
+
+  function mod._gen1ModernCompatibility:transientFor(owner, game)
+    local entry = self.adapters[owner]
+    local transient = entry and entry.contract and entry.contract.transient
+    if not self:ownerActive(owner) or type(transient) ~= "table"
+        or type(transient.model) ~= "function" then
+      return nil
+    end
+    local ok, model = pcall(transient.model, game)
+    if not ok or type(model) ~= "table" or self:containsFunction(model) then
+      self:recordError(owner, "transient model failed")
+      return nil
+    end
+    local title = safeText(model.title)
+    if title == "" then return nil end
+    local severity = safeText(model.severity)
+    if severity ~= "success" and severity ~= "warning" and severity ~= "error" then
+      severity = "info"
+    end
+    return {
+      owner = owner,
+      id = safeText(model.id) ~= "" and safeText(model.id) or owner,
+      title = title,
+      detail = safeText(model.detail),
+      severity = severity,
+    }
+  end
+
+  function mod._gen1ModernCompatibility:transients(game)
+    self:discover()
+    local owners = {}
+    for owner, entry in pairs(self.adapters) do
+      if entry and entry.contract and entry.contract.transient then
+        owners[#owners + 1] = owner
+      end
+    end
+    table.sort(owners)
+    local out = {}
+    for _, owner in ipairs(owners) do
+      local transient = self:transientFor(owner, game)
+      if transient then out[#out + 1] = transient end
+    end
+    return out
+  end
+
+  function mod._gen1ModernCompatibility:transientActive(owner, game)
+    self:discover()
+    if runtime.option("menuUi", true) == false then return false end
+    return self:transientFor(owner, game) ~= nil
   end
 
   function mod._gen1ModernCompatibility:ownerActive(owner)
@@ -3125,6 +3185,12 @@ return function(mod)
     dispatchSurfaceAction = function(game, state, action, payload)
       return mod._gen1ModernCompatibility:surfaceAction(
         game, state, action, payload)
+    end,
+    -- Lets a source mod retain its native HUD fallback whenever this optional
+    -- presentation layer is disabled or unavailable. The source still owns
+    -- notification content and lifetime through its data-only model.
+    isTransientPresentationActive = function(owner, game)
+      return mod._gen1ModernCompatibility:transientActive(owner, game)
     end,
     registerFrame = function(spec)
       return mod._gen1ModernCompatibility:registerFrame(spec)
@@ -11427,6 +11493,58 @@ return function(mod)
     return true
   end
 
+  -- Source transient models are deliberately presentation-only.  Their owner
+  -- decides whether a notice exists and when it expires; this shared layer
+  -- owns the theme, responsive safe rect, and all drawing.  Keep the list
+  -- bounded so two independent source notices remain readable rather than
+  -- becoming an unbounded HUD stack.
+  runtime.drawSourceTransients = function(game, viewport, theme)
+    local notices = mod._gen1ModernCompatibility:transients(game)
+    if #notices == 0 then return false end
+    local x, y, w = presenterRect(viewport)
+    local spacing, colors = theme.spacing, theme.colors
+    local caption = font(fontCache, theme.typography.caption)
+    local body = font(fontCache, theme.typography.body)
+    local maxW = math.max(1, w - spacing.lg * 2)
+    local cursorY = y + spacing.lg
+    local drawn = false
+    for index, notice in ipairs(notices) do
+      if index > 2 then break end
+      local title = truncate(notice.title, maxW - spacing.lg * 2, body)
+      local detail = notice.detail ~= ""
+        and truncate(notice.detail, maxW - spacing.lg * 2, caption) or nil
+      local contentW = math.max(body:getWidth(title),
+        detail and caption:getWidth(detail) or 0)
+      local panelW = math.min(maxW, math.max(runtime.scaledPanelWidth(theme, 220),
+        contentW + spacing.lg * 2))
+      local panelH = textHeight(body) + spacing.lg * 2
+        + (detail and (textHeight(caption) + spacing.xs) or 0)
+      local px = x + (w - panelW) / 2
+      love.graphics.push("all")
+      love.graphics.origin()
+      setColor(colors.surface)
+      love.graphics.rectangle("fill", px, cursorY, panelW, panelH,
+        theme.radii.md)
+      runtime.drawPanelFrame(theme, px, cursorY, panelW, panelH, theme.radii.md)
+      runtime.drawPanelAccent(theme, px, cursorY, panelW, theme.radii.md)
+      setColor(notice.severity == "error" and (colors.danger or colors.accent)
+        or notice.severity == "warning" and (colors.warning or colors.accent)
+        or colors.text)
+      love.graphics.setFont(body)
+      drawText(title, px + spacing.lg, cursorY + spacing.sm)
+      if detail then
+        setColor(colors.textMuted)
+        love.graphics.setFont(caption)
+        drawText(detail, px + spacing.lg,
+          cursorY + spacing.sm + textHeight(body) + spacing.xs)
+      end
+      love.graphics.pop()
+      cursorY = cursorY + panelH + spacing.sm
+      drawn = true
+    end
+    return drawn
+  end
+
   function mod._gen1ModernSpecialPresenters.drawQuarantineReport(game, state,
       viewport, theme)
     local x, y, w, h = presenterRect(viewport)
@@ -16976,9 +17094,12 @@ return function(mod)
       if overworldActive and modernWorld then
         mod._gen1ModernSpecialPresenters.drawQolLocationBanner(
           game, viewportForTouchControls(game, viewport),
-            responsiveTheme(runtime.currentTheme(viewport, nil), viewport,
+          responsiveTheme(runtime.currentTheme(viewport, nil), viewport,
             responsiveThemeCache))
       end
     end
+    runtime.drawSourceTransients(game, viewportForTouchControls(game, viewport),
+      responsiveTheme(runtime.currentTheme(viewport, nil), viewport,
+        responsiveThemeCache))
   end, 100)
 end
