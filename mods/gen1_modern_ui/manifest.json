@@ -1,7 +1,7 @@
 {
   "id": "gen1_modern_ui",
   "name": "Gen1 Modern UI",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "api": 2,
   "entry": "main.lua",
   "profile": "overhaul",
@@ -13,6 +13,7 @@
   "optional_dependencies": [],
   "conflicts": ["gen1_clean_ui"],
   "incompatible": [],
+  "permissions": ["engine_internals", "network"],
   "experimental": false,
   "affects_link": false,
   "description": "Retired Gen1-only responsive UI; superseded by the ground-up Gen1 Clean UI project",

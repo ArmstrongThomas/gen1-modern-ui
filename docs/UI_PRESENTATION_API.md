@@ -4,6 +4,14 @@ This document describes the released mod API used by `gen1_modern_ui`. The
 mod is a visual-first overlay: it does not require an engine patch, replace
 states, or own keyboard/controller input and callbacks.
 
+## Sandbox compatibility
+
+The 0.9.2 manifest declares `engine_internals` and `network`. These permissions
+make the legacy presenter's existing reads of released screen and link-state
+modules explicit to gen1recomp's sandbox and mod manager. They do not grant
+raw filesystem access, threads, or FFI, and the engine retains ownership of
+networking, input, state, and callbacks.
+
 ## Frame hook sequence
 
 The current release uses the preferred `screen.render_visible` hook when the host

@@ -3,16 +3,23 @@
 Standalone high-resolution UI overhaul mod for released
 [gen1recomp](https://github.com/bryanthaboi/gen1recomp) builds.
 
-> **Retired after 0.9.1.** This repository is frozen as a Gen1-only legacy
-> release. New development is moving to the ground-up `gen1-clean-ui` product
-> and its shared `clean-ui-core`. Version 0.9.1 is explicitly Gen1-only and
-> conflicts with `gen1_clean_ui`; install only one of them.
+> **Retired after 0.9.2.** This repository remains frozen as a Gen1-only
+> legacy release. This 0.9.2 maintenance update only keeps the legacy mod
+> usable with gen1recomp's sandbox API; new development is moving to the
+> ground-up `gen1-clean-ui` product and its shared `clean-ui-core`. It remains
+> explicitly Gen1-only and conflicts with `gen1_clean_ui`; install only one.
 
 This repository contains only the mod and its documentation. It does not
 modify the game executable or require a custom engine checkout at runtime.
-Version 0.9.1 targets gen1recomp v0.1.51 or newer (and remains compatible
+Version 0.9.2 targets gen1recomp v0.1.51 or newer (and remains compatible
 with the released 1.x line). The development engine build identifier
 `0.0.0-dev` is also accepted for local testing.
+
+The legacy presenter declares the sandbox permissions `engine_internals` and
+`network` because its existing adapters read released screen classes and link
+state modules to mirror their presentation. The engine still owns networking,
+input, state, and callbacks; the mod does not use raw filesystem access,
+threads, or FFI.
 
 ## Install the latest release
 
@@ -191,7 +198,7 @@ through an incorrect layout.
 
 ### Versioned source-mod UI contract
 
-Gen1 Modern UI 0.9.1 preserves the frozen versioned compatibility foundation through
+Gen1 Modern UI 0.9.2 preserves the frozen versioned compatibility foundation through
 `mod.exports.gen1ModernUi`. Existing `apiVersion = 1` mods may publish
 read-only screen models, source-owned semantic actions, additive extensions,
 and data-only namespaced themes and pixel frames. V2 adds structured detail
@@ -294,7 +301,7 @@ After building, verify the actual archive through the same PhysFS mount path
 used by the launcher importer:
 
 ```powershell
-$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.9.1.zip').Path
+$env:GEN1_UI_ZIP = (Resolve-Path 'gen1_modern_ui-0.9.2.zip').Path
 & 'C:\Program Files\LOVE\lovec.exe' tests/archive_package
 ```
 
@@ -310,7 +317,7 @@ manual dispatches. It validates the manifest and Lua syntax, builds the
 launcher-ready zip, and creates a GitHub release only when the manifest version
 does not already have a tag. To publish the next release, update the
 `version` field in `mods/gen1_modern_ui/manifest.json` (for example, to
-`0.9.1`) and push that commit to `main`. Each release includes a commit-based
+`0.9.2`) and push that commit to `main`. Each release includes a commit-based
 change log, compatibility notes, quick-start install steps, and the archive's
 SHA-256 checksum. Add `docs/releases/v<version>.md` when a release needs a
 curated change log; the workflow uses that file as the release body and adds

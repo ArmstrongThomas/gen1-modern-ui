@@ -8,8 +8,9 @@ the original 160x144 layout. It is visual-first: the game remains responsible
 for keyboard/controller input, state transitions, and callbacks; pointer taps
 use only the host's source-safe action facade.
 
-> **Retired after 0.9.1.** This is the final Gen1-only legacy build and it
-> conflicts with its ground-up successor, `gen1_clean_ui`.
+> **Retired after 0.9.2.** This remains a Gen1-only legacy build. Version 0.9.2
+> is a maintenance update for gen1recomp's sandbox API and it still conflicts
+> with its ground-up successor, `gen1_clean_ui`.
 
 ## Install a release
 
@@ -30,13 +31,19 @@ updates from the Mods panel.
 
 ## Layout
 
-- `manifest.json` - identity, version range, load order
+- `manifest.json` - identity, version range, load order, sandbox permissions
 - `main.lua` - the visual presenter and theme registry
 
-Version 0.9.1 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
+Version 0.9.2 targets `0.0.0-dev || >=0.1.51 <2.0.0`: the released
 gen1recomp v0.1.51 and later 0.x releases, the released 1.x line, and the
 development engine build for local testing. The packaged mod does not
 require a custom engine checkout or a patched binary.
+
+The legacy presenter declares the sandbox permissions `engine_internals` and
+`network` because its existing adapters read released screen classes and link
+state modules to mirror their presentation. The engine still owns networking,
+input, state, and callbacks; the mod does not use raw filesystem access,
+threads, or FFI.
 
 ## Input and compatibility
 
